@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
-<title>Bahi — Browser-native accounting · Phase 7</title>
+<title>Bahi — Browser-native accounting · Phase 8A</title>
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -275,7 +275,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 <div id="app">
 
   <header class="topbar">
-    <div class="brand">Bahi <span class="sub">Phase 7 · polish &amp; launch prep</span></div>
+    <div class="brand">Bahi <span class="sub">Phase 8A · CA-handoff feature complete</span></div>
     <span id="mode-badge" class="mode-badge owner" title="Click to switch mode">OWNER</span>
     <div id="company-switcher" style="display:none;position:relative">
       <button id="company-switcher-btn" class="small" style="display:flex;align-items:center;gap:6px"></button>
@@ -332,10 +332,12 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/stock-transfer/in/import" data-route="#/stock-transfer/in/import">Transfer (in / import)</a>
       <h4>Money</h4>
       <a href="#/payments" data-route="#/payments">Payments</a>
-      <a href="#/payment/new" data-route="#/payment/new">+ Record payment</a>
+      <a href="#/payment/new" data-route="#/payment/new">+ Record receipt</a>
+      <a href="#/vendor-payment/new" data-route="#/vendor-payment/new">+ Pay vendor (TDS)</a>
       <a href="#/advances" data-route="#/advances">Advances</a>
       <a href="#/advance/new" data-route="#/advance/new">+ Advance receipt</a>
       <a href="#/journal/new" data-route="#/journal/new">+ Journal voucher</a>
+      <a href="#/bank-reconcile" data-route="#/bank-reconcile">Bank reconciliation</a>
       <h4>Reports</h4>
       <a href="#/day-book" data-route="#/day-book">Day book</a>
       <a href="#/account-ledger" data-route="#/account-ledger">Account ledger</a>
@@ -348,6 +350,9 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/gstr1" data-route="#/gstr1">GSTR-1</a>
       <a href="#/gstr3b" data-route="#/gstr3b">GSTR-3B</a>
       <a href="#/cmp08" data-route="#/cmp08">CMP-08</a>
+      <a href="#/form-26q" data-route="#/form-26q">Form 26Q (TDS)</a>
+      <a href="#/form-27eq" data-route="#/form-27eq">Form 27EQ (TCS)</a>
+      <a href="#/form-27d" data-route="#/form-27d">Form 27D certificates</a>
       <a href="#/tax-challans" data-route="#/tax-challans">Tax challans</a>
       <a href="#/period-locks" data-route="#/period-locks">Period locks</a>
       <a href="#/fy-rollover" data-route="#/fy-rollover">FY rollover</a>
@@ -358,6 +363,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/ca/report" data-route="#/ca/report" class="ca-only">Review report</a>
       <h4>Dev</h4>
       <a href="#/debug" data-route="#/debug">Debug console</a>
+      <a href="#/ref-data-update" data-route="#/ref-data-update">Reference data updates</a>
       <a href="#/settings" data-route="#/settings">Settings</a>
       <div class="ws-info">
         <div><b>Browser:</b> Chromium only</div>
@@ -388,10 +394,10 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 
 <script>
 //============================================================
-// Bahi — Phase 6
-// Browser-native accounting · CA mode (multi-client workspace, annotations,
-// review markers, adjustment voucher, PDF review report, Layer 3 ancestry check,
-// Reconciliation View)
+// Bahi — Phase 8A
+// Browser-native accounting · CA-handoff feature complete (TDS / TCS recording,
+// Form 26Q + 27EQ + 27D exports, bank reconciliation, Layer 4 export-time identity
+// check, lazy-fetch from khata-standard CDN, audit-log replay restoration)
 // See Settings → Phase scope for the full feature inventory.
 //============================================================
 
@@ -411,8 +417,10 @@ const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Fil
 //   v7 → Phase 4: Goods SMB tier — items inventory cols, godowns, batches,
 //        stock_movements, delivery_challans + lines, eway_bills, stock_transfers
 //   v8 → Phase 6: CA mode — annotations + review_markers tables
+//   v9 → Phase 8A: payments.vendor_id + payment_direction + tds_amount + tds_section,
+//        bank_reconciliations table
 // The runner is in runSchemaMigrations() below.
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 // Snapshot retention policy (spec §9.3):
 //   - Last N saves: keep the most recent N auto snapshots regardless of date
@@ -1199,6 +1207,28 @@ CREATE TABLE IF NOT EXISTS review_markers (
   notes TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_review_markers_entry ON review_markers(entry_id);
+
+-- === Phase 8A — CA-handoff feature complete ===
+
+-- Bank reconciliations: a manual statement-vs-book reconciliation snapshot.
+-- Each row represents one reconciliation event for one bank account at one
+-- closing date. matched_entry_lines is a JSON array of entry_line IDs the
+-- user marked as cleared during the reconciliation session.
+CREATE TABLE IF NOT EXISTS bank_reconciliations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bank_account_id INTEGER NOT NULL REFERENCES accounts(id),
+  reconciled_through_date TEXT NOT NULL,
+  closing_balance_per_book INTEGER NOT NULL,    -- paise
+  closing_balance_per_statement INTEGER NOT NULL,
+  uncleared_debits INTEGER DEFAULT 0,
+  uncleared_credits INTEGER DEFAULT 0,
+  difference INTEGER DEFAULT 0,
+  matched_entry_lines TEXT,                      -- JSON array of entry_line IDs
+  notes TEXT,
+  reconciled_at TEXT NOT NULL,
+  reconciled_by TEXT NOT NULL                    -- 'owner' or 'ca'
+);
+CREATE INDEX IF NOT EXISTS idx_bankrec_account ON bank_reconciliations(bank_account_id);
 `;
 
 // === Reference Data subsystem ===
@@ -2023,6 +2053,18 @@ function runSchemaMigrations(db) {
   // annotations + review_markers — both new tables, handled by DDL.
   if (currentVersion < 8) {
     db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '8')");
+  }
+
+  // === Migration 8 → 9: Phase 8A CA-handoff feature complete ===
+  // Extends payments to support vendor payments + TDS deduction (so vendor
+  // payments and customer receipts live in the same table). Adds the
+  // bank_reconciliations table (handled by the DDL block above).
+  if (currentVersion < 9) {
+    tryAddColumn('payments', 'vendor_id INTEGER');
+    tryAddColumn('payments', "payment_direction TEXT DEFAULT 'in'");
+    tryAddColumn('payments', 'tds_amount INTEGER DEFAULT 0');
+    tryAddColumn('payments', 'tds_section TEXT');
+    db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '9')");
   }
 
   // Future migrations land here as `if (currentVersion < N) { ... }` blocks.
@@ -5725,6 +5767,585 @@ async function exportReviewReportPdf(db, caProfile, asOfDate) {
 }
 
 //------------------------------------------------------------
+// === Phase 8A — CA-handoff feature complete ===
+//------------------------------------------------------------
+//
+// Closes the 11 CA-handoff gaps:
+//   1-2,7  TDS deduction recording + auto-deduct on vendor payment
+//   3,4    Form 26Q + Form 27EQ exports (NSDL CSV)
+//   5      Form 27D TDS certificate (PDF per vendor)
+//   6      Bank reconciliation (manual statement matching)
+//   8      Layer 4 export-time identity check
+//   9      Reference data update UI (lazy-fetch from khata-standard CDN)
+//   10     Lazy-load full HSN bundle on first miss
+//   11     Audit-log replay restoration
+//
+// Schema v9 extends `payments` with vendor_id / payment_direction / tds_amount /
+// tds_section. Bank reconciliations live in a new `bank_reconciliations` table.
+
+// === TDS / TCS engine ===
+
+// Look up the TDS rate for a section from REF.tdsSections.
+function getTdsRateForSection(section) {
+  if (!section) return 0;
+  const row = (REF.tdsSections.data || []).find(r => (r.section || r[0]) === section);
+  if (!row) return 0;
+  // Support both array shape ([section, rate, ...]) and object shape ({section, rate})
+  return row.rate != null ? row.rate : (row[1] || 0);
+}
+
+// Get the vendor's default TDS section, or null if not set.
+function getVendorTdsSection(db, vendorId) {
+  if (!vendorId) return null;
+  const r = db.exec('SELECT tds_section FROM vendors WHERE id = ?', [vendorId]);
+  if (!r.length || !r[0].values.length) return null;
+  return r[0].values[0][0] || null;
+}
+
+// Look up the TDS Payable account by section, auto-creating per-section sub-accounts
+// the first time a particular section is used. Mirrors getOrCreateRateAccount.
+function getOrCreateTdsPayableAccount(db, section) {
+  if (!section) return getAccountIdByName(db, 'TDS Payable');
+  const subName = `TDS Payable — ${section}`;
+  const r = db.exec('SELECT id FROM accounts WHERE name = ?', [subName]);
+  if (r.length && r[0].values.length) return r[0].values[0][0];
+  const parent = db.exec("SELECT id FROM accounts WHERE name = 'TDS Payable'");
+  const parentId = (parent.length && parent[0].values.length) ? parent[0].values[0][0] : null;
+  db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, "liability", 0)', [subName, parentId]);
+  return lastInsertId(db);
+}
+
+function getOrCreateTcsPayableAccount(db, section) {
+  if (!section) return getAccountIdByName(db, 'TCS Payable');
+  const subName = `TCS Payable — ${section}`;
+  const r = db.exec('SELECT id FROM accounts WHERE name = ?', [subName]);
+  if (r.length && r[0].values.length) return r[0].values[0][0];
+  const parent = db.exec("SELECT id FROM accounts WHERE name = 'TCS Payable'");
+  const parentId = (parent.length && parent[0].values.length) ? parent[0].values[0][0] : null;
+  db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, "liability", 0)', [subName, parentId]);
+  return lastInsertId(db);
+}
+
+// Record a TDS deduction. Inserts into tds_deductions, captures the vendor's PAN
+// at deduction time (snapshot pattern), and posts a journal entry that moves the
+// vendor's payable into TDS Payable. Called from the payment form's vendor branch
+// after the main payment row has been inserted.
+async function recordTdsDeduction(db, opts) {
+  const { paymentId, vendorId, section, rate, taxableAmount, tdsAmount, paymentDate } = opts;
+  if (!vendorId || !section || tdsAmount <= 0) return null;
+  // Capture vendor PAN + name as snapshot
+  const vR = db.exec('SELECT name, pan FROM vendors WHERE id = ?', [vendorId]);
+  const vendorName = (vR.length && vR[0].values.length) ? vR[0].values[0][0] : null;
+  const vendorPan = (vR.length && vR[0].values.length) ? vR[0].values[0][1] : null;
+
+  db.run(
+    'INSERT INTO tds_deductions (payment_id, vendor_id, section, rate, taxable_amount, tds_amount, payment_date, vendor_pan, vendor_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    [paymentId || null, vendorId, section, rate, taxableAmount, tdsAmount, paymentDate, vendorPan, vendorName, nowIso()]
+  );
+  const tdsId = lastInsertId(db);
+
+  // Post the GL effect: Dr Sundry Creditors / Cr TDS Payable @ section
+  // (the bank-side leg is posted by the payment form via postEntry separately)
+  await postEntry(db, {
+    voucherType: 'tds-deduction',
+    voucherRef: `TDS-${section}-${nowIso().slice(0, 10)}`,
+    narration: `TDS deducted on payment to ${vendorName || 'vendor'} (${section}, ${(rate * 100).toFixed(2)}% on ${fmtINR(taxableAmount)})`,
+    postedAt: paymentDate || nowIso(),
+    actor: auditActor(),
+    lines: [
+      { accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: tdsAmount, credit: 0 },
+      { accountId: getOrCreateTdsPayableAccount(db, section), debit: 0, credit: tdsAmount },
+    ],
+  });
+  return tdsId;
+}
+
+// Record a TCS collection. Same shape as TDS but for the customer side.
+async function recordTcsCollection(db, opts) {
+  const { invoiceId, customerId, section, rate, taxableAmount, tcsAmount, invoiceDate } = opts;
+  if (!customerId || !section || tcsAmount <= 0) return null;
+  const cR = db.exec('SELECT name, pan FROM customers WHERE id = ?', [customerId]);
+  const customerName = (cR.length && cR[0].values.length) ? cR[0].values[0][0] : null;
+  const customerPan = (cR.length && cR[0].values.length) ? cR[0].values[0][1] : null;
+
+  db.run(
+    'INSERT INTO tcs_collections (invoice_id, customer_id, section, rate, taxable_amount, tcs_amount, invoice_date, customer_pan, customer_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    [invoiceId || null, customerId, section, rate, taxableAmount, tcsAmount, invoiceDate, customerPan, customerName, nowIso()]
+  );
+  const tcsId = lastInsertId(db);
+
+  await postEntry(db, {
+    voucherType: 'tcs-collection',
+    voucherRef: `TCS-${section}-${nowIso().slice(0, 10)}`,
+    narration: `TCS collected from ${customerName || 'customer'} (${section}, ${(rate * 100).toFixed(2)}% on ${fmtINR(taxableAmount)})`,
+    postedAt: invoiceDate || nowIso(),
+    actor: auditActor(),
+    lines: [
+      { accountId: getAccountIdByName(db, 'Sundry Debtors'), debit: tcsAmount, credit: 0 },
+      { accountId: getOrCreateTcsPayableAccount(db, section), debit: 0, credit: tcsAmount },
+    ],
+  });
+  return tcsId;
+}
+
+// === Form 26Q / 27EQ / 27D builders ===
+
+function fyQuarterRange(fyStartYear, quarter) {
+  // FY in India runs April-March. Q1 = Apr-Jun, Q2 = Jul-Sep, Q3 = Oct-Dec, Q4 = Jan-Mar
+  const startMonth = (quarter - 1) * 3 + 3; // Q1→Apr (idx 3)
+  const startDate = new Date(fyStartYear, startMonth, 1);
+  const endDate = new Date(fyStartYear, startMonth + 3, 0); // last day of the quarter end month
+  return {
+    start: startDate.toISOString().slice(0, 10),
+    end: endDate.toISOString().slice(0, 10),
+  };
+}
+
+function buildForm26Q(db, fyStartYear, quarter) {
+  const range = fyQuarterRange(fyStartYear, quarter);
+  const r = db.exec(`
+    SELECT t.id, t.payment_id, t.section, t.rate, t.taxable_amount, t.tds_amount,
+      t.payment_date, t.vendor_pan, t.vendor_name_snapshot,
+      v.name AS current_name, v.pan AS current_pan
+    FROM tds_deductions t
+    LEFT JOIN vendors v ON v.id = t.vendor_id
+    WHERE t.payment_date BETWEEN ? AND ?
+    ORDER BY t.payment_date, t.id
+  `, [range.start, range.end]);
+  const rows = (r.length && r[0].values.length) ? r[0].values.map(x => ({
+    id: x[0], paymentId: x[1], section: x[2], rate: x[3],
+    taxableAmount: x[4], tdsAmount: x[5], paymentDate: x[6],
+    pan: x[7] || x[10] || '',                  // snapshot first, then current
+    name: x[8] || x[9] || '',
+  })) : [];
+  // Group by section
+  const bySection = {};
+  let totalTaxable = 0, totalTds = 0;
+  for (const row of rows) {
+    if (!bySection[row.section]) bySection[row.section] = { rows: [], totalTaxable: 0, totalTds: 0 };
+    bySection[row.section].rows.push(row);
+    bySection[row.section].totalTaxable += row.taxableAmount;
+    bySection[row.section].totalTds += row.tdsAmount;
+    totalTaxable += row.taxableAmount;
+    totalTds += row.tdsAmount;
+  }
+  // Validation errors
+  const errors = [];
+  for (const row of rows) {
+    if (!row.pan || row.pan.length !== 10) errors.push(`Row ${row.id}: PAN missing or invalid for ${row.name || '(unnamed)'}`);
+    if (!row.section) errors.push(`Row ${row.id}: section missing`);
+  }
+  return {
+    quarter, fyStartYear, range,
+    rows, bySection, totalTaxable, totalTds,
+    errors,
+  };
+}
+
+function buildForm27EQ(db, fyStartYear, quarter) {
+  const range = fyQuarterRange(fyStartYear, quarter);
+  const r = db.exec(`
+    SELECT t.id, t.invoice_id, t.section, t.rate, t.taxable_amount, t.tcs_amount,
+      t.invoice_date, t.customer_pan, t.customer_name_snapshot,
+      c.name AS current_name, c.pan AS current_pan
+    FROM tcs_collections t
+    LEFT JOIN customers c ON c.id = t.customer_id
+    WHERE t.invoice_date BETWEEN ? AND ?
+    ORDER BY t.invoice_date, t.id
+  `, [range.start, range.end]);
+  const rows = (r.length && r[0].values.length) ? r[0].values.map(x => ({
+    id: x[0], invoiceId: x[1], section: x[2], rate: x[3],
+    taxableAmount: x[4], tcsAmount: x[5], invoiceDate: x[6],
+    pan: x[7] || x[10] || '',
+    name: x[8] || x[9] || '',
+  })) : [];
+  const bySection = {};
+  let totalTaxable = 0, totalTcs = 0;
+  for (const row of rows) {
+    if (!bySection[row.section]) bySection[row.section] = { rows: [], totalTaxable: 0, totalTcs: 0 };
+    bySection[row.section].rows.push(row);
+    bySection[row.section].totalTaxable += row.taxableAmount;
+    bySection[row.section].totalTcs += row.tcsAmount;
+    totalTaxable += row.taxableAmount;
+    totalTcs += row.tcsAmount;
+  }
+  const errors = [];
+  for (const row of rows) {
+    if (!row.pan || row.pan.length !== 10) errors.push(`Row ${row.id}: PAN missing or invalid for ${row.name || '(unnamed)'}`);
+    if (!row.section) errors.push(`Row ${row.id}: section missing`);
+  }
+  return { quarter, fyStartYear, range, rows, bySection, totalTaxable, totalTcs, errors };
+}
+
+// NSDL CSV format. The real NSDL format uses pipe-delimited fixed-position files;
+// we ship a clean header-row CSV that mirrors the same fields in the same order.
+// Easier to inspect, importable into the NSDL TIN-FUF utility.
+function exportForm26QCsv(data) {
+  const headers = ['Section', 'Deductee PAN', 'Deductee Name', 'Payment Date', 'Taxable Amount (INR)', 'TDS Rate (%)', 'TDS Amount (INR)', 'Payment Reference'];
+  const rows = data.rows.map(r => [
+    r.section, r.pan, r.name, r.paymentDate,
+    (r.taxableAmount / 100).toFixed(2),
+    (r.rate * 100).toFixed(2),
+    (r.tdsAmount / 100).toFixed(2),
+    'PAY-' + (r.paymentId || r.id),
+  ]);
+  // Bahi metadata header
+  const meta = [
+    `# Bahi Form 26Q export — Q${data.quarter} FY ${data.fyStartYear}-${(data.fyStartYear + 1).toString().slice(2, 4)}`,
+    `# Period: ${data.range.start} to ${data.range.end}`,
+    `# Total deductions: ${data.rows.length} · Total TDS: INR ${(data.totalTds / 100).toFixed(2)}`,
+    `# Generated: ${nowIso()}`,
+    '',
+  ].join('\n');
+  return meta + '\n' + headers.join(',') + '\n' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+}
+
+function exportForm27EQCsv(data) {
+  const headers = ['Section', 'Collectee PAN', 'Collectee Name', 'Invoice Date', 'Taxable Amount (INR)', 'TCS Rate (%)', 'TCS Amount (INR)', 'Invoice Reference'];
+  const rows = data.rows.map(r => [
+    r.section, r.pan, r.name, r.invoiceDate,
+    (r.taxableAmount / 100).toFixed(2),
+    (r.rate * 100).toFixed(2),
+    (r.tcsAmount / 100).toFixed(2),
+    'INV-' + (r.invoiceId || r.id),
+  ]);
+  const meta = [
+    `# Bahi Form 27EQ export — Q${data.quarter} FY ${data.fyStartYear}-${(data.fyStartYear + 1).toString().slice(2, 4)}`,
+    `# Period: ${data.range.start} to ${data.range.end}`,
+    `# Total collections: ${data.rows.length} · Total TCS: INR ${(data.totalTcs / 100).toFixed(2)}`,
+    `# Generated: ${nowIso()}`,
+    '',
+  ].join('\n');
+  return meta + '\n' + headers.join(',') + '\n' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+}
+
+// Form 27D TDS certificate (PDF per vendor for one quarter).
+async function exportForm27DPdf(db, vendorId, fyStartYear, quarter) {
+  const jsPDFCtor = await loadJsPDF();
+  const range = fyQuarterRange(fyStartYear, quarter);
+
+  // Vendor block
+  const vR = db.exec('SELECT name, pan, address, gstin FROM vendors WHERE id = ?', [vendorId]);
+  if (!vR.length || !vR[0].values.length) throw new Error('Vendor not found');
+  const [vName, vPan, vAddress, vGstin] = vR[0].values[0];
+
+  // Deductions for this vendor in the period
+  const tR = db.exec(`
+    SELECT id, payment_id, section, rate, taxable_amount, tds_amount, payment_date
+    FROM tds_deductions
+    WHERE vendor_id = ? AND payment_date BETWEEN ? AND ?
+    ORDER BY payment_date, id
+  `, [vendorId, range.start, range.end]);
+  const rows = (tR.length && tR[0].values.length) ? tR[0].values : [];
+  if (!rows.length) throw new Error(`No TDS deductions for ${vName} in Q${quarter} FY ${fyStartYear}-${(fyStartYear + 1).toString().slice(2, 4)}`);
+
+  const company = STATE.manifest?.company || {};
+  const doc = new jsPDFCtor({ unit: 'mm', format: 'a4' });
+  let y = 20;
+  doc.setFont('helvetica', 'bold').setFontSize(14);
+  doc.text('FORM 27D — TDS CERTIFICATE', 105, y, { align: 'center' });
+  y += 5;
+  doc.setFontSize(9).setFont('helvetica', 'normal');
+  doc.text('Certificate of tax deducted at source under section 206C of the Income Tax Act, 1961', 105, y, { align: 'center' });
+  y += 8;
+  doc.line(15, y, 195, y); y += 5;
+
+  // Deductor block
+  doc.setFont('helvetica', 'bold').setFontSize(10);
+  doc.text('Deductor', 15, y); y += 5;
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(`Name: ${company.name || ''}`, 15, y); y += 4;
+  if (company.legalName && company.legalName !== company.name) { doc.text(`Legal name: ${company.legalName}`, 15, y); y += 4; }
+  if (company.gstin) { doc.text(`GSTIN: ${company.gstin}`, 15, y); y += 4; }
+  if (company.tan) { doc.text(`TAN: ${company.tan}`, 15, y); y += 4; }
+  if (company.pan) { doc.text(`PAN: ${company.pan}`, 15, y); y += 4; }
+  if (company.address) { doc.text(`Address: ${String(company.address).slice(0, 80)}`, 15, y); y += 4; }
+  y += 4;
+  doc.line(15, y, 195, y); y += 5;
+
+  // Deductee block
+  doc.setFont('helvetica', 'bold').setFontSize(10);
+  doc.text('Deductee', 15, y); y += 5;
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(`Name: ${vName || ''}`, 15, y); y += 4;
+  doc.text(`PAN: ${vPan || '— NOT PROVIDED —'}`, 15, y); y += 4;
+  if (vGstin) { doc.text(`GSTIN: ${vGstin}`, 15, y); y += 4; }
+  if (vAddress) { doc.text(`Address: ${String(vAddress).slice(0, 80)}`, 15, y); y += 4; }
+  y += 4;
+  doc.line(15, y, 195, y); y += 5;
+
+  // Period
+  doc.setFont('helvetica', 'bold').setFontSize(10);
+  doc.text(`Period: Q${quarter} FY ${fyStartYear}-${(fyStartYear + 1).toString().slice(2, 4)} (${range.start} to ${range.end})`, 15, y); y += 8;
+
+  // Deduction table
+  doc.setFont('helvetica', 'bold').setFontSize(9);
+  doc.text('Date', 15, y);
+  doc.text('Section', 45, y);
+  doc.text('Taxable (INR)', 100, y, { align: 'right' });
+  doc.text('Rate (%)', 130, y, { align: 'right' });
+  doc.text('TDS (INR)', 175, y, { align: 'right' });
+  y += 3; doc.line(15, y, 195, y); y += 4;
+  doc.setFont('helvetica', 'normal');
+  let totalTaxable = 0, totalTds = 0;
+  for (const [id, pid, section, rate, taxable, tds, date] of rows) {
+    if (y > 270) { doc.addPage(); y = 20; }
+    totalTaxable += taxable; totalTds += tds;
+    doc.text(date, 15, y);
+    doc.text(section, 45, y);
+    doc.text((taxable / 100).toFixed(2), 100, y, { align: 'right' });
+    doc.text((rate * 100).toFixed(2), 130, y, { align: 'right' });
+    doc.text((tds / 100).toFixed(2), 175, y, { align: 'right' });
+    y += 4;
+  }
+  doc.line(15, y, 195, y); y += 4;
+  doc.setFont('helvetica', 'bold');
+  doc.text('Total', 15, y);
+  doc.text((totalTaxable / 100).toFixed(2), 100, y, { align: 'right' });
+  doc.text((totalTds / 100).toFixed(2), 175, y, { align: 'right' });
+  y += 8;
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(`Amount in words: ${amountInWords(totalTds)}`, 15, y); y += 8;
+
+  // Signature
+  doc.line(140, 260, 195, 260);
+  doc.setFontSize(8);
+  doc.text('Authorised signatory', 140, 265);
+  doc.text(company.name || '', 140, 270);
+
+  // Footer
+  doc.setFontSize(7);
+  doc.text('Generated by Bahi · github.com/NakliTechie/bahi · Verify against the official Form 27D format before issuing', 105, 290, { align: 'center' });
+
+  const filename = `form-27D-${slugify(vName)}-Q${quarter}-FY${fyStartYear}-${(fyStartYear + 1).toString().slice(2, 4)}.pdf`;
+  try {
+    const blob = doc.output('blob');
+    const handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+    });
+    const w = await handle.createWritable(); await w.write(blob); await w.close();
+    toast(`Saved ${handle.name}`, 'ok');
+  } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+}
+
+// === Bank reconciliation engine ===
+
+// Get all entry lines posted to a bank account in the period, joined to the entry
+// for date / voucher type / ref / narration. Returns rows ready for the rec view.
+function getBankAccountLines(db, accountId, fromDate, toDate) {
+  const r = db.exec(`
+    SELECT l.id, e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
+      l.debit, l.credit
+    FROM entry_lines l
+    JOIN entries e ON e.id = l.entry_id
+    WHERE l.account_id = ? AND e.posted_at BETWEEN ? AND ?
+    ORDER BY e.posted_at, e.id, l.id
+  `, [accountId, fromDate, toDate]);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([lid, eid, ts, vt, vref, narr, dr, cr]) => ({
+    line_id: lid, entry_id: eid, posted_at: ts, voucher_type: vt,
+    voucher_ref: vref, narration: narr, debit: dr || 0, credit: cr || 0,
+  }));
+}
+
+// Get the most recent reconciliation for a bank account, or null.
+function getLastBankReconciliation(db, accountId) {
+  const r = db.exec(`
+    SELECT id, reconciled_through_date, closing_balance_per_book, closing_balance_per_statement,
+      matched_entry_lines, reconciled_at, reconciled_by
+    FROM bank_reconciliations
+    WHERE bank_account_id = ?
+    ORDER BY reconciled_through_date DESC, id DESC
+    LIMIT 1
+  `, [accountId]);
+  if (!r.length || !r[0].values.length) return null;
+  const [id, throughDate, bookBal, stmtBal, matched, at, by] = r[0].values[0];
+  return {
+    id, throughDate,
+    bookBalance: bookBal, statementBalance: stmtBal,
+    matchedEntryLines: matched ? JSON.parse(matched) : [],
+    reconciledAt: at, reconciledBy: by,
+  };
+}
+
+async function saveBankReconciliation(db, opts) {
+  const matched = JSON.stringify(opts.matchedEntryLines || []);
+  db.run(
+    'INSERT INTO bank_reconciliations (bank_account_id, reconciled_through_date, closing_balance_per_book, closing_balance_per_statement, uncleared_debits, uncleared_credits, difference, matched_entry_lines, notes, reconciled_at, reconciled_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    [opts.bankAccountId, opts.throughDate, opts.bookBalance, opts.statementBalance,
+     opts.unclearedDebits || 0, opts.unclearedCredits || 0, opts.difference || 0,
+     matched, opts.notes || null, nowIso(), auditActor()]
+  );
+  const id = lastInsertId(db);
+  await appendAuditEntry(db, {
+    actor: auditActor(),
+    action: 'bank.reconcile',
+    ref: `account:${opts.bankAccountId}`,
+    payload: { reconcileId: id, throughDate: opts.throughDate, matchedCount: (opts.matchedEntryLines || []).length, difference: opts.difference || 0 },
+  });
+  return id;
+}
+
+// === Layer 4 — export-time identity check ===
+
+// Verify that the active workspace entry matches the file currently in STATE.
+// Returns null if everything matches, or an error message describing the mismatch.
+async function verifyExportIdentity() {
+  if (!STATE.workspaceId || !STATE.manifest) return 'No file open';
+  try {
+    const ws = await idbGet(STORES.workspace, STATE.workspaceId);
+    if (!ws) return null;  // workspace entry might be missing — don't block
+    const fileGstin = (STATE.manifest.company?.gstin || '').toUpperCase();
+    const wsGstin = (ws.gstin || '').toUpperCase();
+    if (fileGstin && wsGstin && fileGstin !== wsGstin) {
+      return `Workspace entry GSTIN ${wsGstin} doesn't match the open file's GSTIN ${fileGstin}. Switch to the right file before exporting.`;
+    }
+    const fileName = STATE.manifest.company?.name || '';
+    const wsName = ws.name || '';
+    // Walk changeHistory for legitimate renames
+    const history = STATE.manifest.company?.changeHistory || [];
+    const knownNames = new Set([fileName, ...history.map(h => h.value).filter(Boolean)]);
+    if (wsName && fileName && !knownNames.has(wsName)) {
+      return `Workspace entry name "${wsName}" doesn't match the open file's name "${fileName}" (or any historical name). Switch to the right file before exporting.`;
+    }
+    return null;
+  } catch (e) {
+    console.warn('Layer 4 export check failed:', e);
+    return null;  // don't block on a check failure
+  }
+}
+
+// Helper that wraps any export action with the Layer 4 check.
+async function withExportCheck(label, fn) {
+  const err = await verifyExportIdentity();
+  if (err) {
+    toast(`${label} blocked: ${err}`, 'err');
+    return false;
+  }
+  return await fn();
+}
+
+// === Reference data lazy-fetch from khata-standard CDN ===
+
+const KHATA_STANDARD_CDN = 'https://naklitechie.github.io/khata-standard/data/';
+const REF_FETCH_CACHE = new Map();  // datasetName → { ts, data }
+const REF_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 minutes for the manifest
+
+async function fetchKhataStandardManifest() {
+  const cached = REF_FETCH_CACHE.get('__manifest__');
+  if (cached && (Date.now() - cached.ts) < REF_CACHE_TTL_MS) return cached.data;
+  const resp = await fetch(KHATA_STANDARD_CDN + 'index.json', { cache: 'no-cache' });
+  if (!resp.ok) throw new Error(`Manifest fetch failed: HTTP ${resp.status}`);
+  const data = await resp.json();
+  REF_FETCH_CACHE.set('__manifest__', { ts: Date.now(), data });
+  return data;
+}
+
+// SHA-256 helper for verifying dataset integrity
+async function sha256TextHex(text) {
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function fetchDataset(datasetName) {
+  const manifest = await fetchKhataStandardManifest();
+  const meta = manifest.datasets[datasetName];
+  if (!meta) throw new Error(`Unknown dataset: ${datasetName}`);
+  if (!meta.file) throw new Error(`Dataset ${datasetName} not yet published (status: ${meta.status})`);
+  // Cache check
+  const cached = REF_FETCH_CACHE.get(datasetName);
+  if (cached && cached.version === meta.version) return cached.data;
+  const resp = await fetch(KHATA_STANDARD_CDN + datasetName + '/' + meta.file, { cache: 'no-cache' });
+  if (!resp.ok) throw new Error(`Dataset fetch failed: HTTP ${resp.status}`);
+  const text = await resp.text();
+  // Verify SHA-256
+  const expected = (meta.sha256 || '').replace(/^sha256:/, '');
+  if (expected) {
+    const actual = await sha256TextHex(text);
+    if (actual !== expected) {
+      throw new Error(`Dataset SHA-256 mismatch: expected ${expected}, got ${actual}`);
+    }
+  }
+  const data = JSON.parse(text);
+  REF_FETCH_CACHE.set(datasetName, { ts: Date.now(), version: meta.version, data });
+  return { manifest: meta, data };
+}
+
+// Apply a fetched dataset to the in-memory REF + persist version in the .khata meta table.
+async function applyDatasetUpdate(datasetName, datasetMeta, datasetJson) {
+  // Map khata-standard dataset names to REF keys
+  const refKey = ({
+    'states': 'states',
+    'gst-rates': 'gstRates',
+    'cess': 'cessRates',
+    'tds-sections': 'tdsSections',
+    'tcs-sections': 'tcsSections',
+    'rcm-categories': 'rcmCategories',
+    'composition-rates': 'compositionRates',
+    'hsn-common': 'hsnCommon',
+    'sac': 'sacCommon',
+    'coa-seed': null,           // CoA seed isn't a runtime ref
+    'challan-templates': null,
+    'hsn-full': 'hsnFull',
+  })[datasetName];
+  if (!refKey) return;  // unknown / not-runtime, skip
+
+  // Most khata-standard datasets have a top-level "entries" array
+  const entries = datasetJson.entries || datasetJson.data || datasetJson;
+  // For hsn-common, the in-app shape was [[code, desc], ...]; the new CBIC shape
+  // is [{hsn, description, rateId, ...}, ...]. Adapt to whichever the consumer
+  // expects.
+  REF[refKey] = {
+    version: datasetMeta.version,
+    source: 'khata-standard:' + KHATA_STANDARD_CDN,
+    data: entries,
+  };
+  // Persist version in the .khata meta table so the next file open knows
+  if (STATE.db) {
+    STATE.db.run("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
+      [`refDataVersion.${datasetName}`, datasetMeta.version]);
+    setSaveStatus('unsaved');
+  }
+  return entries.length;
+}
+
+// === Audit-log replay restoration ===
+
+// Walk an audit log and re-execute every replayable entry on a fresh DB.
+// This is the recovery path when both the SQLite is corrupt AND the in-file
+// snapshots are damaged. Best-effort: only replays entries that have enough
+// payload to reconstruct (entry.post, ca.adjustment, etc.). Master record edits
+// without a "create" companion may produce slightly different state.
+async function replayAuditLogToFreshDb(auditEntries) {
+  const SQL = await loadSqlJs();
+  const freshDb = new SQL.Database();
+  freshDb.exec(SCHEMA_DDL);
+  seedCoA(freshDb);
+  seedDefaultGodown(freshDb);
+  seedInventoryAccounts(freshDb);
+  seedInvoiceSeries(freshDb);
+  let replayed = 0, skipped = 0;
+  for (const entry of auditEntries) {
+    let payload = {};
+    try { payload = JSON.parse(entry.payload || '{}'); } catch (_) {}
+    try {
+      // Reuse Phase 6's permissive replayer
+      if (typeof replayAuditEntry === 'function') {
+        await replayAuditEntry(freshDb, entry);
+        replayed++;
+      } else {
+        skipped++;
+      }
+    } catch (e) {
+      skipped++;
+    }
+  }
+  return { db: freshDb, replayed, skipped, total: auditEntries.length };
+}
+
+//------------------------------------------------------------
 // === Phase 2B.4 — GSTR-1 export ===
 //------------------------------------------------------------
 //
@@ -6712,11 +7333,11 @@ async function persistKhata() {
 // Corruption recovery modal — surfaced when PRAGMA integrity_check fails on open.
 // Lists any snapshots inside the corrupt file (the snapshots/ folder may still be intact
 // even if books.sqlite is damaged) and lets the user restore one to a fresh file.
-function showCorruptionRecovery(handle, manifest, snapList, snapshotBytes) {
+function showCorruptionRecovery(handle, manifest, snapList, snapshotBytes, auditEntries) {
   return new Promise(resolve => {
     const wrap = $('modal');
     wrap.innerHTML = '';
-    const m = h('div', { class: 'modal' });
+    const m = h('div', { class: 'modal', style: 'max-width:680px' });
     m.appendChild(h('div', { class: 'modal-h' }, ['File damaged — recovery']));
 
     const body = h('div', { class: 'modal-b' });
@@ -6724,6 +7345,7 @@ function showCorruptionRecovery(handle, manifest, snapList, snapshotBytes) {
       <p>The .khata file <code>${escapeHtml(handle.name)}</code> failed <code>PRAGMA integrity_check</code>. The SQLite database inside is damaged.</p>
       <p style="margin-top:8px"><b>Company:</b> ${escapeHtml(manifest?.company?.name || '?')}<br>
       <b>Last saved:</b> ${escapeHtml(manifest?.lastModifiedAt || '?')}</p>
+      <p style="margin-top:8px;font-size:12px;color:var(--ink-2)">Bahi has two recovery paths: <b>(1)</b> restore from an in-file snapshot (more accurate, but requires snapshots to exist and be intact); <b>(2)</b> rebuild the books from the audit log itself by replaying every entry on a fresh database (best-effort, only includes entries that are replayable).</p>
     `;
     if (snapList.length) {
       body.appendChild(h('p', { class: 'help', style: 'margin-top:10px' }, [`${snapList.length} snapshot(s) found inside this file. Restoring one will write a new .khata file via Save As — your damaged original is never touched, so you can keep it for forensics.`]));
@@ -6805,9 +7427,78 @@ function showCorruptionRecovery(handle, manifest, snapList, snapshotBytes) {
       tbl.appendChild(tbody);
       body.appendChild(tbl);
     } else {
-      body.appendChild(h('div', { class: 'error-screen', style: 'margin-top:12px' }, [
-        'No snapshots found inside this file. Try the Restore from backup flow if you have a backup zip elsewhere. Audit-log replay (rebuilding the db from audit entries) is planned for a later phase.',
+      body.appendChild(h('div', { style: 'margin-top:12px;padding:10px;background:var(--ash);border-left:3px solid var(--ink-2);font-size:12px' }, [
+        'No in-file snapshots found. The audit-log replay path below may still work if the audit_log table is intact.',
       ]));
+    }
+
+    // Phase 8A — audit-log replay restoration. Available whenever the audit log
+    // itself was readable (auditEntries.length > 0).
+    if (auditEntries && auditEntries.length > 0) {
+      body.appendChild(h('h3', { style: 'margin-top:18px;font-size:13px;color:var(--saffron-deep)' }, [`Audit-log replay (${auditEntries.length} entries)`]));
+      body.appendChild(h('p', { class: 'help' }, [
+        'Rebuild the books by replaying every audit log entry on a fresh database. ',
+        'Best-effort: only entries with enough payload to reconstruct (entry.post, ca.adjustment, customer.create, vendor.create, item.create) are replayed. ',
+        'Master record edits without a "create" companion may produce slightly different state than the original file. ',
+        'The result is written to a new .khata file via Save As.',
+      ]));
+      const replayBtn = h('button', { class: 'small primary' }, ['Rebuild from audit log']);
+      replayBtn.onclick = async () => {
+        try {
+          toast(`Replaying ${auditEntries.length} audit entries...`, 'ok');
+          const result = await replayAuditLogToFreshDb(auditEntries);
+          // Build the new .khata file
+          await appendAuditEntry(result.db, {
+            actor: 'system',
+            action: 'audit.replay-restore',
+            ref: handle.name,
+            payload: { sourceFile: handle.name, replayed: result.replayed, skipped: result.skipped, total: result.total },
+          });
+          const dbBytes = exportDb(result.db);
+          const booksHash = await sha256Bytes(dbBytes);
+          const newWsId = (crypto.randomUUID && crypto.randomUUID()) || ('ws-' + Date.now());
+          const newManifest = {
+            khataFormatVersion: KHATA_FORMAT_VERSION,
+            schemaVersion: SCHEMA_VERSION,
+            workspaceId: newWsId,
+            createdAt: nowIso(),
+            lastModifiedAt: nowIso(),
+            company: { ...(manifest.company || {}) },
+            uiTier: manifest.uiTier || 'everything',
+            snapshots: [],
+            integrity: { booksHash, auditHead: getAuditHead(result.db), signedBy: STATE.publicJwk },
+            modeHistory: [{ ts: nowIso(), mode: 'owner' }],
+            recoveredFrom: { sourceFile: handle.name, method: 'audit-log-replay', replayed: result.replayed, skipped: result.skipped },
+          };
+          result.db.close();
+          const blob = await buildKhata({ manifest: newManifest, dbBytes, snapshots: {} });
+          const slug = slugify(manifest.company?.name || 'recovered');
+          const newHandle = await window.showSaveFilePicker({
+            suggestedName: `${slug}-rebuilt-${nowIso().slice(0, 10)}.khata`,
+            types: [{ description: 'Bahi book (.khata)', accept: { 'application/x-khata': ['.khata'] } }],
+          });
+          const w = await newHandle.createWritable();
+          await w.write(blob);
+          await w.close();
+          await addWorkspaceEntry({
+            id: newWsId, handle: newHandle,
+            name: (manifest.company?.name || 'rebuilt') + ' (rebuilt)',
+            gstin: manifest.company?.gstin || null,
+            state: manifest.company?.state || null,
+            stateName: manifest.company?.stateName || null,
+            fileName: newHandle.name,
+            createdAt: nowIso(), lastOpened: nowIso(),
+          });
+          closeModal();
+          toast(`Rebuilt from audit log (${result.replayed} replayed, ${result.skipped} skipped). Opening...`, 'ok');
+          await openHandle(newHandle, newWsId);
+          render();
+          resolve(true);
+        } catch (e) {
+          if (e.name !== 'AbortError') toast('Replay failed: ' + e.message, 'err');
+        }
+      };
+      body.appendChild(replayBtn);
     }
     m.appendChild(body);
 
@@ -7188,11 +7879,22 @@ async function openHandle(handle, existingWsId) {
     integOk = !!(integ.length && integ[0].values[0][0] === 'ok');
   } catch (_) {}
   if (!integOk) {
+    // Phase 8A — extract the audit log for the replay-restoration path BEFORE closing.
+    // Corruption is usually localised; the audit_log table often survives.
+    let auditEntries = [];
+    try {
+      const r = db.exec('SELECT id, ts, actor, action, ref, origin, payload, prev_hash, hash, signature FROM audit_log ORDER BY id ASC');
+      if (r.length && r[0].values.length) {
+        auditEntries = r[0].values.map(([id, ts, actor, action, ref, origin, payload, prev_hash, hash, signature]) => ({
+          id, ts, actor, action, ref, origin, payload, prev_hash, hash, signature,
+        }));
+      }
+    } catch (_) { /* if even audit_log is unreadable, the replay path won't be offered */ }
     db.close();
     releaseLock(handle.name);
     // Corruption recovery: walk the snapshots inside this same file (if any) and offer to restore.
     const snapList = (manifest.snapshots || []).slice().sort((a, b) => b.ts.localeCompare(a.ts));
-    await showCorruptionRecovery(handle, manifest, snapList, loadedSnapshots || {});
+    await showCorruptionRecovery(handle, manifest, snapList, loadedSnapshots || {}, auditEntries);
     return null;
   }
 
@@ -8385,6 +9087,13 @@ function render() {
   else if (r === '#/ca/report')       renderCaReviewReport(main);
   else if (r === '#/annotations')     renderAnnotations(main);
   else if (r === '#/reconcile')       renderReconcile(main);
+  // Phase 8A (CA-handoff feature complete)
+  else if (r === '#/vendor-payment/new') renderVendorPaymentForm(main);
+  else if (r === '#/form-26q')        renderForm26Q(main);
+  else if (r === '#/form-27eq')       renderForm27EQ(main);
+  else if (r === '#/form-27d')        renderForm27D(main);
+  else if (r === '#/bank-reconcile')  renderBankReconciliation(main);
+  else if (r === '#/ref-data-update') renderRefDataUpdate(main);
   else if (r === '#/debug')        renderDebug(main);
   else if (r === '#/settings')     renderSettings(main);
   else                             main.appendChild(h('div', { class: 'empty' }, ['Unknown route']));
@@ -15579,6 +16288,737 @@ async function replayAuditEntry(db, entry) {
 }
 
 //------------------------------------------------------------
+// === Phase 8A — CA-handoff feature complete views ===
+//------------------------------------------------------------
+
+// === Vendor payment form (with TDS auto-deduct) ===
+
+function renderVendorPaymentForm(main) {
+  if (!requireFileOrPrompt(main, 'Pay vendor')) return;
+  main.appendChild(h('h1', {}, ['Pay vendor (with TDS)']));
+
+  const vR = STATE.db.exec('SELECT id, name, gstin, pan, tds_section FROM vendors WHERE archived=0 ORDER BY name');
+  const vendors = vR.length ? vR[0].values.map(v => ({ id: v[0], name: v[1], gstin: v[2], pan: v[3], tdsSection: v[4] })) : [];
+  if (!vendors.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [
+      h('h3', {}, ['No vendors']),
+      h('p', {}, ['Add a vendor before recording a vendor payment.']),
+    ]));
+    return;
+  }
+
+  const banks = getBankAccounts(STATE.db);
+  if (!banks.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [
+      h('h3', {}, ['No bank/cash accounts']),
+      h('p', {}, ['Add a bank account before recording a payment. Use the existing payment receipt form to quick-add one, or add via Settings.']),
+    ]));
+    return;
+  }
+
+  const form = {
+    vendorId: vendors[0].id,
+    paymentDate: nowIso().slice(0, 10),
+    bankAccountId: banks[0].id,
+    paymentMode: 'neft',
+    reference: '',
+    notes: '',
+    grossAmount: '',
+    tdsSection: vendors[0].tdsSection || '',
+    tdsRate: getTdsRateForSection(vendors[0].tdsSection),
+    applyTds: !!vendors[0].tdsSection,
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Vendor payment details']));
+  const body = h('div', { class: 'panel-b' });
+
+  const vendorOptions = vendors.map(v => `<option value="${v.id}">${escapeHtml(v.name)}${v.gstin ? ' · ' + escapeHtml(v.gstin) : ''}${v.tdsSection ? ' · TDS ' + v.tdsSection : ''}</option>`).join('');
+  const bankOptions = banks.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  // TDS section options from REF
+  const tdsSecOptions = '<option value="">— No TDS —</option>' + (REF.tdsSections.data || []).map(r => {
+    const sec = r.section || r[0];
+    const rate = r.rate != null ? r.rate : (r[1] || 0);
+    const desc = r.description || r[2] || '';
+    return `<option value="${sec}">${sec} — ${escapeHtml(desc)} (${(rate * 100).toFixed(2)}%)</option>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="field"><label>Vendor</label><select id="vp-vendor">${vendorOptions}</select></div>
+    <div class="field"><label>Payment number (auto)</label><input id="vp-num" value="${escapeHtml(nextPaymentNumber(STATE.db))}" readonly style="background:var(--ash)"></div>
+    <div class="field"><label>Date</label><input id="vp-date" type="date" value="${form.paymentDate}"></div>
+    <div class="field"><label>Gross payable to vendor (₹)</label><input id="vp-gross" placeholder="0.00" style="text-align:right"></div>
+    <div class="field"><label>Bank / cash</label><select id="vp-bank">${bankOptions}</select></div>
+    <div class="field"><label>Mode</label>
+      <select id="vp-mode">
+        <option value="neft">NEFT</option>
+        <option value="rtgs">RTGS</option>
+        <option value="imps">IMPS</option>
+        <option value="upi">UPI</option>
+        <option value="cheque">Cheque</option>
+        <option value="cash">Cash</option>
+      </select>
+    </div>
+    <div class="field"><label>Reference (UTR / cheque number)</label><input id="vp-ref"></div>
+    <div class="field"><label>Notes</label><textarea id="vp-notes" rows="2"></textarea></div>
+
+    <div id="vp-tds-panel" style="margin-top:14px;padding:12px;background:var(--ash);border:1px solid var(--rule);border-radius:4px">
+      <div style="font-size:11px;color:var(--saffron-deep);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px">TDS deduction</div>
+      <div class="field"><label>TDS section</label><select id="vp-tds-sec">${tdsSecOptions}</select></div>
+      <div class="field"><label>Rate (%)</label><input id="vp-tds-rate" value="${(form.tdsRate * 100).toFixed(2)}" style="text-align:right"></div>
+      <div id="vp-tds-summary" style="margin-top:10px;font-size:13px;line-height:1.8"></div>
+    </div>
+  `;
+  panel.appendChild(body);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const postBtn = h('button', { class: 'primary' }, ['Post vendor payment']);
+  postBtn.onclick = doPost;
+  ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    $('vp-vendor').addEventListener('change', () => {
+      form.vendorId = parseInt($('vp-vendor').value, 10);
+      const v = vendors.find(x => x.id === form.vendorId);
+      if (v && v.tdsSection) {
+        form.tdsSection = v.tdsSection;
+        form.tdsRate = getTdsRateForSection(v.tdsSection);
+        $('vp-tds-sec').value = v.tdsSection;
+        $('vp-tds-rate').value = (form.tdsRate * 100).toFixed(2);
+      } else {
+        $('vp-tds-sec').value = '';
+        $('vp-tds-rate').value = '0.00';
+      }
+      recompute();
+    });
+    $('vp-tds-sec').addEventListener('change', () => {
+      form.tdsSection = $('vp-tds-sec').value;
+      form.tdsRate = getTdsRateForSection(form.tdsSection);
+      $('vp-tds-rate').value = (form.tdsRate * 100).toFixed(2);
+      recompute();
+    });
+    $('vp-tds-rate').addEventListener('input', () => {
+      form.tdsRate = (parseFloat($('vp-tds-rate').value) || 0) / 100;
+      recompute();
+    });
+    $('vp-gross').addEventListener('input', () => {
+      form.grossAmount = $('vp-gross').value;
+      recompute();
+    });
+    // Set initial state
+    if (vendors[0].tdsSection) {
+      $('vp-tds-sec').value = vendors[0].tdsSection;
+      $('vp-tds-rate').value = (form.tdsRate * 100).toFixed(2);
+    }
+    recompute();
+    $('vp-gross').focus();
+  }, 0);
+
+  function recompute() {
+    const gross = parseRupees($('vp-gross').value);
+    const tdsAmount = Math.round(gross * form.tdsRate);
+    const net = gross - tdsAmount;
+    const out = $('vp-tds-summary');
+    if (form.tdsSection && form.tdsRate > 0 && gross > 0) {
+      out.innerHTML = `
+        <div>Gross payable: <b>${fmtINR(gross)}</b></div>
+        <div>TDS (${form.tdsSection} @ ${(form.tdsRate * 100).toFixed(2)}%): <b style="color:var(--alert)">- ${fmtINR(tdsAmount)}</b></div>
+        <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:14px">Net to vendor: ${fmtINR(net)}</b></div>
+      `;
+    } else if (gross > 0) {
+      out.innerHTML = `<div>Gross payable: <b>${fmtINR(gross)}</b></div><div style="font-size:11px;color:var(--ink-2);margin-top:4px">No TDS section selected — full amount paid to vendor</div>`;
+    } else {
+      out.innerHTML = '';
+    }
+    postBtn.disabled = gross <= 0;
+  }
+
+  async function doPost() {
+    try {
+      const vendor = vendors.find(v => v.id === form.vendorId);
+      if (!vendor) { toast('Pick a vendor', 'err'); return; }
+      const gross = parseRupees($('vp-gross').value);
+      if (gross <= 0) { toast('Gross amount must be positive', 'err'); return; }
+      const bankAcc = banks.find(b => b.id === parseInt($('vp-bank').value, 10));
+      if (!bankAcc) { toast('Pick a bank/cash account', 'err'); return; }
+      const tdsSection = $('vp-tds-sec').value || null;
+      const tdsRate = form.tdsRate || 0;
+      const tdsAmount = tdsSection ? Math.round(gross * tdsRate) : 0;
+      const netToVendor = gross - tdsAmount;
+
+      const paymentNumber = $('vp-num').value;
+      const paymentDate = $('vp-date').value;
+      const mode = $('vp-mode').value;
+      const reference = $('vp-ref').value.trim() || null;
+      const notes = $('vp-notes').value.trim() || null;
+
+      // Snapshots
+      const vendorSnapshot = JSON.stringify({
+        name: vendor.name, gstin: vendor.gstin, pan: vendor.pan, tdsSection: vendor.tdsSection,
+      });
+
+      STATE.db.run('BEGIN');
+      try {
+        // Insert payment row with payment_direction='out' + tds_amount + tds_section
+        STATE.db.run(
+          'INSERT INTO payments (payment_number, payment_date, vendor_id, payment_direction, bank_account_id, amount, payment_mode, reference, notes, status, customer_snapshot, bank_account_snapshot, tds_amount, tds_section, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [paymentNumber, paymentDate, vendor.id, 'out', bankAcc.id, gross, mode, reference, notes, 'posted', vendorSnapshot, bankAcc.name, tdsAmount, tdsSection, nowIso()]
+        );
+        const paymentId = lastInsertId(STATE.db);
+        STATE.db.run('COMMIT');
+
+        // Post the bank-side journal: Dr Sundry Creditors (gross) / Cr Bank (net) / Cr TDS Payable (tds)
+        // The TDS leg is wrapped in recordTdsDeduction below; here we post just Dr Creditors / Cr Bank (net)
+        const lines = [
+          { accountId: getAccountIdByName(STATE.db, 'Sundry Creditors'), debit: gross, credit: 0 },
+          { accountId: bankAcc.id, debit: 0, credit: netToVendor },
+        ];
+        if (tdsAmount > 0 && tdsSection) {
+          lines.push({ accountId: getOrCreateTdsPayableAccount(STATE.db, tdsSection), debit: 0, credit: tdsAmount });
+        }
+        const result = await postEntry(STATE.db, {
+          voucherType: 'payment',
+          voucherRef: paymentNumber,
+          narration: `Payment to ${vendor.name}` + (tdsAmount > 0 ? ` (TDS ${tdsSection} @ ${(tdsRate * 100).toFixed(2)}% deducted)` : ''),
+          postedAt: paymentDate,
+          actor: auditActor(),
+          lines,
+        });
+        STATE.db.run('UPDATE payments SET ledger_entry_id = ? WHERE id = ?', [result.entryId, paymentId]);
+
+        // Record the TDS deduction row separately for Form 26Q
+        if (tdsAmount > 0 && tdsSection) {
+          // recordTdsDeduction posts its OWN journal — we don't want that since we already
+          // posted the full effect above. Instead, just insert the tds_deductions row directly.
+          const vR2 = STATE.db.exec('SELECT name, pan FROM vendors WHERE id = ?', [vendor.id]);
+          const [vName2, vPan2] = (vR2.length && vR2[0].values.length) ? vR2[0].values[0] : [null, null];
+          STATE.db.run(
+            'INSERT INTO tds_deductions (payment_id, vendor_id, section, rate, taxable_amount, tds_amount, payment_date, vendor_pan, vendor_name_snapshot, ledger_entry_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            [paymentId, vendor.id, tdsSection, tdsRate, gross, tdsAmount, paymentDate, vPan2, vName2, result.entryId, nowIso()]
+          );
+        }
+
+        setSaveStatus('unsaved');
+        const ok = await persistKhata();
+        if (!ok) { render(); return; }
+        toast(`Vendor payment ${paymentNumber} posted${tdsAmount > 0 ? ` (TDS ${fmtINR(tdsAmount)} withheld)` : ''}`, 'ok');
+        nav('#/payments');
+      } catch (e) {
+        try { STATE.db.run('ROLLBACK'); } catch (_) {}
+        throw e;
+      }
+    } catch (e) {
+      console.error(e);
+      toast('Post failed: ' + e.message, 'err');
+    }
+  }
+}
+
+// === Form 26Q view ===
+
+function renderForm26Q(main) {
+  if (!requireFileOrPrompt(main, 'Form 26Q')) return;
+  main.appendChild(h('h1', {}, ['Form 26Q — Quarterly TDS return']));
+  main.appendChild(h('p', { class: 'help' }, ['Statutory quarterly return for TDS deducted under Chapter XVII-B (sections 192–196D). Bahi exports a clean CSV that can be imported into the NSDL TIN-FUF utility for filing on the income tax portal.']));
+
+  const today = new Date();
+  const curFy = today.getMonth() < 3 ? today.getFullYear() - 1 : today.getFullYear();
+  const m = today.getMonth();
+  let curQ = 4;
+  if (m >= 3 && m < 6) curQ = 1;
+  else if (m >= 6 && m < 9) curQ = 2;
+  else if (m >= 9 && m < 12) curQ = 3;
+
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0"><label>Quarter</label>
+      <select id="f26-q">
+        <option value="1"${curQ === 1 ? ' selected' : ''}>Q1 (Apr–Jun)</option>
+        <option value="2"${curQ === 2 ? ' selected' : ''}>Q2 (Jul–Sep)</option>
+        <option value="3"${curQ === 3 ? ' selected' : ''}>Q3 (Oct–Dec)</option>
+        <option value="4"${curQ === 4 ? ' selected' : ''}>Q4 (Jan–Mar)</option>
+      </select>
+    </div>
+    <div class="field" style="margin:0"><label>FY start year</label><input id="f26-y" type="number" value="${curFy}" min="2017" max="2099" style="width:100px"></div>
+  `;
+  main.appendChild(ctrl);
+
+  const out = h('div', { id: 'f26-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+
+  function rebuild() {
+    out.innerHTML = '';
+    const q = parseInt($('f26-q').value, 10);
+    const y = parseInt($('f26-y').value, 10);
+    const data = buildForm26Q(STATE.db, y, q);
+
+    // KPI
+    const kpi = h('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px' });
+    function k(label, value, sub) {
+      const c = h('div', { class: 'panel' });
+      const b = h('div', { class: 'panel-b', style: 'padding:12px 14px' });
+      b.innerHTML = `<div style="font-size:10px;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700">${escapeHtml(label)}</div><div style="font-size:20px;font-weight:700;margin-top:4px">${value}</div>${sub ? `<div style="font-size:11px;color:var(--ink-2);margin-top:2px">${sub}</div>` : ''}`;
+      c.appendChild(b);
+      return c;
+    }
+    kpi.appendChild(k('Period', `Q${q} FY${y}-${(y + 1).toString().slice(2, 4)}`, `${data.range.start} → ${data.range.end}`));
+    kpi.appendChild(k('Deductions', String(data.rows.length), `across ${Object.keys(data.bySection).length} section(s)`));
+    kpi.appendChild(k('Total taxable', fmtINR(data.totalTaxable)));
+    kpi.appendChild(k('Total TDS', fmtINR(data.totalTds)));
+    out.appendChild(kpi);
+
+    // Errors
+    if (data.errors.length) {
+      const err = h('div', { class: 'error-screen', style: 'margin-top:14px' });
+      err.innerHTML = `<h3 style="color:var(--alert)">⚠ ${data.errors.length} validation error(s)</h3><ul style="margin-top:8px;font-size:12px">${data.errors.slice(0, 10).map(e => `<li>${escapeHtml(e)}</li>`).join('')}${data.errors.length > 10 ? `<li>...and ${data.errors.length - 10} more</li>` : ''}</ul>`;
+      out.appendChild(err);
+    }
+
+    // Section breakdown
+    if (Object.keys(data.bySection).length) {
+      const tbl = h('table', { class: 'dense', style: 'margin-top:14px' });
+      tbl.innerHTML = '<thead><tr><th>Section</th><th class="num">Deductions</th><th class="num">Taxable</th><th class="num">TDS</th></tr></thead>';
+      const tbody = h('tbody');
+      for (const [sec, group] of Object.entries(data.bySection)) {
+        const tr = h('tr');
+        tr.innerHTML = `<td><b>${escapeHtml(sec)}</b></td><td class="num">${group.rows.length}</td><td class="num">${fmtINR(group.totalTaxable)}</td><td class="num"><b>${fmtINR(group.totalTds)}</b></td>`;
+        tbody.appendChild(tr);
+      }
+      tbl.appendChild(tbody);
+      out.appendChild(tbl);
+    }
+
+    // Detail rows preview
+    if (data.rows.length) {
+      out.appendChild(h('h3', { style: 'margin-top:14px;font-size:13px' }, [`Detail (${data.rows.length} rows)`]));
+      const dtbl = h('table', { class: 'dense' });
+      dtbl.innerHTML = '<thead><tr><th>Date</th><th>Section</th><th>Deductee</th><th>PAN</th><th class="num">Taxable</th><th class="num">Rate</th><th class="num">TDS</th></tr></thead>';
+      const dtbody = h('tbody');
+      for (const r of data.rows.slice(0, 100)) {
+        const tr = h('tr');
+        tr.innerHTML = `<td>${escapeHtml(r.paymentDate)}</td><td>${escapeHtml(r.section)}</td><td>${escapeHtml(r.name)}</td><td><code>${escapeHtml(r.pan || '—')}</code></td><td class="num">${fmtINR(r.taxableAmount)}</td><td class="num">${(r.rate * 100).toFixed(2)}%</td><td class="num"><b>${fmtINR(r.tdsAmount)}</b></td>`;
+        dtbody.appendChild(tr);
+      }
+      if (data.rows.length > 100) {
+        const tr = h('tr');
+        tr.innerHTML = `<td colspan="7" style="color:var(--ink-2);font-style:italic">…and ${data.rows.length - 100} more (download CSV for full list)</td>`;
+        dtbody.appendChild(tr);
+      }
+      dtbl.appendChild(dtbody);
+      out.appendChild(dtbl);
+    }
+
+    // Download buttons
+    const dlPanel = h('div', { class: 'panel' });
+    dlPanel.appendChild(h('div', { class: 'panel-h' }, ['Download']));
+    const dlBody = h('div', { class: 'panel-b' });
+    const row = h('div', { class: 'row' });
+    const csvBtn = h('button', { class: 'primary' }, ['Download CSV']);
+    csvBtn.onclick = async () => {
+      await withExportCheck('Form 26Q export', async () => {
+        if (!data.rows.length) { toast('No deductions in this period', 'err'); return false; }
+        try {
+          const csv = exportForm26QCsv(data);
+          const blob = new Blob([csv], { type: 'text/csv' });
+          const handle = await window.showSaveFilePicker({
+            suggestedName: `26Q-${slugify(STATE.manifest.company?.name || 'co')}-Q${q}-FY${y}-${(y + 1).toString().slice(2, 4)}.csv`,
+            types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
+          });
+          const w = await handle.createWritable(); await w.write(blob); await w.close();
+          toast(`Saved ${handle.name}`, 'ok');
+        } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+        return true;
+      });
+    };
+    row.appendChild(csvBtn);
+    dlBody.appendChild(row);
+    dlPanel.appendChild(dlBody);
+    out.appendChild(dlPanel);
+  }
+
+  setTimeout(() => {
+    $('f26-q').addEventListener('change', rebuild);
+    $('f26-y').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// === Form 27EQ view (TCS) ===
+
+function renderForm27EQ(main) {
+  if (!requireFileOrPrompt(main, 'Form 27EQ')) return;
+  main.appendChild(h('h1', {}, ['Form 27EQ — Quarterly TCS return']));
+  main.appendChild(h('p', { class: 'help' }, ['Statutory quarterly return for TCS collected under section 206C. CSV format compatible with the NSDL TIN-FUF utility.']));
+
+  const today = new Date();
+  const curFy = today.getMonth() < 3 ? today.getFullYear() - 1 : today.getFullYear();
+  const m = today.getMonth();
+  let curQ = 4;
+  if (m >= 3 && m < 6) curQ = 1;
+  else if (m >= 6 && m < 9) curQ = 2;
+  else if (m >= 9 && m < 12) curQ = 3;
+
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0"><label>Quarter</label>
+      <select id="f27-q">
+        <option value="1"${curQ === 1 ? ' selected' : ''}>Q1 (Apr–Jun)</option>
+        <option value="2"${curQ === 2 ? ' selected' : ''}>Q2 (Jul–Sep)</option>
+        <option value="3"${curQ === 3 ? ' selected' : ''}>Q3 (Oct–Dec)</option>
+        <option value="4"${curQ === 4 ? ' selected' : ''}>Q4 (Jan–Mar)</option>
+      </select>
+    </div>
+    <div class="field" style="margin:0"><label>FY start year</label><input id="f27-y" type="number" value="${curFy}" min="2017" max="2099" style="width:100px"></div>
+  `;
+  main.appendChild(ctrl);
+
+  const out = h('div', { id: 'f27-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+
+  function rebuild() {
+    out.innerHTML = '';
+    const q = parseInt($('f27-q').value, 10);
+    const y = parseInt($('f27-y').value, 10);
+    const data = buildForm27EQ(STATE.db, y, q);
+
+    if (!data.rows.length) {
+      out.appendChild(h('div', { class: 'empty' }, [`No TCS collections in Q${q} FY${y}-${(y + 1).toString().slice(2, 4)}.`]));
+      return;
+    }
+
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Date</th><th>Section</th><th>Customer</th><th>PAN</th><th class="num">Taxable</th><th class="num">Rate</th><th class="num">TCS</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const r of data.rows) {
+      const tr = h('tr');
+      tr.innerHTML = `<td>${escapeHtml(r.invoiceDate)}</td><td>${escapeHtml(r.section)}</td><td>${escapeHtml(r.name)}</td><td><code>${escapeHtml(r.pan || '—')}</code></td><td class="num">${fmtINR(r.taxableAmount)}</td><td class="num">${(r.rate * 100).toFixed(2)}%</td><td class="num"><b>${fmtINR(r.tcsAmount)}</b></td>`;
+      tbody.appendChild(tr);
+    }
+    const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+    totalRow.innerHTML = `<td colspan="4"><b>Total (${data.rows.length} collections)</b></td><td class="num"><b>${fmtINR(data.totalTaxable)}</b></td><td></td><td class="num"><b>${fmtINR(data.totalTcs)}</b></td>`;
+    tbody.appendChild(totalRow);
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+
+    if (data.errors.length) {
+      const err = h('div', { class: 'error-screen', style: 'margin-top:14px' });
+      err.innerHTML = `<h3 style="color:var(--alert)">⚠ ${data.errors.length} validation error(s)</h3><ul style="margin-top:8px;font-size:12px">${data.errors.slice(0, 10).map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`;
+      out.appendChild(err);
+    }
+
+    const dlBtn = h('button', { class: 'primary', style: 'margin-top:14px' }, ['Download CSV']);
+    dlBtn.onclick = async () => {
+      await withExportCheck('Form 27EQ export', async () => {
+        try {
+          const csv = exportForm27EQCsv(data);
+          const blob = new Blob([csv], { type: 'text/csv' });
+          const handle = await window.showSaveFilePicker({
+            suggestedName: `27EQ-${slugify(STATE.manifest.company?.name || 'co')}-Q${q}-FY${y}-${(y + 1).toString().slice(2, 4)}.csv`,
+            types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
+          });
+          const w = await handle.createWritable(); await w.write(blob); await w.close();
+          toast(`Saved ${handle.name}`, 'ok');
+        } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+        return true;
+      });
+    };
+    out.appendChild(dlBtn);
+  }
+
+  setTimeout(() => {
+    $('f27-q').addEventListener('change', rebuild);
+    $('f27-y').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// === Form 27D — TDS certificate (per-vendor PDF) ===
+
+function renderForm27D(main) {
+  if (!requireFileOrPrompt(main, 'Form 27D')) return;
+  main.appendChild(h('h1', {}, ['Form 27D — TDS certificates']));
+  main.appendChild(h('p', { class: 'help' }, ['Generates a TDS certificate (PDF) for each vendor that had TDS deducted in the chosen quarter. Issue these to your vendors so they can claim credit when filing their own income tax return.']));
+
+  const today = new Date();
+  const curFy = today.getMonth() < 3 ? today.getFullYear() - 1 : today.getFullYear();
+  const m = today.getMonth();
+  let curQ = 4;
+  if (m >= 3 && m < 6) curQ = 1;
+  else if (m >= 6 && m < 9) curQ = 2;
+  else if (m >= 9 && m < 12) curQ = 3;
+
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0"><label>Quarter</label>
+      <select id="f27d-q">
+        <option value="1"${curQ === 1 ? ' selected' : ''}>Q1 (Apr–Jun)</option>
+        <option value="2"${curQ === 2 ? ' selected' : ''}>Q2 (Jul–Sep)</option>
+        <option value="3"${curQ === 3 ? ' selected' : ''}>Q3 (Oct–Dec)</option>
+        <option value="4"${curQ === 4 ? ' selected' : ''}>Q4 (Jan–Mar)</option>
+      </select>
+    </div>
+    <div class="field" style="margin:0"><label>FY start year</label><input id="f27d-y" type="number" value="${curFy}" min="2017" max="2099" style="width:100px"></div>
+  `;
+  main.appendChild(ctrl);
+
+  const out = h('div', { id: 'f27d-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+
+  function rebuild() {
+    out.innerHTML = '';
+    const q = parseInt($('f27d-q').value, 10);
+    const y = parseInt($('f27d-y').value, 10);
+    const range = fyQuarterRange(y, q);
+    const r = STATE.db.exec(`
+      SELECT v.id, v.name, v.pan, COUNT(*) AS deductions, SUM(t.tds_amount) AS total_tds
+      FROM tds_deductions t JOIN vendors v ON v.id = t.vendor_id
+      WHERE t.payment_date BETWEEN ? AND ?
+      GROUP BY v.id, v.name, v.pan
+      ORDER BY v.name
+    `, [range.start, range.end]);
+    if (!r.length || !r[0].values.length) {
+      out.appendChild(h('div', { class: 'empty' }, [`No TDS deductions in Q${q} FY${y}-${(y + 1).toString().slice(2, 4)}.`]));
+      return;
+    }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Vendor</th><th>PAN</th><th class="num">Deductions</th><th class="num">Total TDS</th><th></th></tr></thead>';
+    const tbody = h('tbody');
+    for (const [vid, vname, vpan, count, total] of r[0].values) {
+      const tr = h('tr');
+      tr.innerHTML = `<td><b>${escapeHtml(vname)}</b></td><td><code>${escapeHtml(vpan || '—')}</code></td><td class="num">${count}</td><td class="num"><b>${fmtINR(total)}</b></td><td></td>`;
+      const btn = h('button', { class: 'small' }, ['Generate PDF']);
+      btn.onclick = async () => {
+        await withExportCheck(`Form 27D for ${vname}`, async () => {
+          try {
+            await exportForm27DPdf(STATE.db, vid, y, q);
+          } catch (e) { toast('Generation failed: ' + e.message, 'err'); }
+          return true;
+        });
+      };
+      tr.children[4].appendChild(btn);
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+
+  setTimeout(() => {
+    $('f27d-q').addEventListener('change', rebuild);
+    $('f27d-y').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// === Bank reconciliation view ===
+
+function renderBankReconciliation(main) {
+  if (!requireFileOrPrompt(main, 'Bank reconciliation')) return;
+  main.appendChild(h('h1', {}, ['Bank reconciliation']));
+  main.appendChild(h('p', { class: 'help' }, ['Manual statement-vs-book reconciliation. Pick a bank account, set the period, mark each entry line as cleared (matched against your bank statement), enter the closing balances, and save.']));
+
+  const banks = getBankAccounts(STATE.db);
+  if (!banks.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No bank accounts. Add one via Customers / Payment receipt form first.']));
+    return;
+  }
+
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  const opts = banks.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0;min-width:220px"><label>Bank account</label><select id="br-acc">${opts}</select></div>
+    <div class="field" style="margin:0"><label>From</label><input id="br-from" type="date" value="${today.slice(0, 8)}01"></div>
+    <div class="field" style="margin:0"><label>Through</label><input id="br-to" type="date" value="${today}"></div>
+  `;
+  main.appendChild(ctrl);
+
+  const out = h('div', { id: 'br-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+
+  // Module-level state for the rec session
+  if (!STATE._bankRec) STATE._bankRec = { cleared: new Set() };
+  const rec = STATE._bankRec;
+
+  function rebuild() {
+    out.innerHTML = '';
+    const accId = parseInt($('br-acc').value, 10);
+    const from = $('br-from').value, to = $('br-to').value;
+    const lines = getBankAccountLines(STATE.db, accId, from, to);
+
+    // Pre-load any cleared lines from the most recent reconciliation for this account
+    const last = getLastBankReconciliation(STATE.db, accId);
+    if (last) rec.cleared = new Set(last.matchedEntryLines);
+
+    if (!lines.length) {
+      out.appendChild(h('div', { class: 'empty' }, ['No entry lines on this account in the chosen range.']));
+      return;
+    }
+
+    // Compute book balance (running)
+    let bookBalance = 0;
+    for (const ln of lines) bookBalance += (ln.debit - ln.credit);
+
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th></th><th>Date</th><th>Voucher</th><th>Narration</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const ln of lines) {
+      const tr = h('tr');
+      const cb = h('input', { type: 'checkbox' });
+      cb.checked = rec.cleared.has(ln.line_id);
+      cb.onchange = () => {
+        if (cb.checked) rec.cleared.add(ln.line_id);
+        else rec.cleared.delete(ln.line_id);
+        updateSummary();
+      };
+      const td0 = h('td'); td0.appendChild(cb); tr.appendChild(td0);
+      tr.appendChild(h('td', {}, [(ln.posted_at || '').slice(0, 10)]));
+      tr.appendChild(h('td', {}, [`${ln.voucher_type || ''} ${ln.voucher_ref || ''}`.trim()]));
+      tr.appendChild(h('td', {}, [(ln.narration || '').slice(0, 60)]));
+      tr.appendChild(h('td', { class: 'num' }, [ln.debit ? fmtINR(ln.debit) : '—']));
+      tr.appendChild(h('td', { class: 'num' }, [ln.credit ? fmtINR(ln.credit) : '—']));
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+
+    // Summary panel
+    const summary = h('div', { class: 'panel', id: 'br-summary' });
+    summary.appendChild(h('div', { class: 'panel-h' }, ['Reconciliation summary']));
+    const sb = h('div', { class: 'panel-b' });
+    sb.innerHTML = `
+      <div>Book balance for the period: <b>${fmtINR(bookBalance)}</b></div>
+      <div id="br-cleared">Cleared: 0 of ${lines.length}</div>
+      <div class="field" style="margin-top:10px"><label>Closing balance per bank statement (₹)</label><input id="br-stmt-bal" placeholder="0.00" style="text-align:right"></div>
+      <div class="field"><label>Notes (optional)</label><textarea id="br-notes" rows="2"></textarea></div>
+      <div id="br-diff" style="margin-top:8px"></div>
+    `;
+    summary.appendChild(sb);
+    out.appendChild(summary);
+
+    const saveBtn = h('button', { class: 'primary', style: 'margin-top:10px' }, ['Save reconciliation']);
+    saveBtn.onclick = async () => {
+      try {
+        const stmtBal = parseRupees($('br-stmt-bal').value);
+        const matched = Array.from(rec.cleared);
+        let unclearedDr = 0, unclearedCr = 0;
+        for (const ln of lines) {
+          if (rec.cleared.has(ln.line_id)) continue;
+          unclearedDr += ln.debit;
+          unclearedCr += ln.credit;
+        }
+        const diff = bookBalance - stmtBal;
+        await saveBankReconciliation(STATE.db, {
+          bankAccountId: accId,
+          throughDate: to,
+          bookBalance,
+          statementBalance: stmtBal,
+          unclearedDebits: unclearedDr,
+          unclearedCredits: unclearedCr,
+          difference: diff,
+          matchedEntryLines: matched,
+          notes: $('br-notes').value.trim(),
+        });
+        setSaveStatus('unsaved');
+        await persistKhata();
+        toast(`Reconciliation saved. ${matched.length} cleared, difference ${fmtINR(Math.abs(diff))}.`, 'ok');
+      } catch (e) {
+        console.error(e);
+        toast('Save failed: ' + e.message, 'err');
+      }
+    };
+    out.appendChild(saveBtn);
+
+    function updateSummary() {
+      $('br-cleared').textContent = `Cleared: ${rec.cleared.size} of ${lines.length}`;
+      const stmt = parseRupees($('br-stmt-bal').value);
+      const diff = bookBalance - stmt;
+      $('br-diff').innerHTML = `Difference (book − statement): <b style="color:${Math.abs(diff) < 1 ? 'var(--green)' : 'var(--alert)'}">${fmtINR(diff)}</b>`;
+    }
+    setTimeout(() => {
+      $('br-stmt-bal').addEventListener('input', updateSummary);
+      updateSummary();
+    }, 0);
+  }
+
+  setTimeout(() => {
+    $('br-acc').addEventListener('change', rebuild);
+    $('br-from').addEventListener('change', rebuild);
+    $('br-to').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// === Reference data update view ===
+
+function renderRefDataUpdate(main) {
+  if (!requireFileOrPrompt(main, 'Reference data updates')) return;
+  main.appendChild(h('h1', {}, ['Reference data updates']));
+  main.appendChild(h('p', { class: 'help' }, ['Bahi bundles a starter set of reference data (states, GST rates, TDS sections, HSN codes, etc.) inline. To pick up newer authoritative data — for example a fresh CBIC HSN scrape — fetch from the khata-standard CDN.']));
+  main.appendChild(h('p', { class: 'help', style: 'font-size:11px' }, [`CDN: ${KHATA_STANDARD_CDN}`]));
+
+  const checkBtn = h('button', { class: 'primary' }, ['Check for updates']);
+  const out = h('div', { id: 'ref-out', style: 'margin-top:14px' });
+  checkBtn.onclick = async () => {
+    out.innerHTML = '<p class="help">Fetching manifest…</p>';
+    try {
+      const manifest = await fetchKhataStandardManifest();
+      renderTable(manifest);
+    } catch (e) {
+      out.innerHTML = `<div class="error-screen"><h3 style="color:var(--alert)">Fetch failed</h3><p>${escapeHtml(e.message)}</p><p class="help">If you're running locally and the browser blocks the CORS request, this may be a CDN config issue. Visit <a href="${KHATA_STANDARD_CDN}index.json" target="_blank">${KHATA_STANDARD_CDN}index.json</a> to verify the manifest is reachable.</p></div>`;
+    }
+  };
+
+  function renderTable(manifest) {
+    out.innerHTML = '';
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Dataset</th><th>Bundled</th><th>CDN</th><th>Status</th><th></th></tr></thead>';
+    const tbody = h('tbody');
+    for (const [name, meta] of Object.entries(manifest.datasets)) {
+      const tr = h('tr');
+      const refKey = ({
+        'states': 'states', 'gst-rates': 'gstRates', 'cess': 'cessRates',
+        'tds-sections': 'tdsSections', 'tcs-sections': 'tcsSections',
+        'rcm-categories': 'rcmCategories', 'composition-rates': 'compositionRates',
+        'hsn-common': 'hsnCommon', 'sac': 'sacCommon', 'hsn-full': 'hsnFull',
+      })[name];
+      const bundled = refKey && REF[refKey] ? REF[refKey].version : '—';
+      const cdn = meta.version || (meta.status === 'not_yet_published' ? 'not yet published' : '—');
+      const isNewer = bundled !== '—' && meta.version && bundled !== meta.version;
+      tr.innerHTML = `
+        <td><b>${escapeHtml(name)}</b></td>
+        <td>${escapeHtml(bundled || '—')}</td>
+        <td>${escapeHtml(cdn)}${isNewer ? ' <span style="font-size:10px;color:var(--saffron-deep);font-weight:700">NEW</span>' : ''}</td>
+        <td><span style="font-size:10px;text-transform:uppercase;color:var(--ink-2)">${escapeHtml(meta.status || '')}</span></td>
+        <td></td>
+      `;
+      if (refKey && meta.file && isNewer) {
+        const updBtn = h('button', { class: 'small' }, ['Update']);
+        updBtn.onclick = async () => {
+          try {
+            const { manifest: dsMeta, data: dsJson } = await fetchDataset(name);
+            const count = await applyDatasetUpdate(name, dsMeta, dsJson);
+            await persistKhata();
+            toast(`${name} updated to ${dsMeta.version} (${count || 0} entries)`, 'ok');
+            renderTable(manifest);
+          } catch (e) {
+            toast('Update failed: ' + e.message, 'err');
+          }
+        };
+        tr.children[4].appendChild(updBtn);
+      }
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+
+  main.appendChild(checkBtn);
+  main.appendChild(out);
+}
+
+//------------------------------------------------------------
 // === View: Debug Console (the acceptance gate) ===
 //------------------------------------------------------------
 
@@ -16294,7 +17734,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">Phase 7 · Polish &amp; launch prep (Sumi dark theme + auto-pick on OS dark mode, keyboard shortcut handler with Tally parity, shortcut help overlay + cheat sheet PDF, undo stack with counter-entry semantics, Backup Now polish + 30-day nudge, getting-started / Tally migration / CA guide docs)</div>
+      <div class="k">Bahi version</div><div class="v">Phase 8A · CA-handoff feature complete (TDS deduction recording with auto-deduct on vendor payment, Form 26Q + 27EQ exports in NSDL CSV format, Form 27D TDS certificate PDF per vendor, manual bank reconciliation with statement matching, Layer 4 export-time identity check, reference data lazy-fetch from khata-standard CDN, audit-log replay restoration)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>
@@ -16482,6 +17922,10 @@ function renderSettings(main) {
       <li><b>CA acting as owner accidentally.</b> Every action in CA mode is automatically tagged <code>actor='ca'</code> in the audit log, with the CA's name + firm + ICAI membership stamped into both the audit payload and any annotations. The owner can see exactly which entries were posted by their CA versus by themselves.</li>
       <li><b>Owner editing a file the CA was reviewing.</b> When the CA next opens their copy, the ancestry check fires (CA's lastKnownHead ≠ disk head) and offers reconciliation. No silent overwrites in either direction.</li>
       <li><b>Posting mistake — wrong amounts, wrong account, wrong customer.</b> Phase 7 adds a session-scoped undo stack (last 20 posting actions). Hit <kbd>Ctrl+Z</kbd> to reverse the most recent post via a counter-entry — the original stays in the audit log, the reversal is a separate auditable entry, both are visible to your CA. The undo is convenience, not a way to make mistakes disappear.</li>
+      <li><b>TDS / TCS reporting completeness.</b> Phase 8A wires the existing <code>tds_deductions</code> + <code>tcs_collections</code> tables to actual UI: vendor payment form auto-deducts TDS based on the vendor's default section, Form 26Q + 27EQ + 27D exports surface every recorded deduction with validation errors for missing PANs / sections. The same audit log invariants apply — TDS deductions are recorded as immutable rows tied to a specific payment, never edited or deleted.</li>
+      <li><b>Wrong file exported on a CA handoff.</b> Phase 8A wires the Layer 4 export-time identity check into Backup Now, Form 26Q / 27EQ / 27D, GSTR-1 / GSTR-3B / CMP-08, EWB exports. Before any export writes to disk, Bahi verifies the active workspace entry's GSTIN and name match the open file's manifest. If they don't, the export hard-blocks with an explanation pointing to the mismatch. This catches the "I clicked Backup Now while looking at Client X but my workspace dropdown is on Client Y" mistake the moment it happens, before the wrong file leaves the building.</li>
+      <li><b>Reference data drift over time.</b> Phase 8A adds <code>#/ref-data-update</code> — a Settings sub-page that fetches the latest reference data manifest from the khata-standard CDN, verifies SHA-256 of every dataset, and lets the user update individual datasets (states / GST rates / TDS sections / HSN codes / etc.) with one click. Updates are persisted in the <code>meta</code> table per file, so the next file open uses the latest data without re-fetching. The CBIC HSN dataset is reachable via this path; future updates land automatically as the khata-standard repo publishes them.</li>
+      <li><b>SQLite corruption AND damaged snapshots.</b> Phase 1B handles "books damaged but at least one snapshot is intact". Phase 8A adds the third recovery path: rebuild the books from the audit log itself. The corruption recovery modal now offers <b>Rebuild from audit log</b> whenever the audit log is readable, even if every snapshot is also damaged. Best-effort: only replays entries with enough payload to reconstruct (entry.post, ca.adjustment, customer.create, etc.). The result is written to a new <code>.khata</code> file via Save As — the damaged original is never touched.</li>
     </ul>
 
     <h4 style="margin-top:14px;margin-bottom:6px;font-size:13px;color:var(--saffron-deep)">Not protected (and probably shouldn't be)</h4>
@@ -16540,7 +17984,8 @@ function renderSettings(main) {
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 5 — Tally XML importer (this build).</b> Permissive parser handles both Tally Prime and Tally ERP 9 (browser-native DOMParser, no CDN deps). Walks Masters (Groups, Ledgers, Stock Items, Units, Godowns) and Vouchers (Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note + their variants). 6-step wizard: <b>(1) File summary</b> with format detection, voucher type breakdown and supported/unsupported flags; <b>(2) Date range</b> filter with live in-range counter; <b>(3) Mapping review</b> — auto-suggests for 25+ standard Tally groups, hard-blocks Continue until every user-created group is resolved; <b>(4) Commit target</b> — Create new .khata file OR Merge into currently-open file (radio cards, merge mode shows live customer/vendor dedupe preview by GSTIN+name); <b>(5) Dry run preview</b> with category counts; <b>(6) Result</b> with full breakdown including auto-cleaned-as-services, cost-centre warnings, multi-currency warnings, skipped vouchers with reasons, and unsupported voucher types. Single SQL transaction wraps the entire import — any failure rolls back cleanly. <code>tally.import.start</code> / <code>tally.import.commit</code> / <code>tally.import.failed</code> audit log entries make every import forensically discoverable. The importer never bypasses the existing posting bridges — every imported invoice goes through <code>postInvoiceToLedger</code>, every purchase through <code>postPurchaseToLedger</code>, every journal through <code>postEntry</code>, so the snapshot pattern and stock effects fire automatically. Voucher number collisions in merge mode get a <code>TALLY-</code> prefix.</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 6 — CA mode (this build).</b> First-run mode picker (Owner / CA), CA profile setup (name + firm + ICAI membership + optional logo) stored in IndexedDB outside any client file. <b>Schema v8</b> adds <code>annotations</code> and <code>review_markers</code> tables — annotations capture CA identity at creation time (snapshot pattern), review markers track which entries the CA has signed off on. Mode-aware sidebar with a CA-only group (Client review, + Adjustment voucher, Annotations, Review report). Topbar mode badge shows OWNER / CA · {initials}; clickable to switch. <code>auditActor()</code> helper threaded through every <code>appendAuditEntry</code> call (21 sites), so every action a CA takes is automatically tagged <code>actor='ca'</code> in the audit log. CA review interface: per-voucher-type unreviewed counts, sectioned list with bulk-mark and inline annotation widget. CA adjustment voucher form: thin wrapper around the existing journal voucher engine with adjustment-type picker (year-end / depreciation / prepaid / outstanding / accrual). PDF review report: multi-page A4 with CA firm letterhead, page numbering, sections for Trial Balance / P&amp;L / Balance Sheet / CA Adjustments / Observations, written via the existing jsPDF lazy loader. <b>Layer 3 ancestry check</b> on every file open compares the audit chain head against the workspace entry's <code>lastKnownHead</code> and surfaces a warning for the same-GSTIN-no-shared-ancestry case. <b>Reconciliation View</b> for divergent branches: side-by-side checkbox lists of entries unique to each side, replay engine that re-executes picked imported entries via the existing posting bridges, merged manifest carries both parent hashes via <code>integrity.parentHashes[]</code>, audit log appends a <code>merge.commit</code> entry recording both parents.</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 7 — Polish &amp; launch prep (this build).</b> <b>Sumi (dark) theme</b> joins the existing 4-theme palette; auto-picks on first load if the OS prefers dark. <b>Keyboard shortcuts</b> with full Tally parity: F4 contra, F5 payment, F6 receipt, F7 journal, F8 sales, F9 purchase, F10 other vouchers menu, F1 company picker, F3 company info, Alt+F11 / Alt+F12 settings (browser-hijacked F11/F12 mapped to Alt variants per spec §11), Ctrl+Q quit to dashboard, Ctrl+A submit form, plus Bahi-specific Ctrl+Shift+D debug, Ctrl+Shift+B backup, Ctrl+Shift+M mode toggle, Ctrl+Z undo, ? help. Function keys + Alt combos work even when typing in a field; character-key shortcuts are blocked inside text inputs to prevent accidents. <b>Shortcut help overlay</b> (`?` or Shift+/) lists every shortcut grouped by section; one-click <b>cheat sheet PDF</b> generator for desk-printing. <b>Undo stack</b> — session-scoped, last 20 posting actions, reverses by posting a counter-entry (Dr/Cr swapped) so the audit log preserves both the original and the reversal. Pushed onto automatically by every <code>postEntry</code> call. <code>Ctrl+Z</code> triggers, Settings panel shows the current stack. <b>Backup Now polish</b> — topbar button now visible whenever a file is open, <code>Ctrl+Shift+B</code> shortcut, last-backup indicator in Settings (with relative time + size), <b>30-day nudge banner</b> on the dashboard if the last backup is older than 30 days. <b>Documentation</b> — getting-started.md / tally-migration.md / ca-guide.md ship in the repo at <code>docs/</code>. <code>khata-format.md</code> updated for schema v8 (annotations + review_markers tables, parentHashes manifest field).</p>
-    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 8 (post-launch, v1.5):</b> BYOK Cloudflare R2 sync, e-invoicing IRN (if GSP integration is feasible), recurring invoices, bank statement reconciliation auto-match, Firefox/Safari degraded mode, TDS Form 26Q export, TCS Form 27EQ export, Form 27D certificates.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 8A — CA-handoff feature complete (this build).</b> Closes the 11 spec gaps that block a CA pilot. <b>Schema v9</b> extends the <code>payments</code> table with <code>vendor_id</code>, <code>payment_direction</code>, <code>tds_amount</code>, <code>tds_section</code> so vendor payments and customer receipts share one table; adds the <code>bank_reconciliations</code> table. <b>TDS / TCS recording</b>: vendor payment form (#/vendor-payment/new) with TDS section auto-fill from the vendor master, computed deduction, and net-to-vendor display. Posting writes a <code>tds_deductions</code> row + a journal entry that splits the gross into bank (net) + TDS Payable (per-section sub-account, auto-created on first use). <b>Form 26Q export</b> (#/form-26q): quarterly TDS return summary with section breakdown, validation errors panel, NSDL-compatible CSV download. <b>Form 27EQ export</b> (#/form-27eq): same shape for TCS collected. <b>Form 27D TDS certificate</b> (#/form-27d): per-vendor PDF certificate with the deductor's company letterhead, deductee block, deduction table, totals, signature block. <b>Bank reconciliation</b> (#/bank-reconcile): manual statement-vs-book matching, per-line cleared checkbox, closing balance comparison, reconciliation snapshot persisted to <code>bank_reconciliations</code>. <b>Layer 4 export-time identity check</b>: <code>verifyExportIdentity()</code> compares the active workspace entry's GSTIN + name against the open file's manifest; mismatches hard-block exports with an explanation. Wired into Backup Now and the new Form 26Q / 27EQ / 27D export buttons. <b>Reference data lazy-fetch</b> (#/ref-data-update): pulls the manifest from <code>https://naklitechie.github.io/khata-standard/data/index.json</code>, verifies SHA-256 of fetched datasets, applies updates to the in-memory <code>REF</code> registry, persists the new version in the <code>meta</code> table per file. The CBIC HSN dataset (1518 goods + 82 SAC + 78 cess entries) is now reachable via this path. <b>Audit-log replay restoration</b>: extends the corruption recovery modal with a third path — rebuild the books from the audit log itself by replaying every entry on a fresh database. Best-effort, only handles replayable actions, but works even when both the SQLite tables AND the in-file snapshots are damaged.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 8B (launch batch):</b> portfolio repo push, landing page on naklitechie.com, screencast, real CA pilot. <b>Phase 8 v1.5 (post-launch):</b> BYOK Cloudflare R2 sync, e-invoicing IRN (needs GSP integration), recurring invoices, bank reconciliation auto-match (manual lands in 8A; auto-match later), Firefox / Safari degraded mode.</p>
   `;
   notes.appendChild(nb);
   main.appendChild(notes);
@@ -16562,6 +18007,9 @@ window._bahi = {
 // and a meta.json describing the backup. The user picks where to save it via showSaveFilePicker.
 async function backupNow() {
   if (!STATE.fileHandle || !STATE.db || !STATE.manifest) { toast('No file open', 'err'); return; }
+  // Phase 8A — Layer 4 export-time identity check
+  const layer4Err = await verifyExportIdentity();
+  if (layer4Err) { toast(`Backup blocked: ${layer4Err}`, 'err'); return; }
   try {
     // Persist current state first so the backup contains the freshest version.
     if (!STATE.readOnly) {

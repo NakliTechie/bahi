@@ -187,6 +187,81 @@ The format is intended to outlive any single app. Reference implementation: this
 
 ---
 
+## Engineering decisions & failure model
+
+> A confidence-building summary of the key choices made along the way, and what protects the file in adverse conditions. This section is maintained in lock-step with the build — every new phase adds the relevant guarantees here.
+
+### Why a single file (the `.khata` zip)
+
+The whole point of Bahi is that **your books are a single artifact you control**. One file means:
+- No "where is my data?" confusion. It's the file you saved.
+- Backups are `cp file.khata file-backup.khata`. No magic.
+- Sync providers (Dropbox / iCloud / Drive) treat it as one unit.
+- Restoration is `cp file-backup.khata file.khata`. No magic.
+- The format outlives the app — anyone can `unzip file.khata` and inspect the SQLite + JSON inside.
+
+The trade-off is that simultaneous concurrent editing across machines is genuinely hard with a single-file model. Bahi handles it via optimistic concurrency rather than pretending it can magically merge concurrent edits — see "Failure model" below.
+
+### Why integer paise
+
+Money is stored as `INTEGER` paise everywhere — never floats. Floats lose pennies under repeated arithmetic; tax computation does a lot of repeated arithmetic. Display is `(paise / 100).toFixed(2)` with Indian comma grouping. The audit log also hashes integer payloads so signature verification is reproducible across machines.
+
+### Why snapshots-at-posting (Invariants 1–8 from `BAHI-AGENT-MSG-HISTORICAL-INTEGRITY.md`)
+
+When you post an invoice, Bahi freezes the company name, customer name, GSTIN, state, HSN description, tax rate, and account names into snapshot columns on the invoice row itself. Reprints, GSTR-1 export, and any historical view read from those snapshots — never from a live JOIN on the master tables. If you rename a customer six months later, last year's invoice still prints with last year's name. This is non-negotiable for tax compliance and was a one-day refactor early on that would have been a multi-day mess after release.
+
+### Why date-parameterized tax rates
+
+GST rates change. We don't hardcode "18% GST" anywhere in the engine. `REF.gstRates` is a list of `(rate, validFrom, validTo)` records, and every lookup is parameterized by the invoice date. Backdated invoices automatically get the rate set that was in force then. Per-rate sub-accounts (`CGST Output @ 9%` etc.) auto-create on first use so the chart of accounts stays clean.
+
+### Why ISO state codes (not GSTIN numeric codes)
+
+State is stored as `ISO 3166-2:IN` (e.g. `MH`, `KA`) — the canonical FK throughout the format. The GSTIN's first two digits and the state name are derived from a lookup table at display time. This means renaming a state (Orissa → Odisha) doesn't require touching any data; it's a label change in the lookup table.
+
+### Why an append-only audit log with a hash chain
+
+Every meaningful action (post entry, edit company, lock period, FY close, opening stock, etc.) appends to `audit_log`. Each entry hashes `prev_hash || origin || canonicalJson(payload) || booksHash` with SHA-256, plus an ECDSA P-256 signature. The chain is never edited or rewound. The Debug Console has a verifier that walks the chain and reports any break.
+
+This gives you three things at once:
+- **Tamper evidence.** If anyone edits the SQLite directly, the books hash mismatch shows up at the next write.
+- **Forensic chain-of-custody.** The `origin` field tracks where each entry was written; cross-origin opens leave a marker.
+- **Crash recovery anchor.** The audit head is the comparison key for the optimistic concurrency check and the OPFS staging recovery.
+
+### Failure model
+
+Plain language. If you're handing this off to someone else to evaluate, this is the table to point them at.
+
+| Scenario | Protection | What the user sees |
+|---|---|---|
+| Browser crash mid-save | OPFS staging mirror written before disk write | Recovery banner on dashboard + Settings → Crash recovery panel with **Recover** / **Discard** buttons |
+| OS crash / power outage mid-save | Same as above | Same |
+| USB drive yanked mid-save | Same as above; also, `verify-before-write` on the rebuilt blob means the disk file was never partially written | Same |
+| Same browser, second tab opens the file | BroadcastChannel lock | Hard block: "This company is already open in another Bahi tab" |
+| Different browser / different machine writes the file | Optimistic concurrency check at next save (re-reads disk, compares audit head) | Save conflict modal: **Reload from disk** (lose in-memory work) or **Save as conflict copy** (sibling `{slug}-conflict-{ts}.khata`) |
+| File on Dropbox/iCloud syncing in background, outside change arrives | Same concurrency check fires | Same conflict modal |
+| File moved to a different machine and reopened | Cross-origin detection reads the most recent audit entry's `origin`, compares to current | Informational toast; keypair rotation marker appended to the audit log so the new origin is on record |
+| File on disk got corrupted | `PRAGMA integrity_check` runs on every open | Corruption recovery modal lists in-file snapshots and lets you restore one to a fresh file |
+| Wrong file opened (file-name collision) | Layer 2 wrong-file detection walks `manifest.company.changeHistory` | Hard block on workspace replace if the identity doesn't match |
+| Schema bumped between Bahi versions | Version-tagged migration runner in `meta.schemaVersion` | Older files migrate forward silently; newer files (above this build's `SUPPORTED_FORMAT`) open read-only with a banner |
+| Audit log tampered with | SHA-256 hash chain | Chain verifier in Debug Console reports any break |
+
+**Not protected (and probably shouldn't be):**
+- **Disk hardware failure.** No software can save you. Use **Backup Now** (Settings → Snapshots) to write a dated `.khata-backup.zip` and keep one offsite.
+- **Two clients writing in the exact same millisecond on a network share.** The OS filesystem decides who wins; one write may be silently dropped at the OS level. Bahi's verify-before-write keeps the file from being torn, and Layer 1 catches it on the next save attempt — but the dropped write itself is gone. Don't use Bahi as a multi-user server.
+- **Sync provider conflict copies** (`Bahi (Conflicted Copy 2026-04-07).khata`). Bahi can't automatically see siblings created by Dropbox/iCloud — open them via Workspace → Open existing.
+- **Reconciling two long parallel sessions.** The conflict modal saves as a conflict copy, but merging the two branches is manual. The Reconciliation View (audit-log ancestry merge) lands in Phase 6 alongside CA Mode.
+
+### How to be extra paranoid
+
+- Don't put a `.khata` file on a network share that two machines mount simultaneously. Pick one machine as the "owner" or move the file between machines explicitly.
+- Use sync providers for backup, not concurrent editing.
+- Hit **Backup Now** at the end of every session, especially before any irreversible action (FY rollover, period lock, large data import).
+- Run **Debug Console → Round-trip test** after any unusual session.
+
+The same content (in plain English) is also visible inside the app at **Settings → Safety & failure modes**, so the user can always check the contract without leaving Bahi.
+
+---
+
 ## Quick test
 
 1. Open Bahi → **Workspace** → **+ Create new .khata**

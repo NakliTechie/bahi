@@ -6413,7 +6413,7 @@ async function renderWorkspace(main, tok) {
     w.innerHTML = `
       <h3>Bahi — local-first accounting for Indian SMBs</h3>
       <p>Your books live in a single <code>.khata</code> file on your own disk. No server. No account. No subscription. The browser is the entire app.</p>
-      <p style="margin-top:8px"><b>Phase 2B.11 — Freelancer tier complete.</b> Create a file (full wizard with FY / type / composition / multi-GSTIN copy), add customers and items, raise invoices across multiple series (Domestic / Export / SEZ / BOS), record advance receipts and apply them, then record regular payments. Export GST-compliant PDFs (now with Devanagari for Hindi/Marathi), file GSTR-1 (with AT/TXP for advances) or CMP-08 (for composition dealers). Switch between companies via the topbar dropdown.</p>
+      <p style="margin-top:8px"><b>Phase 4 — Goods SMB tier.</b> Everything from the Freelancer tier (multi-series invoices, advances, payments, GSTR-1 / CMP-08, Devanagari PDFs, multi-company switcher) and the Service SMB tier (vendors, purchases, credit/debit notes, journal vouchers, Trial Balance, Balance Sheet, Day Book, Account Ledger, GSTR-3B, FY rollover, period locks, tax challans) — plus inventory with WAC + FIFO + named batches, godowns, automatic stock posting on every invoice / purchase / note, Cost of Goods Sold journal, delivery challans, e-way bills (NIC JSON + printable PDF), and inter-GSTIN stock transfers with cross-file JSON export/import.</p>
     `;
     main.appendChild(w);
   }
@@ -7680,6 +7680,26 @@ function renderDashboard(main) {
   const c = STATE.manifest.company || {};
   main.appendChild(h('h1', {}, [c.name || 'Dashboard']));
   main.appendChild(h('p', { class: 'help' }, [`As of ${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`]));
+
+  // === Crash recovery banner (sticky at top of dashboard until resolved) ===
+  // Set on file open by the OPFS staging recovery check in openHandle. We surface
+  // it here as a non-dismissible banner so the user can't miss it scrolling past
+  // a transient toast.
+  if (STATE.pendingStagingRecovery) {
+    const banner = h('div', { class: 'error-screen', style: 'margin-bottom:18px;border-left:6px solid var(--alert)' });
+    const sr = STATE.pendingStagingRecovery;
+    banner.innerHTML = `
+      <h3 style="color:var(--alert);margin:0 0 8px 0">⚠ Unfinished save detected</h3>
+      <p style="margin:0 0 8px 0">The previous save to this file was interrupted (browser crash, OS crash, or power loss). A copy of the in-flight save was kept in OPFS staging.</p>
+      <p style="margin:0;font-size:12px;color:var(--ink-2)"><b>Disk audit head:</b> <code>${escapeHtml((sr.diskHead || '').slice(0, 16))}…</code> · <b>Staging audit head:</b> <code>${escapeHtml((sr.stagingHead || '').slice(0, 16))}…</code></p>
+    `;
+    const row = h('div', { class: 'row', style: 'margin-top:12px' });
+    const goBtn = h('button', { class: 'primary' }, ['Open Settings → Crash recovery']);
+    goBtn.onclick = () => nav('#/settings');
+    row.appendChild(goBtn);
+    banner.appendChild(row);
+    main.appendChild(banner);
+  }
 
   // === Quick actions row ===
   const qa = h('div', { class: 'row', style: 'margin-bottom:18px' });
@@ -13107,6 +13127,47 @@ function renderSettings(main) {
     recoveryPanel.appendChild(rb);
     main.appendChild(recoveryPanel);
   }
+
+  // === Safety & failure modes (always visible documentation panel) ===
+  // Confidence-building summary of what protects the file in adverse conditions.
+  // Plain language so a non-engineer can verify "yes, the obvious failure modes
+  // are handled" without reading the source.
+  const safetyPanel = h('div', { class: 'panel' });
+  safetyPanel.appendChild(h('div', { class: 'panel-h' }, ['Safety & failure modes']));
+  const sb = h('div', { class: 'panel-b' });
+  sb.innerHTML = `
+    <p style="font-size:12px;line-height:1.6">Bahi is local-first by design. Your books live in a single <code>.khata</code> file on your own disk. The browser is the entire app — there is no server to phone home to and no cloud account holding your data. That choice has consequences for failure modes; here's what's protected and how.</p>
+
+    <h4 style="margin-top:14px;margin-bottom:6px;font-size:13px;color:var(--saffron-deep)">Protected — handled automatically</h4>
+    <ul style="font-size:12px;line-height:1.7;margin-left:18px">
+      <li><b>Browser crash / OS crash / power outage during save.</b> Every save mirrors the blob to OPFS staging <i>before</i> writing to disk. If the disk write doesn't complete, the next file open detects the orphan staging copy and shows a recovery banner on the dashboard + a Recover / Discard panel here in Settings. Verify-before-write also runs <code>PRAGMA integrity_check</code> on a re-parsed copy of the blob, so the disk file is never partially overwritten with damaged bytes.</li>
+      <li><b>Same-browser concurrent tabs.</b> A BroadcastChannel lock blocks the second tab with an "already open" message. The lock is in-memory only — there's no stuck-lock failure mode after a crash; dead tabs simply can't answer the broadcast query.</li>
+      <li><b>Two machines / two browsers / network share / Dropbox sync.</b> An optimistic concurrency check at save time re-reads the file from disk and compares the audit-log head against what was loaded on open. If a different instance wrote in between, the save aborts and a conflict modal offers <b>Reload from disk</b> (lose in-memory work) or <b>Save as conflict copy</b> (write to a sibling <code>{slug}-conflict-{ts}.khata</code> file so nothing is lost). Whichever side saves second, no data vanishes silently.</li>
+      <li><b>Cross-origin opens (file moved between machines or browsers).</b> Every audit log entry stores its origin. On open, Bahi compares the most recent entry's origin against where it's running now and surfaces an informational toast. The next entry written from the new origin appends a keypair rotation marker so a forensic reader can see exactly when the file changed hands.</li>
+      <li><b>File on disk got corrupted.</b> <code>PRAGMA integrity_check</code> runs on every open. If it fails, a corruption recovery modal lists the in-file snapshots (the <code>snapshots/</code> folder may still be intact even if <code>books.sqlite</code> is damaged) and lets you restore one to a fresh file.</li>
+      <li><b>Wrong file opened.</b> Layer 2 wrong-file detection walks the company's <code>changeHistory</code> and surfaces a hard block if the identity of the file doesn't match the workspace entry being replaced. Layer 5 fingerprints export filenames so you can tell at a glance which company / GSTIN they belong to.</li>
+      <li><b>Schema changes between Bahi versions.</b> Migration runner is idempotent and version-tagged in <code>meta.schemaVersion</code>. Older files migrate forward on open. Newer files (format version above this build) open read-only with a banner.</li>
+      <li><b>Audit log integrity.</b> The audit log is a SHA-256 hash chain where each entry hashes <code>prev_hash || origin || canonicalJson(payload) || booksHash</code>. The Debug Console has a verifier that walks the entire chain and reports any break — so if anything ever did slip past the layers above, it would show up here.</li>
+    </ul>
+
+    <h4 style="margin-top:14px;margin-bottom:6px;font-size:13px;color:var(--saffron-deep)">Not protected (and probably shouldn't be)</h4>
+    <ul style="font-size:12px;line-height:1.7;margin-left:18px">
+      <li><b>Disk hardware failure.</b> No software can save you if your drive dies. Use the <b>Backup Now</b> button (Settings → Snapshots) to write a dated <code>.khata-backup.zip</code> you can keep on a different drive or sync to cloud storage manually.</li>
+      <li><b>Two clients writing in the exact same millisecond on a network share.</b> Operating-system filesystem semantics decide who wins; one of the two writes is silently dropped at the OS level. Bahi's verify-before-write keeps the file from being torn, and Layer 1 (concurrency check) will catch this on the very next save attempt — but the dropped write itself is not recoverable. Don't use Bahi as a multi-user server.</li>
+      <li><b>Sync providers creating "Conflicted Copy" siblings.</b> Bahi can't see Dropbox/iCloud conflict copies automatically — they sit as sibling files. Open them via Workspace → Open existing.</li>
+      <li><b>Reconciling two long parallel sessions.</b> The conflict modal lets you save as a conflict copy, but merging the two branches is manual. The Reconciliation View (audit-log ancestry merge) lands in Phase 6 alongside CA Mode.</li>
+    </ul>
+
+    <h4 style="margin-top:14px;margin-bottom:6px;font-size:13px;color:var(--saffron-deep)">If you want to be extra paranoid</h4>
+    <ul style="font-size:12px;line-height:1.7;margin-left:18px">
+      <li>Don't put a <code>.khata</code> file on a network share that two machines mount simultaneously. Pick one machine as the "owner" or move the file between machines explicitly.</li>
+      <li>Use sync providers (Dropbox / iCloud / Drive) for backup, not for concurrent editing. Bahi's atomic-ish writes are friendlier to sync clients than most apps, but no app is perfectly safe under simultaneous concurrent writes.</li>
+      <li>Hit <b>Backup Now</b> at the end of every working session, especially before any irreversible action (FY rollover, period lock, large data import). Backups are dated zips; keep a rolling local copy and one offsite copy.</li>
+      <li>The <b>Debug Console → Round-trip test</b> writes the current state to disk, closes the in-memory db, re-reads it, and verifies the last posted entry survived. Run it after any unusual session.</li>
+    </ul>
+  `;
+  safetyPanel.appendChild(sb);
+  main.appendChild(safetyPanel);
 
   if (STATE.manifest) {
     const fp = h('div', { class: 'panel' });

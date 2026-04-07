@@ -8,9 +8,9 @@ The app is **Bahi** (बही — the traditional bound ledger of Indian mercha
 
 ---
 
-## Status — Phase 3 (service SMB tier)
+## Status — Phase 4 (goods SMB tier)
 
-Phase 3 turns Bahi from a freelancer-grade billing tool into a service-business accounting tool. On top of everything Phase 2C shipped, Phase 3 adds: **vendor master**, **purchases** (with RCM, ITC eligibility, blocked-credit support, per-rate GST input sub-account auto-create), **credit notes** (against invoices) and **debit notes** (against purchases) with full-reversal or partial-amount modes that inherit company + party snapshots from the parent, **journal voucher** form for free-form double-entry adjustments, real **reports** (Trial Balance, Balance Sheet with tie check + period-profit rollup, Day Book, Account Ledger with running balance, Sales Register, Purchase Register), **GSTR-3B** monthly summary view with JSON + CSV export, **financial year rollover wizard** that previews net profit/loss and posts system-generated closing entries to zero out income/expense → P&L Summary → Capital Account, **period locks** for marking returns as filed, and a **tax payment challans** module with templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, and a custom builder.
+Phase 4 turns Bahi from a service-business accounting tool into a full goods business accounting tool with inventory, e-way bills, and inter-GSTIN stock transfers. On top of everything Phases 2C and 3 shipped, Phase 4 adds: **schema v7** with 11 new columns/tables, a **stock movement engine** supporting both Weighted Average Cost AND First-In-First-Out (selectable per item), opt-in **named-batch tracking** for pharma/electronics/perishables, **godowns** (single auto-seeded "Main" with multi-godown UI), automatic **stock posting hooks** on every invoice / purchase / credit note / debit note, automatic **Cost of Goods Sold journal entries** that flow into the existing Balance Sheet (Stock-in-Hand) and P&L, a full inventory module (dashboard, stock on hand, stock register, batches, valuation summary, reorder alerts, stock aging), **delivery challans** with stock movement but no GL posting, **e-way bills** with NIC bulk-upload JSON + printable PDF (with QR placeholder for the EWB number), and **inter-GSTIN stock transfers** with cross-file JSON export/import for businesses with multiple GSTINs.
 
 ### What's shipped
 
@@ -137,6 +137,21 @@ Phase 3 turns Bahi from a freelancer-grade billing tool into a service-business 
 - **Tax payment challans** module: templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, plus a custom challan builder
 - **Sidebar restructured** into Workspace / Masters / Sales / Purchases / Money / Reports / Compliance / Dev groups (37 routes total)
 
+**Goods SMB tier** (Phase 4)
+- **Schema v7**: items get inventory columns (`enable_inventory`, `valuation_method`, `track_batches`, `reorder_level`, `preferred_vendor_id`, `opening_stock_qty`, `opening_stock_value`); 8 new tables (godowns, batches, stock_movements, delivery_challans + lines, eway_bills, stock_transfers)
+- **Stock movement engine** with both **Weighted Average Cost AND First-In-First-Out**, selectable per item. WAC stores a single synthetic running-average batch per (item, godown) and recomputes the avg rate on every inward. FIFO creates one batch per inward and dequeues oldest-first on outward, splitting across batches as needed
+- **Optional named-batch tracking** for pharma / electronics / perishables with mfg_date + expiry_date
+- **Single auto-seeded "Main" godown**; multi-godown UI is accessible from the sidebar
+- **Auto stock posting hooks** on every invoice (out), purchase (in), credit note (back in), debit note (back out), delivery challan (no GL)
+- **Cost of Goods Sold journal**: every invoice also posts a separate Dr COGS / Cr Stock-in-Hand entry at the WAC or FIFO rate. Service-only items see zero behaviour change
+- **Inventory dashboard** with KPIs (total stock value, items at reorder, expired batches, aged stock) + reorder alert table
+- **Stock on hand** (per item × godown), **Stock movements** (full log), **Stock register** (per-item movement walkthrough with running qty), **Batches** (with expiry warnings), **Valuation summary** (drives Balance Sheet → Stock-in-Hand), **Reorder alerts** (with quick-link to create purchase from preferred vendor), **Stock aging** (0–30 / 31–60 / 61–90 / 90+ buckets)
+- **Delivery challans**: outward-job / outward-sample / outward-return / inward-return; vehicle, transporter, returnable flag with expected return date; stock movement only, no GL posting
+- **E-way bills**: generated from invoice or delivery challan; auto-pulls supplier + recipient + goods snapshots; transport details (transporter, vehicle, mode, distance, reason code); **NIC bulk-upload JSON export** + **printable PDF** with QR-code placeholder; "Mark as generated" workflow lets you re-export the PDF with the real EWB number after portal submission
+- **Inter-GSTIN stock transfers**: outbound wizard (sender side) creates a draft transfer + raises the matching tax invoice + exports a cross-file JSON; inbound import (receiver side) loads the JSON, validates the GSTINs match, and creates a draft inbound transfer
+- **Sidebar grew** from 37 → 53 routes with the Inventory group
+- **Purchase form extended** with an item picker (free-text fallback for one-off services) so item-level inventory effects can be wired
+
 ---
 
 ## Running
@@ -199,7 +214,7 @@ For low-level testing (raw posting, audit chain inspection, integrity checks, sn
 - One-time backfill flow for legacy v1 invoices
 - Devanagari / Tamil / other Indian script fonts in PDF (currently Helvetica only — uses `Rs.` instead of `₹`; Phase 2B.2 lazy-loads Noto Sans Devanagari)
 
-**Phase 4+:** Goods SMB tier (inventory, stock, e-way bills, multi-warehouse) → Tally import → CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → polish & launch.
+**Phase 5+:** Tally import (XML parser + mapping UI) → CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass + dark mode + undo stack + landing page → launch.
 
 ---
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
-<title>Bahi — Browser-native accounting · Phase 3</title>
+<title>Bahi — Browser-native accounting · Phase 4</title>
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -265,7 +265,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 <div id="app">
 
   <header class="topbar">
-    <div class="brand">Bahi <span class="sub">Phase 3 · service SMB tier</span></div>
+    <div class="brand">Bahi <span class="sub">Phase 4 · goods SMB tier</span></div>
     <div id="company-switcher" style="display:none;position:relative">
       <button id="company-switcher-btn" class="small" style="display:flex;align-items:center;gap:6px"></button>
       <div id="company-switcher-menu" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--white);border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.12);z-index:100;min-width:280px;max-height:60vh;overflow-y:auto"></div>
@@ -302,6 +302,23 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/purchase/new" data-route="#/purchase/new">+ New purchase</a>
       <a href="#/debit-notes" data-route="#/debit-notes">Debit notes</a>
       <a href="#/debit-note/new" data-route="#/debit-note/new">+ New debit note</a>
+      <h4>Inventory</h4>
+      <a href="#/inventory" data-route="#/inventory">Inventory dashboard</a>
+      <a href="#/stock-on-hand" data-route="#/stock-on-hand">Stock on hand</a>
+      <a href="#/stock-movements" data-route="#/stock-movements">Stock movements</a>
+      <a href="#/stock-register" data-route="#/stock-register">Stock register</a>
+      <a href="#/batches" data-route="#/batches">Batches</a>
+      <a href="#/valuation-summary" data-route="#/valuation-summary">Valuation summary</a>
+      <a href="#/reorder-alerts" data-route="#/reorder-alerts">Reorder alerts</a>
+      <a href="#/stock-aging" data-route="#/stock-aging">Stock aging</a>
+      <a href="#/godowns" data-route="#/godowns">Godowns</a>
+      <a href="#/delivery-challans" data-route="#/delivery-challans">Delivery challans</a>
+      <a href="#/delivery-challan/new" data-route="#/delivery-challan/new">+ New delivery challan</a>
+      <a href="#/eway-bills" data-route="#/eway-bills">E-way bills</a>
+      <a href="#/eway-bill/new" data-route="#/eway-bill/new">+ New e-way bill</a>
+      <a href="#/stock-transfers" data-route="#/stock-transfers">Stock transfers</a>
+      <a href="#/stock-transfer/out/new" data-route="#/stock-transfer/out/new">+ Transfer (out)</a>
+      <a href="#/stock-transfer/in/import" data-route="#/stock-transfer/in/import">Transfer (in / import)</a>
       <h4>Money</h4>
       <a href="#/payments" data-route="#/payments">Payments</a>
       <a href="#/payment/new" data-route="#/payment/new">+ Record payment</a>
@@ -355,9 +372,9 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 
 <script>
 //============================================================
-// Bahi — Phase 3
-// Browser-native accounting · Service SMB tier (vendors, purchases, credit/debit notes,
-// journal vouchers, reports, GSTR-3B, FY rollover, tax challans)
+// Bahi — Phase 4
+// Browser-native accounting · Goods SMB tier (inventory engine with WAC + FIFO + batches,
+// godowns, delivery challans, e-way bills, inter-GSTIN stock transfers)
 // See Settings → Phase scope for the full feature inventory.
 //============================================================
 
@@ -374,8 +391,10 @@ const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Fil
 //   v6 → Phase 3: Service SMB tier — vendors, purchases, purchase_lines,
 //        credit_notes, credit_note_lines, debit_notes, debit_note_lines,
 //        tds_deductions, tcs_collections, period_locks, fy_closings
+//   v7 → Phase 4: Goods SMB tier — items inventory cols, godowns, batches,
+//        stock_movements, delivery_challans + lines, eway_bills, stock_transfers
 // The runner is in runSchemaMigrations() below.
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 // Snapshot retention policy (spec §9.3):
 //   - Last N saves: keep the most recent N auto snapshots regardless of date
@@ -958,6 +977,170 @@ CREATE TABLE IF NOT EXISTS fy_closings (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fy_closings ON fy_closings(fy_start);
+
+-- === Phase 4 — Goods SMB tier ===
+
+-- Godowns (warehouses, stock locations).
+-- Single 'Main' godown auto-seeded on v6→v7 migration. Multi-godown UI is unlocked
+-- from Settings → Inventory once the user creates a second godown.
+CREATE TABLE IF NOT EXISTS godowns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  address TEXT,
+  state TEXT,                       -- ISO 3166-2:IN (for inter-GSTIN transfers)
+  is_default INTEGER DEFAULT 0,
+  archived INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+-- Batches: every "lot" of an item that came in via a purchase or opening stock.
+-- For FIFO items: every batch is one row, dequeued oldest-first on outward.
+-- For batch-tracked items: user-named batch with mfg/expiry, picker on every line.
+-- For WAC items: a single synthetic "WAC" batch row per (item, godown), updated in place.
+CREATE TABLE IF NOT EXISTS batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL REFERENCES items(id),
+  godown_id INTEGER NOT NULL REFERENCES godowns(id),
+  batch_no TEXT,                    -- NULL for WAC synthetic; auto-gen for FIFO; user-typed for batch-tracked
+  mfg_date TEXT,
+  expiry_date TEXT,
+  source_purchase_id INTEGER REFERENCES purchases(id),
+  source_purchase_line_id INTEGER REFERENCES purchase_lines(id),
+  qty_in INTEGER NOT NULL DEFAULT 0,    -- in item base unit (paise-style integer for sub-unit precision)
+  qty_out INTEGER NOT NULL DEFAULT 0,
+  qty_balance INTEGER NOT NULL DEFAULT 0,
+  rate INTEGER NOT NULL,            -- paise per unit at the time of inward
+  value_in INTEGER NOT NULL DEFAULT 0,  -- paise — qty_in × rate
+  value_out INTEGER NOT NULL DEFAULT 0,
+  value_balance INTEGER NOT NULL DEFAULT 0,
+  is_wac_synthetic INTEGER DEFAULT 0,   -- 1 = the WAC running-average row, never closed
+  status TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'exhausted' | 'expired'
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_batches_item ON batches(item_id);
+CREATE INDEX IF NOT EXISTS idx_batches_godown ON batches(godown_id);
+CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status);
+
+-- Stock movements: the append-only log. Every stock change writes one row here, plus
+-- the batch row(s) it touched. Reports read from here for movement history.
+CREATE TABLE IF NOT EXISTS stock_movements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id INTEGER NOT NULL REFERENCES items(id),
+  godown_id INTEGER NOT NULL REFERENCES godowns(id),
+  batch_id INTEGER REFERENCES batches(id),
+  movement_type TEXT NOT NULL,      -- 'in' | 'out' | 'transfer' | 'adjust'
+  voucher_type TEXT NOT NULL,       -- 'purchase' | 'invoice' | 'delivery-challan' | 'opening' | 'transfer' | 'adjustment' | 'credit-note' | 'debit-note'
+  voucher_id INTEGER,
+  voucher_ref TEXT,
+  posted_at TEXT NOT NULL,
+  qty INTEGER NOT NULL,             -- positive = in, negative = out
+  rate INTEGER NOT NULL,            -- paise per unit, frozen
+  value INTEGER NOT NULL,           -- paise, signed
+  -- FROZEN snapshots
+  item_name_snapshot TEXT,
+  unit_snapshot TEXT,
+  godown_name_snapshot TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stock_mov_item ON stock_movements(item_id);
+CREATE INDEX IF NOT EXISTS idx_stock_mov_date ON stock_movements(posted_at);
+CREATE INDEX IF NOT EXISTS idx_stock_mov_voucher ON stock_movements(voucher_type, voucher_id);
+
+-- Delivery challans: stock leaves (or returns) without a sale.
+CREATE TABLE IF NOT EXISTS delivery_challans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  challan_number TEXT NOT NULL UNIQUE,
+  challan_date TEXT NOT NULL,
+  challan_type TEXT NOT NULL,       -- 'outward-job' | 'outward-sample' | 'outward-return' | 'inward-return'
+  customer_id INTEGER REFERENCES customers(id),
+  vendor_id INTEGER REFERENCES vendors(id),
+  godown_id INTEGER NOT NULL REFERENCES godowns(id),
+  destination TEXT,
+  vehicle_no TEXT,
+  transporter TEXT,
+  reason TEXT,
+  is_returnable INTEGER DEFAULT 0,
+  expected_return_date TEXT,
+  linked_invoice_id INTEGER REFERENCES invoices(id),
+  status TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'received-back' | 'invoiced' | 'cancelled'
+  -- FROZEN snapshots
+  company_snapshot TEXT,
+  party_snapshot TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dc_date ON delivery_challans(challan_date);
+
+CREATE TABLE IF NOT EXISTS delivery_challan_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  challan_id INTEGER NOT NULL REFERENCES delivery_challans(id),
+  line_no INTEGER NOT NULL,
+  item_id INTEGER NOT NULL REFERENCES items(id),
+  description TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  unit TEXT,
+  batch_id INTEGER REFERENCES batches(id),
+  rate INTEGER,                     -- paise — informational only, no GL posting
+  notes TEXT
+);
+
+-- E-way bills: generated from an invoice or delivery challan or stock transfer.
+CREATE TABLE IF NOT EXISTS eway_bills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ewb_number TEXT,                  -- from the NIC portal, filled in later
+  ewb_date TEXT NOT NULL,
+  source_type TEXT NOT NULL,        -- 'invoice' | 'delivery-challan' | 'stock-transfer'
+  source_id INTEGER NOT NULL,
+  source_ref TEXT NOT NULL,
+  -- Transport details
+  transporter_name TEXT,
+  transporter_id TEXT,
+  vehicle_no TEXT,
+  vehicle_type TEXT,                -- 'regular' | 'over-dimensional'
+  mode TEXT,                        -- 'road' | 'rail' | 'air' | 'ship'
+  distance_km INTEGER,
+  reason_code TEXT,                 -- '1'=supply, '2'=export, '3'=job-work, '4'=sktd, '5'=for-own-use, '8'=others
+  -- FROZEN snapshots
+  supplier_snapshot TEXT,
+  recipient_snapshot TEXT,
+  goods_snapshot TEXT,              -- JSON array
+  taxable_value INTEGER NOT NULL,
+  cgst INTEGER NOT NULL DEFAULT 0,
+  sgst INTEGER NOT NULL DEFAULT 0,
+  igst INTEGER NOT NULL DEFAULT 0,
+  cess INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',  -- 'draft' | 'generated' | 'cancelled'
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ewb_date ON eway_bills(ewb_date);
+CREATE INDEX IF NOT EXISTS idx_ewb_number ON eway_bills(ewb_number);
+
+-- Inter-GSTIN stock transfers (same legal entity, different GSTINs).
+CREATE TABLE IF NOT EXISTS stock_transfers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transfer_number TEXT NOT NULL UNIQUE,
+  transfer_date TEXT NOT NULL,
+  direction TEXT NOT NULL,          -- 'out' | 'in'
+  from_gstin TEXT NOT NULL,
+  from_state TEXT NOT NULL,
+  to_gstin TEXT NOT NULL,
+  to_state TEXT NOT NULL,
+  from_godown_id INTEGER REFERENCES godowns(id),
+  to_godown_id INTEGER REFERENCES godowns(id),
+  linked_invoice_id INTEGER REFERENCES invoices(id),
+  linked_purchase_id INTEGER REFERENCES purchases(id),
+  ewb_id INTEGER REFERENCES eway_bills(id),
+  total_value INTEGER NOT NULL,
+  payload_snapshot TEXT,            -- JSON of the full transfer for re-export / forensics
+  status TEXT NOT NULL DEFAULT 'draft',  -- 'draft' | 'sent' | 'received'
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_st_date ON stock_transfers(transfer_date);
 `;
 
 // === Reference Data subsystem ===
@@ -1277,6 +1460,7 @@ const COA_SEED = [
   ['Purchase Accounts',           'expense',   null],
   ['Purchases',                   'expense',   'Purchase Accounts'],
   ['Purchase Returns',            'expense',   'Purchase Accounts'],
+  ['Cost of Goods Sold',          'expense',   'Purchase Accounts'],
   ['Direct Expenses',             'expense',   null],
   ['Indirect Expenses',           'expense',   null],
   ['Round-Off',                   'expense',   null],
@@ -1732,7 +1916,43 @@ function runSchemaMigrations(db) {
     db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '6')");
   }
 
+  // === Migration 6 → 7: Phase 4 Goods SMB tier ===
+  // ALTERs on items + 8 new tables (godowns, batches, stock_movements,
+  // delivery_challans + lines, eway_bills, stock_transfers).
+  if (currentVersion < 7) {
+    tryAddColumn('items', 'enable_inventory INTEGER DEFAULT 0');
+    tryAddColumn('items', "valuation_method TEXT DEFAULT 'wac'");
+    tryAddColumn('items', 'track_batches INTEGER DEFAULT 0');
+    tryAddColumn('items', 'reorder_level INTEGER DEFAULT 0');
+    tryAddColumn('items', 'preferred_vendor_id INTEGER');
+    tryAddColumn('items', 'opening_stock_qty INTEGER DEFAULT 0');
+    tryAddColumn('items', 'opening_stock_value INTEGER DEFAULT 0');
+    seedDefaultGodown(db);
+    seedInventoryAccounts(db);
+    db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '7')");
+  }
+
   // Future migrations land here as `if (currentVersion < N) { ... }` blocks.
+}
+
+// Default godown seeded on file create + on the v6→v7 migration.
+// Idempotent — single 'Main' godown unless one already exists.
+function seedDefaultGodown(db) {
+  const r = db.exec('SELECT COUNT(*) FROM godowns');
+  const count = (r.length && r[0].values.length) ? r[0].values[0][0] : 0;
+  if (count > 0) return;
+  db.run("INSERT INTO godowns (name, address, state, is_default, created_at) VALUES ('Main', NULL, NULL, 1, ?)", [nowIso()]);
+}
+
+// Inventory + COGS accounts. Stock-in-Hand already exists in the COA_SEED;
+// Cost of Goods Sold is added in v7 — this idempotently inserts it on existing files.
+function seedInventoryAccounts(db) {
+  const cogs = db.exec("SELECT id FROM accounts WHERE name='Cost of Goods Sold' LIMIT 1");
+  if (!cogs.length || !cogs[0].values.length) {
+    const parent = db.exec("SELECT id FROM accounts WHERE name='Purchase Accounts' LIMIT 1");
+    const parentId = (parent.length && parent[0].values.length) ? parent[0].values[0][0] : null;
+    db.run("INSERT INTO accounts (name, type, parent_id, system_flag) VALUES ('Cost of Goods Sold', 'expense', ?, 1)", [parentId]);
+  }
 }
 
 // Default invoice series seeded on file create + on the v4→v5 migration.
@@ -3154,6 +3374,562 @@ function buildGSTR3BSummary(db, periodStart, periodEnd) {
 }
 
 //------------------------------------------------------------
+// === Phase 4 — Goods SMB tier (stock movement engine) ===
+//------------------------------------------------------------
+//
+// All stock posters wrap their writes in the caller's transaction (the existing
+// posting bridges already do BEGIN/COMMIT). Pure helpers; no DOM access.
+
+// Auto-generate the next delivery challan number. Format: DC/{FY}/{NNNN}.
+function nextChallanNumber(db) {
+  const r = db.exec('SELECT challan_number FROM delivery_challans ORDER BY id DESC LIMIT 1');
+  const now = new Date();
+  const y = now.getMonth() < 3 ? now.getFullYear() - 1 : now.getFullYear();
+  const fy = String(y).slice(-2) + '-' + String(y + 1).slice(-2);
+  if (!r.length || !r[0].values.length) return `DC/${fy}/0001`;
+  const last = r[0].values[0][0];
+  const m = last.match(/\/(\d{2}-\d{2})\/(\d+)$/);
+  if (m && m[1] === fy) return `DC/${fy}/${String(parseInt(m[2], 10) + 1).padStart(4, '0')}`;
+  return `DC/${fy}/0001`;
+}
+
+// Auto-generate the next stock transfer number. Format: ST/{FY}/{NNNN}.
+function nextStockTransferNumber(db) {
+  const r = db.exec('SELECT transfer_number FROM stock_transfers ORDER BY id DESC LIMIT 1');
+  const now = new Date();
+  const y = now.getMonth() < 3 ? now.getFullYear() - 1 : now.getFullYear();
+  const fy = String(y).slice(-2) + '-' + String(y + 1).slice(-2);
+  if (!r.length || !r[0].values.length) return `ST/${fy}/0001`;
+  const last = r[0].values[0][0];
+  const m = last.match(/\/(\d{2}-\d{2})\/(\d+)$/);
+  if (m && m[1] === fy) return `ST/${fy}/${String(parseInt(m[2], 10) + 1).padStart(4, '0')}`;
+  return `ST/${fy}/0001`;
+}
+
+// Look up the default godown ID. Always returns at least 1 (the seeded 'Main').
+function getDefaultGodownId(db) {
+  const r = db.exec('SELECT id FROM godowns WHERE is_default = 1 ORDER BY id LIMIT 1');
+  if (r.length && r[0].values.length) return r[0].values[0][0];
+  const r2 = db.exec('SELECT id FROM godowns ORDER BY id LIMIT 1');
+  if (r2.length && r2[0].values.length) return r2[0].values[0][0];
+  return null;
+}
+
+// Get the inventory-related metadata for an item (valuation, batches flag, unit, name).
+function getItemInventoryMeta(db, itemId) {
+  const r = db.exec(
+    'SELECT id, name, unit, enable_inventory, valuation_method, track_batches, opening_stock_qty, opening_stock_value FROM items WHERE id = ?',
+    [itemId]
+  );
+  if (!r.length || !r[0].values.length) return null;
+  const v = r[0].values[0];
+  return {
+    id: v[0], name: v[1], unit: v[2],
+    enableInventory: !!v[3],
+    valuationMethod: v[4] || 'wac',
+    trackBatches: !!v[5],
+    openingStockQty: v[6] || 0,
+    openingStockValue: v[7] || 0,
+  };
+}
+
+// WAC: get-or-create the synthetic running-average batch for (item, godown).
+// One row per (item, godown). Always status='open', is_wac_synthetic=1.
+function getOrCreateWacBatch(db, itemId, godownId) {
+  const r = db.exec(
+    'SELECT id, qty_balance, value_balance FROM batches WHERE item_id=? AND godown_id=? AND is_wac_synthetic=1 LIMIT 1',
+    [itemId, godownId]
+  );
+  if (r.length && r[0].values.length) {
+    const v = r[0].values[0];
+    return { id: v[0], qty_balance: v[1] || 0, value_balance: v[2] || 0 };
+  }
+  db.run(
+    'INSERT INTO batches (item_id, godown_id, batch_no, qty_in, qty_out, qty_balance, rate, value_in, value_out, value_balance, is_wac_synthetic, status, created_at) VALUES (?,?,NULL,0,0,0,0,0,0,0,1,?, ?)',
+    [itemId, godownId, 'open', nowIso()]
+  );
+  return { id: lastInsertId(db), qty_balance: 0, value_balance: 0 };
+}
+
+// === Stock IN poster ===
+// Records an inward movement: opening / purchase / inward return / transfer in.
+// Returns the batch_id touched (for FIFO/batch flows the new batch row).
+function postStockIn(db, opts) {
+  const {
+    itemId, godownId, qty, rate,
+    voucherType, voucherId, voucherRef,
+    postedAt, batchHint, mfgDate, expiryDate,
+    sourcePurchaseId, sourcePurchaseLineId,
+  } = opts;
+  if (qty <= 0) return null;
+  const meta = getItemInventoryMeta(db, itemId);
+  if (!meta || !meta.enableInventory) return null;
+
+  const gName = (db.exec('SELECT name FROM godowns WHERE id=?', [godownId])[0]?.values?.[0]?.[0]) || 'Main';
+  const value = Math.round(qty * rate);
+  let batchId = null;
+
+  if (meta.valuationMethod === 'wac') {
+    const wac = getOrCreateWacBatch(db, itemId, godownId);
+    const newQty = wac.qty_balance + qty;
+    const newValue = wac.value_balance + value;
+    const newRate = newQty > 0 ? Math.round(newValue / newQty) : 0;
+    db.run(
+      'UPDATE batches SET qty_in = qty_in + ?, qty_balance = ?, value_in = value_in + ?, value_balance = ?, rate = ? WHERE id = ?',
+      [qty, newQty, value, newValue, newRate, wac.id]
+    );
+    batchId = wac.id;
+  } else {
+    // FIFO or batch-tracked: each inward gets its own batch row
+    const batchNo = batchHint || (meta.trackBatches ? null : `B-${nowIso().slice(0, 10)}-${Math.floor(Math.random() * 9999)}`);
+    db.run(
+      'INSERT INTO batches (item_id, godown_id, batch_no, mfg_date, expiry_date, source_purchase_id, source_purchase_line_id, qty_in, qty_out, qty_balance, rate, value_in, value_out, value_balance, is_wac_synthetic, status, created_at) VALUES (?,?,?,?,?,?,?,?,0,?,?,?,0,?,0,?, ?)',
+      [itemId, godownId, batchNo, mfgDate || null, expiryDate || null, sourcePurchaseId || null, sourcePurchaseLineId || null, qty, qty, rate, value, value, 'open', nowIso()]
+    );
+    batchId = lastInsertId(db);
+  }
+
+  db.run(
+    'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [itemId, godownId, batchId, 'in', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), qty, rate, value, meta.name, meta.unit, gName, nowIso()]
+  );
+  return batchId;
+}
+
+// === Stock OUT poster ===
+// Records an outward movement: invoice / outward challan / outward return / transfer out.
+// Returns total COGS value (for the GL bridge that posts COGS / Inventory).
+// Throws if insufficient stock for FIFO / batch-tracked flows.
+function postStockOut(db, opts) {
+  const {
+    itemId, godownId, qty,
+    voucherType, voucherId, voucherRef,
+    postedAt, batchPick,
+  } = opts;
+  if (qty <= 0) return 0;
+  const meta = getItemInventoryMeta(db, itemId);
+  if (!meta || !meta.enableInventory) return 0;
+
+  const gName = (db.exec('SELECT name FROM godowns WHERE id=?', [godownId])[0]?.values?.[0]?.[0]) || 'Main';
+  let totalCogs = 0;
+
+  if (meta.valuationMethod === 'wac') {
+    const wac = getOrCreateWacBatch(db, itemId, godownId);
+    if (wac.qty_balance < qty) {
+      throw new Error(`Insufficient stock for ${meta.name}: need ${qty}, have ${wac.qty_balance}`);
+    }
+    const wacRate = wac.qty_balance > 0 ? Math.round(wac.value_balance / wac.qty_balance) : 0;
+    const value = Math.round(qty * wacRate);
+    db.run(
+      'UPDATE batches SET qty_out = qty_out + ?, qty_balance = qty_balance - ?, value_out = value_out + ?, value_balance = value_balance - ? WHERE id = ?',
+      [qty, qty, value, value, wac.id]
+    );
+    db.run(
+      'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [itemId, godownId, wac.id, 'out', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), -qty, wacRate, -value, meta.name, meta.unit, gName, nowIso()]
+    );
+    totalCogs = value;
+  } else if (meta.trackBatches && batchPick) {
+    // User-picked batch
+    const r = db.exec('SELECT id, qty_balance, rate FROM batches WHERE id = ? AND item_id = ? AND godown_id = ?', [batchPick, itemId, godownId]);
+    if (!r.length || !r[0].values.length) throw new Error(`Batch not found for ${meta.name}`);
+    const [bid, balance, rate] = r[0].values[0];
+    if (balance < qty) throw new Error(`Insufficient stock in batch for ${meta.name}: need ${qty}, have ${balance}`);
+    const value = Math.round(qty * rate);
+    db.run(
+      'UPDATE batches SET qty_out = qty_out + ?, qty_balance = qty_balance - ?, value_out = value_out + ?, value_balance = value_balance - ?, status = CASE WHEN qty_balance - ? <= 0 THEN ? ELSE status END WHERE id = ?',
+      [qty, qty, value, value, qty, 'exhausted', bid]
+    );
+    db.run(
+      'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [itemId, godownId, bid, 'out', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), -qty, rate, -value, meta.name, meta.unit, gName, nowIso()]
+    );
+    totalCogs = value;
+  } else {
+    // FIFO: dequeue oldest open batches
+    const r = db.exec(
+      "SELECT id, qty_balance, rate FROM batches WHERE item_id=? AND godown_id=? AND status='open' AND qty_balance > 0 ORDER BY created_at, id",
+      [itemId, godownId]
+    );
+    if (!r.length || !r[0].values.length) throw new Error(`No open batches for ${meta.name}`);
+    let remaining = qty;
+    for (const [bid, balance, rate] of r[0].values) {
+      if (remaining <= 0) break;
+      const take = Math.min(remaining, balance);
+      const value = Math.round(take * rate);
+      db.run(
+        'UPDATE batches SET qty_out = qty_out + ?, qty_balance = qty_balance - ?, value_out = value_out + ?, value_balance = value_balance - ?, status = CASE WHEN qty_balance - ? <= 0 THEN ? ELSE status END WHERE id = ?',
+        [take, take, value, value, take, 'exhausted', bid]
+      );
+      db.run(
+        'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [itemId, godownId, bid, 'out', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), -take, rate, -value, meta.name, meta.unit, gName, nowIso()]
+      );
+      totalCogs += value;
+      remaining -= take;
+    }
+    if (remaining > 0) throw new Error(`Insufficient FIFO stock for ${meta.name}: short by ${remaining}`);
+  }
+
+  return totalCogs;
+}
+
+// === Reverse a stock IN (used when a purchase is fully cancelled / debit-noted) ===
+// For WAC: subtracts the qty + value from the synthetic batch (recomputes avg).
+// For FIFO/batch: marks the source batch reduced. Approximates "reverse the inward".
+function reverseStockIn(db, opts) {
+  const { itemId, godownId, qty, rate, voucherType, voucherId, voucherRef, postedAt } = opts;
+  if (qty <= 0) return;
+  const meta = getItemInventoryMeta(db, itemId);
+  if (!meta || !meta.enableInventory) return;
+  const gName = (db.exec('SELECT name FROM godowns WHERE id=?', [godownId])[0]?.values?.[0]?.[0]) || 'Main';
+  const value = Math.round(qty * rate);
+  if (meta.valuationMethod === 'wac') {
+    const wac = getOrCreateWacBatch(db, itemId, godownId);
+    const newQty = Math.max(0, wac.qty_balance - qty);
+    const newValue = Math.max(0, wac.value_balance - value);
+    const newRate = newQty > 0 ? Math.round(newValue / newQty) : 0;
+    db.run(
+      'UPDATE batches SET qty_balance = ?, value_balance = ?, rate = ? WHERE id = ?',
+      [newQty, newValue, newRate, wac.id]
+    );
+    db.run(
+      'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [itemId, godownId, wac.id, 'adjust', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), -qty, rate, -value, meta.name, meta.unit, gName, nowIso()]
+    );
+  }
+}
+
+// Reverse a stock OUT (credit note → return goods to stock at the original COGS rate).
+// We don't try to re-create the original batch; we record an inward `adjust` movement
+// and a fresh batch row. Net effect on valuation is correct.
+function reverseStockOut(db, opts) {
+  const { itemId, godownId, qty, rate, voucherType, voucherId, voucherRef, postedAt } = opts;
+  if (qty <= 0) return;
+  const meta = getItemInventoryMeta(db, itemId);
+  if (!meta || !meta.enableInventory) return;
+  postStockIn(db, {
+    itemId, godownId, qty, rate, voucherType, voucherId, voucherRef, postedAt,
+    batchHint: `RET-${nowIso().slice(0, 10)}`,
+  });
+}
+
+// === Read helpers ===
+
+// Stock on hand: per (item, godown), summing open batches.
+function getStockOnHand(db, opts = {}) {
+  const filters = [];
+  const params = [];
+  if (opts.itemId) { filters.push('b.item_id = ?'); params.push(opts.itemId); }
+  if (opts.godownId) { filters.push('b.godown_id = ?'); params.push(opts.godownId); }
+  const where = filters.length ? 'WHERE ' + filters.join(' AND ') : '';
+  const r = db.exec(`
+    SELECT b.item_id, i.name, i.unit, b.godown_id, g.name,
+      SUM(b.qty_balance) AS qty, SUM(b.value_balance) AS value
+    FROM batches b
+    JOIN items i ON i.id = b.item_id
+    JOIN godowns g ON g.id = b.godown_id
+    ${where}
+    GROUP BY b.item_id, b.godown_id
+    HAVING qty != 0 OR value != 0
+    ORDER BY i.name, g.name
+  `, params);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([itemId, name, unit, gid, gname, qty, value]) => ({
+    item_id: itemId, item_name: name, unit, godown_id: gid, godown_name: gname, qty: qty || 0, value: value || 0,
+  }));
+}
+
+function getMovementHistory(db, itemId, fromDate, toDate) {
+  const r = db.exec(`
+    SELECT id, posted_at, voucher_type, voucher_ref, movement_type, qty, rate, value, item_name_snapshot, godown_name_snapshot, batch_id
+    FROM stock_movements
+    WHERE item_id = ? AND posted_at BETWEEN ? AND ?
+    ORDER BY posted_at, id
+  `, [itemId, fromDate, toDate]);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([id, ts, vt, vref, mt, qty, rate, value, iname, gname, bid]) => ({
+    id, posted_at: ts, voucher_type: vt, voucher_ref: vref, movement_type: mt,
+    qty: qty || 0, rate: rate || 0, value: value || 0,
+    item_name: iname, godown_name: gname, batch_id: bid,
+  }));
+}
+
+// Per-item closing valuation.
+function getValuationSummary(db, asOfDate) {
+  // Without asOfDate: read live batches.
+  // With asOfDate: would need movement walk; Phase 4 ships the live version.
+  const r = db.exec(`
+    SELECT i.id, i.name, i.unit, i.valuation_method,
+      COALESCE(SUM(b.qty_balance), 0) AS qty,
+      COALESCE(SUM(b.value_balance), 0) AS value
+    FROM items i
+    LEFT JOIN batches b ON b.item_id = i.id
+    WHERE i.archived = 0 AND i.enable_inventory = 1
+    GROUP BY i.id, i.name, i.unit, i.valuation_method
+    ORDER BY i.name
+  `);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([id, name, unit, method, qty, value]) => ({
+    item_id: id, item_name: name, unit, valuation_method: method,
+    qty: qty || 0, value: value || 0,
+    avg_rate: (qty > 0) ? Math.round(value / qty) : 0,
+  }));
+}
+
+function getReorderAlerts(db) {
+  const r = db.exec(`
+    SELECT i.id, i.name, i.unit, i.reorder_level, i.preferred_vendor_id,
+      v.name AS preferred_vendor,
+      COALESCE(SUM(b.qty_balance), 0) AS qty
+    FROM items i
+    LEFT JOIN batches b ON b.item_id = i.id
+    LEFT JOIN vendors v ON v.id = i.preferred_vendor_id
+    WHERE i.archived = 0 AND i.enable_inventory = 1 AND i.reorder_level > 0
+    GROUP BY i.id, i.name, i.unit, i.reorder_level, i.preferred_vendor_id, v.name
+    HAVING qty < i.reorder_level
+    ORDER BY (i.reorder_level - qty) DESC
+  `);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([id, name, unit, level, vid, vname, qty]) => ({
+    item_id: id, item_name: name, unit, reorder_level: level || 0,
+    preferred_vendor_id: vid, preferred_vendor_name: vname,
+    on_hand: qty || 0, short_by: (level || 0) - (qty || 0),
+  }));
+}
+
+function getStockAging(db) {
+  const today = new Date();
+  const r = db.exec(`
+    SELECT b.id, b.item_id, i.name, i.unit, b.qty_balance, b.value_balance, b.created_at, b.is_wac_synthetic
+    FROM batches b
+    JOIN items i ON i.id = b.item_id
+    WHERE b.qty_balance > 0 AND b.is_wac_synthetic = 0
+    ORDER BY b.created_at
+  `);
+  if (!r.length || !r[0].values.length) return [];
+  const buckets = { d030: [], d3160: [], d6190: [], d90plus: [] };
+  for (const [bid, iid, iname, unit, qty, value, createdAt] of r[0].values) {
+    const days = Math.floor((today - new Date(createdAt)) / 86400000);
+    const row = { batch_id: bid, item_id: iid, item_name: iname, unit, qty, value, age_days: days };
+    if (days <= 30) buckets.d030.push(row);
+    else if (days <= 60) buckets.d3160.push(row);
+    else if (days <= 90) buckets.d6190.push(row);
+    else buckets.d90plus.push(row);
+  }
+  return buckets;
+}
+
+// === GL bridges (called from inside the existing posting bridges) ===
+
+// Post the inventory side of a purchase: stock IN per line.
+function postPurchaseStockEffects(db, purchase, computedLines) {
+  const godownId = getDefaultGodownId(db);
+  if (!godownId) return;
+  for (const ln of (computedLines || [])) {
+    if (!ln.item_id) continue;
+    const meta = getItemInventoryMeta(db, ln.item_id);
+    if (!meta || !meta.enableInventory) continue;
+    postStockIn(db, {
+      itemId: ln.item_id, godownId, qty: ln.quantity || 0, rate: ln.rate || 0,
+      voucherType: 'purchase', voucherId: purchase.id, voucherRef: purchase.internal_ref,
+      postedAt: purchase.bill_date,
+      sourcePurchaseId: purchase.id, sourcePurchaseLineId: ln.id || null,
+    });
+  }
+}
+
+// Post the inventory side of an invoice: stock OUT per line + COGS posting.
+// Returns the COGS total so the caller can append a {Dr COGS / Cr Inventory} entry.
+async function postInvoiceStockEffects(db, invoice, computedLines, customer) {
+  const godownId = getDefaultGodownId(db);
+  if (!godownId) return 0;
+  let totalCogs = 0;
+  for (const ln of (computedLines || [])) {
+    if (!ln.item_id) continue;
+    const meta = getItemInventoryMeta(db, ln.item_id);
+    if (!meta || !meta.enableInventory) continue;
+    const cogs = postStockOut(db, {
+      itemId: ln.item_id, godownId, qty: ln.quantity || 0,
+      voucherType: 'invoice', voucherId: invoice.id, voucherRef: invoice.invoice_number,
+      postedAt: invoice.invoice_date,
+    });
+    totalCogs += cogs;
+  }
+  if (totalCogs > 0) {
+    await postEntry(db, {
+      voucherType: 'journal',
+      voucherRef: `COGS-${invoice.invoice_number}`,
+      narration: `Cost of goods sold for invoice ${invoice.invoice_number} (${customer ? customer.name : ''})`,
+      postedAt: invoice.invoice_date,
+      actor: 'system',
+      lines: [
+        { accountId: getAccountIdByName(db, 'Cost of Goods Sold'), debit: totalCogs, credit: 0 },
+        { accountId: getAccountIdByName(db, 'Stock-in-Hand'), debit: 0, credit: totalCogs },
+      ],
+    });
+  }
+  return totalCogs;
+}
+
+// Post the inventory side of a credit note: stock IN at the proportional COGS rate.
+async function postCreditNoteStockEffects(db, cn, originalInvoiceId, ratio) {
+  const godownId = getDefaultGodownId(db);
+  if (!godownId) return 0;
+  // Walk the original invoice's stock-out movements; reverse each at the same rate × ratio.
+  const r = db.exec(
+    "SELECT item_id, qty, rate FROM stock_movements WHERE voucher_type='invoice' AND voucher_id=? AND movement_type='out'",
+    [originalInvoiceId]
+  );
+  if (!r.length || !r[0].values.length) return 0;
+  let totalCogs = 0;
+  for (const [iid, qty, rate] of r[0].values) {
+    const reverseQty = Math.round(Math.abs(qty) * ratio);
+    if (reverseQty <= 0) continue;
+    reverseStockOut(db, {
+      itemId: iid, godownId, qty: reverseQty, rate,
+      voucherType: 'credit-note', voucherId: cn.id, voucherRef: cn.cn_number,
+      postedAt: cn.cn_date,
+    });
+    totalCogs += Math.round(reverseQty * rate);
+  }
+  if (totalCogs > 0) {
+    await postEntry(db, {
+      voucherType: 'journal',
+      voucherRef: `COGS-REV-${cn.cn_number}`,
+      narration: `COGS reversal for credit note ${cn.cn_number}`,
+      postedAt: cn.cn_date,
+      actor: 'system',
+      lines: [
+        { accountId: getAccountIdByName(db, 'Stock-in-Hand'), debit: totalCogs, credit: 0 },
+        { accountId: getAccountIdByName(db, 'Cost of Goods Sold'), debit: 0, credit: totalCogs },
+      ],
+    });
+  }
+  return totalCogs;
+}
+
+// Post the inventory side of a debit note: stock OUT (purchase return).
+async function postDebitNoteStockEffects(db, dn, originalPurchaseId, ratio) {
+  const godownId = getDefaultGodownId(db);
+  if (!godownId) return;
+  const r = db.exec(
+    "SELECT item_id, qty, rate FROM stock_movements WHERE voucher_type='purchase' AND voucher_id=? AND movement_type='in'",
+    [originalPurchaseId]
+  );
+  if (!r.length || !r[0].values.length) return;
+  for (const [iid, qty, rate] of r[0].values) {
+    const reverseQty = Math.round(Math.abs(qty) * ratio);
+    if (reverseQty <= 0) continue;
+    reverseStockIn(db, {
+      itemId: iid, godownId, qty: reverseQty, rate,
+      voucherType: 'debit-note', voucherId: dn.id, voucherRef: dn.dn_number,
+      postedAt: dn.dn_date,
+    });
+  }
+}
+
+// Post the stock effects of a delivery challan (NO general ledger entry).
+function postChallanStockEffects(db, challan, computedLines) {
+  const godownId = challan.godown_id || getDefaultGodownId(db);
+  const isOutward = (challan.challan_type || '').startsWith('outward');
+  for (const ln of (computedLines || [])) {
+    if (!ln.item_id) continue;
+    const meta = getItemInventoryMeta(db, ln.item_id);
+    if (!meta || !meta.enableInventory) continue;
+    if (isOutward) {
+      postStockOut(db, {
+        itemId: ln.item_id, godownId, qty: ln.quantity || 0,
+        voucherType: 'delivery-challan', voucherId: challan.id, voucherRef: challan.challan_number,
+        postedAt: challan.challan_date,
+      });
+    } else {
+      // Inward return — bring goods back at last-known rate (use a notional rate of 0 if no history)
+      const histR = db.exec(
+        "SELECT rate FROM stock_movements WHERE item_id=? AND movement_type='in' ORDER BY id DESC LIMIT 1",
+        [ln.item_id]
+      );
+      const rate = (histR.length && histR[0].values.length) ? histR[0].values[0][0] : 0;
+      postStockIn(db, {
+        itemId: ln.item_id, godownId, qty: ln.quantity || 0, rate,
+        voucherType: 'delivery-challan', voucherId: challan.id, voucherRef: challan.challan_number,
+        postedAt: challan.challan_date,
+        batchHint: `DC-${challan.challan_number}`,
+      });
+    }
+  }
+}
+
+// === E-way bill builders ===
+
+// Build the NIC bulk-upload JSON for one EWB.
+function buildEwayBillJson(db, ewbId) {
+  const r = db.exec(`
+    SELECT id, ewb_number, ewb_date, source_type, source_id, source_ref,
+      transporter_name, transporter_id, vehicle_no, vehicle_type, mode, distance_km, reason_code,
+      supplier_snapshot, recipient_snapshot, goods_snapshot,
+      taxable_value, cgst, sgst, igst, cess, total
+    FROM eway_bills WHERE id = ?
+  `, [ewbId]);
+  if (!r.length || !r[0].values.length) throw new Error('EWB not found');
+  const [id, ewbNum, ewbDate, srcType, srcId, srcRef, trName, trId, vehNo, vehType, mode, distKm, reasonCode,
+    supSnap, recSnap, goodsSnap, taxable, cgst, sgst, igst, cess, total] = r[0].values[0];
+  const supplier = supSnap ? JSON.parse(supSnap) : {};
+  const recipient = recSnap ? JSON.parse(recSnap) : {};
+  const goods = goodsSnap ? JSON.parse(goodsSnap) : [];
+  // NIC bulk-upload schema (simplified — real schema has 70+ fields, we ship the meaningful ones)
+  return {
+    version: '1.0.0414',
+    billLists: [{
+      userGstin: supplier.gstin || '',
+      supplyType: 'O',                  // Outward
+      subSupplyType: srcType === 'invoice' ? '1' : '8',  // 1 = supply, 8 = others
+      docType: srcType === 'invoice' ? 'INV' : (srcType === 'delivery-challan' ? 'CHL' : 'OTH'),
+      docNo: srcRef,
+      docDate: dateToGstFormat(ewbDate),
+      fromGstin: supplier.gstin || '',
+      fromTrdName: supplier.name || '',
+      fromAddr1: supplier.address || '',
+      fromPlace: supplier.stateName || '',
+      fromPincode: supplier.pincode || 0,
+      fromStateCode: supplier.gstinStateCode || 0,
+      toGstin: recipient.gstin || 'URP',
+      toTrdName: recipient.name || '',
+      toAddr1: recipient.address || '',
+      toPlace: recipient.stateName || '',
+      toPincode: recipient.pincode || 0,
+      toStateCode: recipient.gstinStateCode || 0,
+      transactionType: 1,
+      transDistance: String(distKm || 0),
+      transporterName: trName || '',
+      transporterId: trId || '',
+      transMode: mode === 'road' ? '1' : (mode === 'rail' ? '2' : (mode === 'air' ? '3' : '4')),
+      vehicleNo: vehNo || '',
+      vehicleType: vehType === 'over-dimensional' ? 'O' : 'R',
+      totalValue: paiseToRs(taxable),
+      cgstValue: paiseToRs(cgst),
+      sgstValue: paiseToRs(sgst),
+      igstValue: paiseToRs(igst),
+      cessValue: paiseToRs(cess),
+      totInvValue: paiseToRs(total),
+      itemList: goods.map((g, i) => ({
+        productName: g.desc || '',
+        productDesc: g.desc || '',
+        hsnCode: g.hsn || '',
+        quantity: g.qty || 0,
+        qtyUnit: g.unit || 'NOS',
+        taxableAmount: paiseToRs(g.taxable || 0),
+        cgstRate: g.tax_rate ? (g.tax_rate * 50) : 0,
+        sgstRate: g.tax_rate ? (g.tax_rate * 50) : 0,
+        igstRate: g.tax_rate ? (g.tax_rate * 100) : 0,
+        cessRate: 0,
+      })),
+    }],
+    ewbNumber: ewbNum || null,
+  };
+}
+
+//------------------------------------------------------------
 // === Phase 2B.4 — GSTR-1 export ===
 //------------------------------------------------------------
 //
@@ -4454,6 +5230,8 @@ async function createNewKhataFile({ companyName, gstin, stateIso, stateName, gst
 
   const db = await newDb();
   seedCoA(db);
+  seedDefaultGodown(db);
+  seedInventoryAccounts(db);
 
   const kp = await getOrCreateKeypair();
   STATE.privateKey = kp.privateKey;
@@ -5590,6 +6368,23 @@ function render() {
   else if (r === '#/period-locks') renderPeriodLocks(main);
   else if (r === '#/fy-rollover')  renderFYRollover(main);
   else if (r === '#/tax-challans') renderTaxChallans(main);
+  // Phase 4 routes
+  else if (r === '#/inventory')            renderInventoryDashboard(main);
+  else if (r === '#/stock-on-hand')        renderStockOnHand(main);
+  else if (r === '#/stock-movements')      renderStockMovements(main);
+  else if (r === '#/stock-register')       renderStockRegister(main);
+  else if (r === '#/batches')              renderBatches(main);
+  else if (r === '#/valuation-summary')    renderValuationSummary(main);
+  else if (r === '#/reorder-alerts')       renderReorderAlerts(main);
+  else if (r === '#/stock-aging')          renderStockAging(main);
+  else if (r === '#/godowns')              renderGodowns(main);
+  else if (r === '#/delivery-challans')    renderDeliveryChallans(main);
+  else if (r === '#/delivery-challan/new') renderDeliveryChallanForm(main);
+  else if (r === '#/eway-bills')           renderEwayBills(main);
+  else if (r === '#/eway-bill/new')        renderEwayBillForm(main);
+  else if (r === '#/stock-transfers')      renderStockTransfers(main);
+  else if (r === '#/stock-transfer/out/new')  renderStockTransferOut(main);
+  else if (r === '#/stock-transfer/in/import') renderStockTransferIn(main);
   else if (r === '#/debug')        renderDebug(main);
   else if (r === '#/settings')     renderSettings(main);
   else                             main.appendChild(h('div', { class: 'empty' }, ['Unknown route']));
@@ -6035,11 +6830,26 @@ function openItemModal(itemId) {
   const isEdit = !!itemId;
   let existing = null;
   if (isEdit) {
-    const r = STATE.db.exec('SELECT id, name, hsn_sac, is_service, unit, default_rate, default_tax_rate FROM items WHERE id = ?', [itemId]);
+    const r = STATE.db.exec('SELECT id, name, hsn_sac, is_service, unit, default_rate, default_tax_rate, enable_inventory, valuation_method, track_batches, reorder_level, opening_stock_qty, opening_stock_value, preferred_vendor_id FROM items WHERE id = ?', [itemId]);
     if (r.length && r[0].values.length) {
       const v = r[0].values[0];
-      existing = { id: v[0], name: v[1], hsn_sac: v[2], is_service: v[3], unit: v[4], default_rate: v[5], default_tax_rate: v[6] };
+      existing = {
+        id: v[0], name: v[1], hsn_sac: v[2], is_service: v[3], unit: v[4],
+        default_rate: v[5], default_tax_rate: v[6],
+        enable_inventory: v[7], valuation_method: v[8] || 'wac', track_batches: v[9],
+        reorder_level: v[10] || 0, opening_stock_qty: v[11] || 0, opening_stock_value: v[12] || 0,
+        preferred_vendor_id: v[13],
+      };
     }
+  }
+  // Vendor list for the preferred-vendor picker
+  const vR = STATE.db.exec('SELECT id, name FROM vendors WHERE archived=0 ORDER BY name');
+  const vendorOpts = '<option value="">— None —</option>' + (vR.length ? vR[0].values.map(([id, name]) => `<option value="${id}"${existing && existing.preferred_vendor_id === id ? ' selected' : ''}>${escapeHtml(name)}</option>`).join('') : '');
+  // Has the item ever moved? If yes, opening stock fields are read-only.
+  let hasMovements = false;
+  if (isEdit) {
+    const mR = STATE.db.exec('SELECT COUNT(*) FROM stock_movements WHERE item_id = ?', [itemId]);
+    if (mR.length && mR[0].values.length) hasMovements = mR[0].values[0][0] > 0;
   }
   const wrap = $('modal');
   wrap.innerHTML = '';
@@ -6087,6 +6897,32 @@ function openItemModal(itemId) {
     </div>
     <p class="help">Tax rates are sourced from the bundled GST rate table (gst-rates v${REF.gstRates.version}, ${activeRates.length} active bands as of today). Picking an HSN/SAC code auto-suggests the rate from its date-effective mapping.</p>
     <p class="help">HSN/SAC suggestions come from the bundled reference data (${REF.hsnCommon.data.length} HSN + ${REF.sacCommon.data.length} SAC). Phase 2 lazy-fetches the full top-2000 from naklitechie.com on first miss.</p>
+    <div id="im-inventory-section" style="margin-top:14px;padding:10px;background:var(--ash);border:1px solid var(--rule);border-radius:4px${existing && existing.is_service ? ';display:none' : ''}">
+      <div style="font-size:11px;color:var(--saffron-deep);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px">Inventory tracking</div>
+      <div class="field"><label>Enable inventory tracking</label>
+        <select id="im-inv">
+          <option value="0"${existing && !existing.enable_inventory ? ' selected' : ''}>No (track sales/purchases only)</option>
+          <option value="1"${existing && existing.enable_inventory ? ' selected' : ''}>Yes — track stock</option>
+        </select>
+      </div>
+      <div class="field"><label>Valuation method</label>
+        <select id="im-val">
+          <option value="wac"${!existing || existing.valuation_method === 'wac' ? ' selected' : ''}>Weighted Average Cost</option>
+          <option value="fifo"${existing && existing.valuation_method === 'fifo' ? ' selected' : ''}>First In First Out (FIFO)</option>
+        </select>
+      </div>
+      <div class="field"><label>Track named batches</label>
+        <select id="im-batch">
+          <option value="0"${existing && !existing.track_batches ? ' selected' : ''}>No</option>
+          <option value="1"${existing && existing.track_batches ? ' selected' : ''}>Yes — pharma / electronics / perishables</option>
+        </select>
+      </div>
+      <div class="field"><label>Reorder level (units)</label><input id="im-reorder" value="${existing ? (existing.reorder_level || '') : ''}" placeholder="0" style="text-align:right"></div>
+      <div class="field"><label>Preferred vendor</label><select id="im-pvendor">${vendorOpts}</select></div>
+      <div class="field"><label>Opening stock — quantity</label><input id="im-opqty" value="${existing ? (existing.opening_stock_qty || '') : ''}" placeholder="0" style="text-align:right"${hasMovements ? ' readonly' : ''}></div>
+      <div class="field"><label>Opening stock — value (₹)</label><input id="im-opval" value="${existing && existing.opening_stock_value ? (existing.opening_stock_value / 100).toFixed(2) : ''}" placeholder="0.00" style="text-align:right"${hasMovements ? ' readonly' : ''}></div>
+      ${hasMovements ? '<p class="help">Opening stock is locked because this item already has movements. To change historical opening stock, restore from a snapshot before any movements.</p>' : '<p class="help">Opening stock is captured ONCE when the item is first created or before any movements. Bahi posts an opening movement automatically.</p>'}
+    </div>
   `;
   m.appendChild(body);
   const cancel = h('button', {}, ['Cancel']);
@@ -6100,14 +6936,38 @@ function openItemModal(itemId) {
     const unit = $('im-unit').value.trim() || null;
     const rate = parseRupees($('im-rate').value);
     const taxRate = parseFloat($('im-tax').value);
+    // Inventory fields (only meaningful when type=goods)
+    const enableInv = (!isService && $('im-inv').value === '1') ? 1 : 0;
+    const valMethod = $('im-val').value || 'wac';
+    const trackBatches = (!isService && $('im-batch').value === '1') ? 1 : 0;
+    const reorderLevel = parseInt($('im-reorder').value, 10) || 0;
+    const preferredVendorId = $('im-pvendor').value ? parseInt($('im-pvendor').value, 10) : null;
+    const openingQty = parseInt($('im-opqty').value, 10) || 0;
+    const openingValue = parseRupees($('im-opval').value);
     try {
       if (isEdit) {
-        STATE.db.run('UPDATE items SET name=?, hsn_sac=?, is_service=?, unit=?, default_rate=?, default_tax_rate=? WHERE id=?',
-          [name, hsnSac, isService, unit, rate || null, taxRate, itemId]);
+        STATE.db.run('UPDATE items SET name=?, hsn_sac=?, is_service=?, unit=?, default_rate=?, default_tax_rate=?, enable_inventory=?, valuation_method=?, track_batches=?, reorder_level=?, preferred_vendor_id=? WHERE id=?',
+          [name, hsnSac, isService, unit, rate || null, taxRate, enableInv, valMethod, trackBatches, reorderLevel, preferredVendorId, itemId]);
+        // Don't touch opening_stock_qty/value on edit unless no movements exist (UI already disabled)
+        if (!hasMovements) {
+          STATE.db.run('UPDATE items SET opening_stock_qty=?, opening_stock_value=? WHERE id=?',
+            [openingQty, openingValue, itemId]);
+        }
       } else {
-        STATE.db.run('INSERT INTO items (name, hsn_sac, is_service, unit, default_rate, default_tax_rate, created_at) VALUES (?,?,?,?,?,?,?)',
-          [name, hsnSac, isService, unit, rate || null, taxRate, nowIso()]);
-        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'item.create', ref: name, payload: { name, isService, hsnSac, taxRate } });
+        STATE.db.run('INSERT INTO items (name, hsn_sac, is_service, unit, default_rate, default_tax_rate, enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor_id, opening_stock_qty, opening_stock_value, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [name, hsnSac, isService, unit, rate || null, taxRate, enableInv, valMethod, trackBatches, reorderLevel, preferredVendorId, openingQty, openingValue, nowIso()]);
+        const newItemId = lastInsertId(STATE.db);
+        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'item.create', ref: name, payload: { name, isService, hsnSac, taxRate, enableInv, valMethod } });
+        // Post opening stock movement if applicable
+        if (enableInv && openingQty > 0) {
+          const godownId = getDefaultGodownId(STATE.db);
+          const openingRate = openingQty > 0 ? Math.round(openingValue / openingQty) : 0;
+          postStockIn(STATE.db, {
+            itemId: newItemId, godownId, qty: openingQty, rate: openingRate,
+            voucherType: 'opening', voucherId: null, voucherRef: 'OPENING',
+            postedAt: nowIso(),
+          });
+        }
       }
       setSaveStatus('unsaved');
       const ok = await persistKhata();
@@ -6141,6 +7001,11 @@ function openItemModal(itemId) {
           }
         }
       }
+    });
+    // Type toggle: hide inventory section for services
+    $('im-type').addEventListener('change', () => {
+      const sec = document.getElementById('im-inventory-section');
+      if (sec) sec.style.display = $('im-type').value === 'service' ? 'none' : '';
     });
     $('im-name').focus();
   }, 30);
@@ -6576,6 +7441,16 @@ function renderInvoiceForm(main) {
           total: totals.total,
         }, customer, computedLines);
         STATE.db.run('UPDATE invoices SET ledger_entry_id = ? WHERE id = ?', [entryId, invoiceId]);
+
+        // === Phase 4: stock effects + COGS posting (skipped for service-only items) ===
+        try {
+          await postInvoiceStockEffects(STATE.db, {
+            id: invoiceId, invoice_number: invoiceNumber, invoice_date: invoiceDate,
+          }, computedLines, customer);
+        } catch (stockErr) {
+          console.error('Stock effect failed:', stockErr);
+          toast('Invoice posted, but stock effect failed: ' + stockErr.message, 'err');
+        }
 
         // === Apply any advance allocations the user picked ===
         let advancesAppliedAmt = 0;
@@ -8533,6 +9408,8 @@ function renderPurchaseForm(main) {
   main.appendChild(h('h1', {}, ['New purchase']));
   const vR = STATE.db.exec('SELECT id, name, gstin, state, rcm_applicable FROM vendors WHERE archived=0 ORDER BY name');
   const vendors = vR.length ? vR[0].values.map(v => ({ id: v[0], name: v[1], gstin: v[2], state: v[3], rcm: v[4] })) : [];
+  const iR = STATE.db.exec('SELECT id, name, hsn_sac, unit, default_rate, default_tax_rate, enable_inventory FROM items WHERE archived=0 ORDER BY name');
+  const items = iR.length ? iR[0].values.map(v => ({ id: v[0], name: v[1], hsn_sac: v[2], unit: v[3], default_rate: v[4], default_tax_rate: v[5], enable_inventory: v[6] })) : [];
   if (!vendors.length) {
     main.appendChild(h('div', { class: 'error-screen' }, [
       h('h3', {}, ['No vendors yet']),
@@ -8550,7 +9427,7 @@ function renderPurchaseForm(main) {
     reverseCharge: !!vendors[0].rcm,
     itcEligible: true,
     notes: '',
-    lines: [{ description: '', hsnSac: '', quantity: '1', rate: '', tax_rate: 0.18 }],
+    lines: [{ itemId: '', description: '', hsnSac: '', quantity: '1', rate: '', tax_rate: 0.18 }],
   };
 
   const panel = h('div', { class: 'panel' });
@@ -8585,7 +9462,7 @@ function renderPurchaseForm(main) {
   const linesTbl = h('table', { class: 'dense', style: 'margin-top:14px' });
   linesTbl.innerHTML = `
     <thead><tr>
-      <th style="width:35%">Description</th>
+      <th style="width:30%">Item / description</th>
       <th>HSN/SAC</th>
       <th class="num" style="width:8%">Qty</th>
       <th class="num" style="width:14%">Rate</th>
@@ -8600,7 +9477,7 @@ function renderPurchaseForm(main) {
 
   const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
   const addLineBtn = h('button', {}, ['+ Add line']);
-  addLineBtn.onclick = () => { form.lines.push({ description: '', hsnSac: '', quantity: '1', rate: '', tax_rate: 0.18 }); rerenderLines(); };
+  addLineBtn.onclick = () => { form.lines.push({ itemId: '', description: '', hsnSac: '', quantity: '1', rate: '', tax_rate: 0.18 }); rerenderLines(); };
   const postBtn = h('button', { class: 'primary' }, ['Post purchase & save']);
   postBtn.onclick = doPostPurchase;
   ctrls.appendChild(addLineBtn);
@@ -8643,9 +9520,36 @@ function renderPurchaseForm(main) {
     tbody.innerHTML = '';
     form.lines.forEach((ln, idx) => {
       const tr = h('tr');
-      const descInp = h('input', { type: 'text', value: ln.description || '', style: 'width:100%' });
+
+      // Item picker (with custom description fallback)
+      const itemSel = document.createElement('select');
+      itemSel.style.width = '100%';
+      itemSel.appendChild(h('option', { value: '' }, ['-- Free text --']));
+      for (const it of items) {
+        const label = it.name + (it.hsn_sac ? ' (' + it.hsn_sac + ')' : '') + (it.enable_inventory ? ' 📦' : '');
+        const o = h('option', { value: String(it.id) }, [label]);
+        if (String(ln.itemId) === String(it.id)) o.selected = true;
+        itemSel.appendChild(o);
+      }
+      itemSel.onchange = (e) => {
+        ln.itemId = e.target.value;
+        if (ln.itemId) {
+          const it = items.find(x => String(x.id) === String(ln.itemId));
+          if (it) {
+            ln.description = it.name;
+            ln.hsnSac = it.hsn_sac || '';
+            if (it.default_rate != null) ln.rate = (it.default_rate / 100).toFixed(2);
+            if (it.default_tax_rate != null) ln.tax_rate = it.default_tax_rate;
+          }
+        }
+        rerenderLines();
+      };
+      const descInp = h('input', { type: 'text', value: ln.description || '', placeholder: 'Description', style: 'width:100%;margin-top:4px' });
       descInp.oninput = (e) => { ln.description = e.target.value; };
-      const tdDesc = h('td'); tdDesc.appendChild(descInp); tr.appendChild(tdDesc);
+      const tdItem = h('td');
+      tdItem.appendChild(itemSel);
+      tdItem.appendChild(descInp);
+      tr.appendChild(tdItem);
 
       const hsnInp = h('input', { type: 'text', value: ln.hsnSac || '', style: 'width:100%' });
       hsnInp.oninput = (e) => { ln.hsnSac = e.target.value; };
@@ -8731,6 +9635,7 @@ function renderPurchaseForm(main) {
       const computedLines = form.lines
         .map((ln, i) => ({
           line_no: i + 1,
+          item_id: ln.itemId ? parseInt(ln.itemId, 10) : null,
           description: ln.description || '',
           hsn_sac: ln.hsnSac || null,
           quantity: parseFloat(ln.quantity) || 0,
@@ -8781,9 +9686,9 @@ function renderPurchaseForm(main) {
           [billNumber, internalRefVal, vendor.id, billDate, customerState, placeOfSupplyName, rcm, itcEligible, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.total, notes, 'posted', companySnapshot, vendorSnapshot, nowIso()]
         );
         const purchaseId = lastInsertId(STATE.db);
-        const lineStmt = STATE.db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        const lineStmt = STATE.db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
         for (const ln of computedLines) {
-          lineStmt.run([purchaseId, ln.line_no, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, itcEligible, ln.total || (ln.taxable + (ln.cgst||0) + (ln.sgst||0) + (ln.igst||0))]);
+          lineStmt.run([purchaseId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, itcEligible, ln.total || (ln.taxable + (ln.cgst||0) + (ln.sgst||0) + (ln.igst||0))]);
         }
         lineStmt.free();
         STATE.db.run('COMMIT');
@@ -8798,6 +9703,16 @@ function renderPurchaseForm(main) {
           reverse_charge: rcm,
         }, vendor, computedLines);
         STATE.db.run('UPDATE purchases SET ledger_entry_id = ? WHERE id = ?', [entryId, purchaseId]);
+
+        // === Phase 4: stock effects (skipped for service-only items) ===
+        try {
+          postPurchaseStockEffects(STATE.db, {
+            id: purchaseId, internal_ref: internalRefVal, bill_date: billDate,
+          }, computedLines.map(ln => ({ ...ln, item_id: ln.item_id || null })));
+        } catch (stockErr) {
+          console.error('Stock effect failed:', stockErr);
+          toast('Purchase posted, but stock effect failed: ' + stockErr.message, 'err');
+        }
 
         setSaveStatus('unsaved');
         const ok = await persistKhata();
@@ -9457,6 +10372,15 @@ function renderCreditNoteForm(main) {
         }, customer, computedLines);
         STATE.db.run('UPDATE credit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, cnId]);
 
+        // === Phase 4: stock effects (stock back in) ===
+        try {
+          const ratio = inv.total > 0 ? cnTotal / inv.total : 0;
+          await postCreditNoteStockEffects(STATE.db, { id: cnId, cn_number: cnNumber, cn_date: cnDate }, inv.id, ratio);
+        } catch (stockErr) {
+          console.error('Stock effect failed:', stockErr);
+          toast('Credit note posted, but stock effect failed: ' + stockErr.message, 'err');
+        }
+
         setSaveStatus('unsaved');
         const ok = await persistKhata();
         if (!ok) { render(); return; }
@@ -9658,6 +10582,15 @@ function renderDebitNoteForm(main) {
           subtotal: dnSub, cgst: dnCgst, sgst: dnSgst, igst: dnIgst, total: dnTotal,
         }, vendor, computedLines);
         STATE.db.run('UPDATE debit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, dnId]);
+
+        // === Phase 4: stock effects (stock out — purchase return) ===
+        try {
+          const ratio = pur.total > 0 ? dnTotal / pur.total : 0;
+          await postDebitNoteStockEffects(STATE.db, { id: dnId, dn_number: dnNumber, dn_date: dnDate }, pur.id, ratio);
+        } catch (stockErr) {
+          console.error('Stock effect failed:', stockErr);
+          toast('Debit note posted, but stock effect failed: ' + stockErr.message, 'err');
+        }
 
         setSaveStatus('unsaved');
         const ok = await persistKhata();
@@ -10006,6 +10939,1338 @@ function renderTaxChallans(main) {
     panel.appendChild(pb);
     main.appendChild(panel);
   }
+}
+
+//------------------------------------------------------------
+// === Phase 4 — Goods SMB tier views ===
+//------------------------------------------------------------
+
+// --- Inventory dashboard --------------------------------------------------
+
+function renderInventoryDashboard(main) {
+  if (!requireFileOrPrompt(main, 'Inventory')) return;
+  main.appendChild(h('h1', {}, ['Inventory dashboard']));
+
+  const summary = getValuationSummary(STATE.db);
+  const totalValue = summary.reduce((a, b) => a + b.value, 0);
+  const reorder = getReorderAlerts(STATE.db);
+  const aging = getStockAging(STATE.db);
+  const expiredCount = (STATE.db.exec("SELECT COUNT(*) FROM batches WHERE expiry_date IS NOT NULL AND expiry_date < date('now') AND qty_balance > 0")[0]?.values?.[0]?.[0]) || 0;
+
+  const kpi = h('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px' });
+  function k(label, value, sub, color) {
+    const c = h('div', { class: 'panel' });
+    const b = h('div', { class: 'panel-b', style: 'padding:12px 14px' });
+    b.innerHTML = `<div style="font-size:10px;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700">${escapeHtml(label)}</div><div style="font-size:20px;font-weight:700;margin-top:4px${color ? ';color:' + color : ''}">${value}</div>${sub ? `<div style="font-size:11px;color:var(--ink-2);margin-top:2px">${sub}</div>` : ''}`;
+    c.appendChild(b);
+    return c;
+  }
+  kpi.appendChild(k('Total stock value', fmtINR(totalValue), `${summary.length} item(s) tracked`));
+  kpi.appendChild(k('Items at reorder', String(reorder.length), reorder.length ? 'Below reorder level' : 'All items above reorder', reorder.length ? 'var(--alert)' : 'var(--green)'));
+  kpi.appendChild(k('Expired batches', String(expiredCount), expiredCount ? 'Needs write-off' : '—', expiredCount ? 'var(--alert)' : ''));
+  kpi.appendChild(k('Stock aging > 90d', String((aging.d90plus || []).length), 'FIFO/batch items only'));
+  main.appendChild(kpi);
+
+  // Quick links
+  const links = h('div', { class: 'row', style: 'margin-top:14px' });
+  for (const [label, route] of [['Stock on hand', '#/stock-on-hand'], ['Movements', '#/stock-movements'], ['Reorder alerts', '#/reorder-alerts'], ['+ Delivery challan', '#/delivery-challan/new'], ['+ E-way bill', '#/eway-bill/new']]) {
+    const b = h('button', {}, [label]);
+    b.onclick = () => nav(route);
+    links.appendChild(b);
+  }
+  main.appendChild(links);
+
+  if (reorder.length) {
+    main.appendChild(h('h2', { style: 'margin-top:24px;font-size:14px' }, [`Reorder alerts (${reorder.length})`]));
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Item</th><th>Vendor</th><th class="num">On hand</th><th class="num">Reorder level</th><th class="num">Short by</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const r of reorder.slice(0, 10)) {
+      const tr = h('tr');
+      tr.innerHTML = `<td><b>${escapeHtml(r.item_name)}</b></td><td>${escapeHtml(r.preferred_vendor_name || '—')}</td><td class="num">${r.on_hand} ${escapeHtml(r.unit || '')}</td><td class="num">${r.reorder_level}</td><td class="num"><b style="color:var(--alert)">${r.short_by}</b></td>`;
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    main.appendChild(tbl);
+  }
+}
+
+// --- Godowns --------------------------------------------------------------
+
+function renderGodowns(main) {
+  if (!requireFileOrPrompt(main, 'Godowns')) return;
+  main.appendChild(h('h1', {}, ['Godowns / warehouses']));
+  const actions = h('div', { class: 'row' });
+  const addBtn = h('button', { class: 'primary' }, ['+ Add godown']);
+  addBtn.onclick = () => openGodownModal(null);
+  actions.appendChild(addBtn);
+  main.appendChild(actions);
+  const r = STATE.db.exec('SELECT id, name, address, state, is_default FROM godowns WHERE archived=0 ORDER BY is_default DESC, name');
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No godowns. The default "Main" godown is auto-seeded on file create.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Name</th><th>Address</th><th>State</th><th></th><th></th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, name, address, state, isDef] of r[0].values) {
+    const tr = h('tr');
+    const sRow = state ? STATE_BY_ISO.get(state) : null;
+    tr.innerHTML = `
+      <td><b>${escapeHtml(name)}</b>${isDef ? ' <span style="font-size:10px;color:var(--green);font-weight:700">DEFAULT</span>' : ''}</td>
+      <td>${escapeHtml(address || '—')}</td>
+      <td>${sRow ? escapeHtml(sRow[2]) : '—'}</td>
+      <td></td><td></td>
+    `;
+    const editBtn = h('button', { class: 'small' }, ['Edit']);
+    editBtn.onclick = () => openGodownModal(id);
+    tr.children[3].appendChild(editBtn);
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function openGodownModal(godownId) {
+  const isEdit = !!godownId;
+  let existing = null;
+  if (isEdit) {
+    const r = STATE.db.exec('SELECT id, name, address, state, is_default FROM godowns WHERE id=?', [godownId]);
+    if (r.length && r[0].values.length) {
+      const v = r[0].values[0];
+      existing = { id: v[0], name: v[1], address: v[2], state: v[3], is_default: v[4] };
+    }
+  }
+  const wrap = $('modal');
+  wrap.innerHTML = '';
+  const m = h('div', { class: 'modal' });
+  m.appendChild(h('div', { class: 'modal-h' }, [isEdit ? 'Edit godown' : 'New godown']));
+  const body = h('div', { class: 'modal-b' });
+  const stateLabelText = existing && existing.state && STATE_BY_ISO.has(existing.state) ? stateLabel(STATE_BY_ISO.get(existing.state)) : '';
+  body.innerHTML = `
+    <div class="field"><label>Name</label><input id="gd-name" value="${escapeHtml(existing?.name || '')}" autocomplete="off"></div>
+    <div class="field"><label>Address</label><textarea id="gd-addr" rows="2">${escapeHtml(existing?.address || '')}</textarea></div>
+    <div class="field"><label>State</label><input id="gd-state" list="bahi-states" value="${escapeHtml(stateLabelText)}" placeholder="Type state name, ISO code, or GST code"></div>
+    <div class="field"><label>Default godown</label>
+      <select id="gd-def">
+        <option value="0"${!existing?.is_default ? ' selected' : ''}>No</option>
+        <option value="1"${existing?.is_default ? ' selected' : ''}>Yes</option>
+      </select>
+    </div>
+  `;
+  m.appendChild(body);
+  const cancel = h('button', {}, ['Cancel']);
+  cancel.onclick = () => closeModal();
+  const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add godown']);
+  save.onclick = async () => {
+    const name = $('gd-name').value.trim();
+    if (!name) { toast('Name is required', 'err'); return; }
+    const stateRow = parseStateInput($('gd-state').value);
+    const stateIso = stateRow ? stateRow[0] : null;
+    const isDef = parseInt($('gd-def').value, 10) || 0;
+    try {
+      if (isDef) STATE.db.run('UPDATE godowns SET is_default = 0');
+      if (isEdit) {
+        STATE.db.run('UPDATE godowns SET name=?, address=?, state=?, is_default=? WHERE id=?',
+          [name, $('gd-addr').value.trim() || null, stateIso, isDef, godownId]);
+      } else {
+        STATE.db.run('INSERT INTO godowns (name, address, state, is_default, created_at) VALUES (?,?,?,?,?)',
+          [name, $('gd-addr').value.trim() || null, stateIso, isDef, nowIso()]);
+        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'godown.create', ref: name, payload: { name, stateIso } });
+      }
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(isEdit ? 'Godown updated' : 'Godown added', 'ok');
+      closeModal();
+      render();
+    } catch (e) { console.error(e); toast('Save failed: ' + e.message, 'err'); }
+  };
+  m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
+  wrap.appendChild(m);
+  wrap.classList.remove('hidden');
+  setTimeout(() => $('gd-name').focus(), 30);
+}
+
+// --- Stock on hand --------------------------------------------------------
+
+function renderStockOnHand(main) {
+  if (!requireFileOrPrompt(main, 'Stock on hand')) return;
+  main.appendChild(h('h1', {}, ['Stock on hand']));
+  const rows = getStockOnHand(STATE.db);
+  if (!rows.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No stock yet. Enable inventory on an item, then post a purchase or set an opening stock value.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Item</th><th>Godown</th><th class="num">Qty</th><th class="num">Value</th></tr></thead>';
+  const tbody = h('tbody');
+  let totalValue = 0;
+  for (const r of rows) {
+    totalValue += r.value;
+    const tr = h('tr');
+    tr.innerHTML = `<td><b>${escapeHtml(r.item_name)}</b></td><td>${escapeHtml(r.godown_name)}</td><td class="num">${r.qty} ${escapeHtml(r.unit || '')}</td><td class="num">${fmtINR(r.value)}</td>`;
+    tbody.appendChild(tr);
+  }
+  const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+  totalRow.innerHTML = `<td colspan="3"><b>Total inventory value</b></td><td class="num"><b>${fmtINR(totalValue)}</b></td>`;
+  tbody.appendChild(totalRow);
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+// --- Stock movements (full log) -----------------------------------------
+
+function renderStockMovements(main) {
+  if (!requireFileOrPrompt(main, 'Stock movements')) return;
+  main.appendChild(h('h1', {}, ['Stock movements']));
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0"><label>From</label><input id="sm-from" type="date" value="${today.slice(0,8)}01"></div>
+    <div class="field" style="margin:0"><label>To</label><input id="sm-to" type="date" value="${today}"></div>
+  `;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'sm-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const from = $('sm-from').value, to = $('sm-to').value;
+    const r = STATE.db.exec(`
+      SELECT id, posted_at, voucher_type, voucher_ref, movement_type, qty, rate, value, item_name_snapshot, godown_name_snapshot
+      FROM stock_movements WHERE posted_at BETWEEN ? AND ?
+      ORDER BY posted_at DESC, id DESC LIMIT 1000
+    `, [from, to]);
+    if (!r.length || !r[0].values.length) {
+      out.appendChild(h('div', { class: 'empty' }, ['No movements in range.']));
+      return;
+    }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Date</th><th>Voucher</th><th>Item</th><th>Godown</th><th>Type</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Value</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const [id, ts, vt, vref, mt, qty, rate, value, iname, gname] of r[0].values) {
+      const tr = h('tr');
+      const color = qty < 0 ? 'var(--alert)' : 'var(--green)';
+      tr.innerHTML = `
+        <td>${escapeHtml((ts || '').slice(0, 10))}</td>
+        <td><span style="font-size:10px;text-transform:uppercase;color:var(--ink-2)">${escapeHtml(vt || '')}</span> <code>${escapeHtml(vref || '')}</code></td>
+        <td>${escapeHtml(iname || '')}</td>
+        <td>${escapeHtml(gname || '')}</td>
+        <td>${escapeHtml(mt || '')}</td>
+        <td class="num" style="color:${color}">${qty}</td>
+        <td class="num">${fmtINR(rate || 0)}</td>
+        <td class="num" style="color:${color}">${fmtINR(value || 0)}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+  setTimeout(() => {
+    $('sm-from').addEventListener('change', rebuild);
+    $('sm-to').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// --- Batches --------------------------------------------------------------
+
+function renderBatches(main) {
+  if (!requireFileOrPrompt(main, 'Batches')) return;
+  main.appendChild(h('h1', {}, ['Batches']));
+  const r = STATE.db.exec(`
+    SELECT b.id, i.name, g.name, b.batch_no, b.mfg_date, b.expiry_date, b.qty_balance, b.value_balance, b.status, b.is_wac_synthetic, b.created_at
+    FROM batches b
+    JOIN items i ON i.id = b.item_id
+    JOIN godowns g ON g.id = b.godown_id
+    WHERE b.qty_balance > 0
+    ORDER BY i.name, b.created_at
+  `);
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No open batches.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Item</th><th>Godown</th><th>Batch</th><th>Mfg / Expiry</th><th class="num">Qty</th><th class="num">Value</th><th>Status</th></tr></thead>';
+  const tbody = h('tbody');
+  const today = new Date().toISOString().slice(0, 10);
+  for (const [id, iname, gname, bno, mfg, exp, qty, value, status, wac, created] of r[0].values) {
+    const tr = h('tr');
+    let expCell = '—';
+    if (exp) {
+      const expired = exp < today;
+      expCell = `<span style="${expired ? 'color:var(--alert);font-weight:700' : ''}">${escapeHtml(exp)}${expired ? ' ⚠' : ''}</span>`;
+    }
+    tr.innerHTML = `
+      <td><b>${escapeHtml(iname)}</b></td>
+      <td>${escapeHtml(gname)}</td>
+      <td>${wac ? '<span style="color:var(--ink-2);font-style:italic">WAC running</span>' : (escapeHtml(bno || '—'))}</td>
+      <td>${mfg ? escapeHtml(mfg) + ' / ' : ''}${expCell}</td>
+      <td class="num">${qty}</td>
+      <td class="num">${fmtINR(value)}</td>
+      <td><span style="font-size:10px;text-transform:uppercase">${escapeHtml(status)}</span></td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+// --- Valuation summary ----------------------------------------------------
+
+function renderValuationSummary(main) {
+  if (!requireFileOrPrompt(main, 'Valuation summary')) return;
+  main.appendChild(h('h1', {}, ['Valuation summary']));
+  const rows = getValuationSummary(STATE.db);
+  if (!rows.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No inventory items.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Item</th><th>Method</th><th class="num">Qty</th><th class="num">Avg rate</th><th class="num">Value</th></tr></thead>';
+  const tbody = h('tbody');
+  let totalValue = 0;
+  for (const r of rows) {
+    totalValue += r.value;
+    const tr = h('tr');
+    tr.innerHTML = `
+      <td><b>${escapeHtml(r.item_name)}</b></td>
+      <td><span style="font-size:10px;text-transform:uppercase;color:var(--ink-2)">${escapeHtml(r.valuation_method || 'wac')}</span></td>
+      <td class="num">${r.qty} ${escapeHtml(r.unit || '')}</td>
+      <td class="num">${fmtINR(r.avg_rate)}</td>
+      <td class="num">${fmtINR(r.value)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+  totalRow.innerHTML = `<td colspan="4"><b>Total stock value</b></td><td class="num"><b>${fmtINR(totalValue)}</b></td>`;
+  tbody.appendChild(totalRow);
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+  main.appendChild(h('p', { class: 'help' }, ['This figure flows into Balance Sheet → Assets → Stock-in-Hand. The journal entry posted when invoices are raised is Dr Cost of Goods Sold / Cr Stock-in-Hand.']));
+}
+
+// --- Reorder alerts -------------------------------------------------------
+
+function renderReorderAlerts(main) {
+  if (!requireFileOrPrompt(main, 'Reorder alerts')) return;
+  main.appendChild(h('h1', {}, ['Reorder alerts']));
+  const rows = getReorderAlerts(STATE.db);
+  if (!rows.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['All inventory items are above their reorder level.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Item</th><th>Preferred vendor</th><th class="num">On hand</th><th class="num">Reorder level</th><th class="num">Short by</th><th></th></tr></thead>';
+  const tbody = h('tbody');
+  for (const r of rows) {
+    const tr = h('tr');
+    tr.innerHTML = `
+      <td><b>${escapeHtml(r.item_name)}</b></td>
+      <td>${escapeHtml(r.preferred_vendor_name || '—')}</td>
+      <td class="num">${r.on_hand} ${escapeHtml(r.unit || '')}</td>
+      <td class="num">${r.reorder_level}</td>
+      <td class="num"><b style="color:var(--alert)">${r.short_by}</b></td>
+      <td></td>
+    `;
+    if (r.preferred_vendor_id) {
+      const b = h('button', { class: 'small' }, ['Create purchase']);
+      b.onclick = () => nav('#/purchase/new');
+      tr.children[5].appendChild(b);
+    }
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+// --- Stock aging ----------------------------------------------------------
+
+function renderStockAging(main) {
+  if (!requireFileOrPrompt(main, 'Stock aging')) return;
+  main.appendChild(h('h1', {}, ['Stock aging (FIFO / batch items)']));
+  const buckets = getStockAging(STATE.db);
+  if (!buckets || (!buckets.d030.length && !buckets.d3160.length && !buckets.d6190.length && !buckets.d90plus.length)) {
+    main.appendChild(h('div', { class: 'empty' }, ['No aged batch stock.']));
+    return;
+  }
+  function bucketSection(label, rows) {
+    const panel = h('div', { class: 'panel' });
+    panel.appendChild(h('div', { class: 'panel-h' }, [`${label} — ${rows.length} batch(es)`]));
+    const b = h('div', { class: 'panel-b' });
+    if (!rows.length) {
+      b.appendChild(h('div', { class: 'empty' }, ['—']));
+    } else {
+      const tbl = h('table', { class: 'dense' });
+      tbl.innerHTML = '<thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Value</th><th class="num">Days old</th></tr></thead>';
+      const tbody = h('tbody');
+      let total = 0;
+      for (const r of rows) {
+        total += r.value;
+        const tr = h('tr');
+        tr.innerHTML = `<td><b>${escapeHtml(r.item_name)}</b></td><td class="num">${r.qty} ${escapeHtml(r.unit || '')}</td><td class="num">${fmtINR(r.value)}</td><td class="num">${r.age_days}</td>`;
+        tbody.appendChild(tr);
+      }
+      const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+      totalRow.innerHTML = `<td colspan="2"><b>Bucket total</b></td><td class="num"><b>${fmtINR(total)}</b></td><td></td>`;
+      tbody.appendChild(totalRow);
+      tbl.appendChild(tbody);
+      b.appendChild(tbl);
+    }
+    panel.appendChild(b);
+    return panel;
+  }
+  main.appendChild(bucketSection('0–30 days', buckets.d030));
+  main.appendChild(bucketSection('31–60 days', buckets.d3160));
+  main.appendChild(bucketSection('61–90 days', buckets.d6190));
+  main.appendChild(bucketSection('90+ days', buckets.d90plus));
+}
+
+// --- Stock register (per-item movement walkthrough) ----------------------
+
+function renderStockRegister(main) {
+  if (!requireFileOrPrompt(main, 'Stock register')) return;
+  main.appendChild(h('h1', {}, ['Stock register']));
+  const iR = STATE.db.exec('SELECT id, name, unit FROM items WHERE archived=0 AND enable_inventory=1 ORDER BY name');
+  if (!iR.length || !iR[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No inventory items. Enable inventory tracking on an item first.']));
+    return;
+  }
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  const opts = iR[0].values.map(([id, name]) => `<option value="${id}">${escapeHtml(name)}</option>`).join('');
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0;min-width:240px"><label>Item</label><select id="sr-item">${opts}</select></div>
+    <div class="field" style="margin:0"><label>From</label><input id="sr-from" type="date" value="${today.slice(0,4)}-04-01"></div>
+    <div class="field" style="margin:0"><label>To</label><input id="sr-to" type="date" value="${today}"></div>
+  `;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'sr-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const itemId = parseInt($('sr-item').value, 10);
+    const from = $('sr-from').value, to = $('sr-to').value;
+    const rows = getMovementHistory(STATE.db, itemId, from, to);
+    if (!rows.length) { out.appendChild(h('div', { class: 'empty' }, ['No movements in range.'])); return; }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Date</th><th>Voucher</th><th>Type</th><th>Godown</th><th class="num">In</th><th class="num">Out</th><th class="num">Rate</th><th class="num">Value</th><th class="num">Running qty</th></tr></thead>';
+    const tbody = h('tbody');
+    let runningQty = 0;
+    for (const r of rows) {
+      runningQty += r.qty;
+      const tr = h('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml((r.posted_at || '').slice(0, 10))}</td>
+        <td><code>${escapeHtml(r.voucher_ref || '')}</code></td>
+        <td>${escapeHtml(r.movement_type)}</td>
+        <td>${escapeHtml(r.godown_name || '')}</td>
+        <td class="num">${r.qty > 0 ? r.qty : ''}</td>
+        <td class="num">${r.qty < 0 ? -r.qty : ''}</td>
+        <td class="num">${fmtINR(r.rate)}</td>
+        <td class="num">${fmtINR(r.value)}</td>
+        <td class="num"><b>${runningQty}</b></td>
+      `;
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+  setTimeout(() => {
+    $('sr-item').addEventListener('change', rebuild);
+    $('sr-from').addEventListener('change', rebuild);
+    $('sr-to').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// --- Delivery challans ----------------------------------------------------
+
+function renderDeliveryChallans(main) {
+  if (!requireFileOrPrompt(main, 'Delivery challans')) return;
+  main.appendChild(h('h1', {}, ['Delivery challans']));
+  const actions = h('div', { class: 'row' });
+  const newBtn = h('button', { class: 'primary' }, ['+ New delivery challan']);
+  newBtn.onclick = () => nav('#/delivery-challan/new');
+  actions.appendChild(newBtn);
+  main.appendChild(actions);
+  const r = STATE.db.exec(`
+    SELECT dc.id, dc.challan_number, dc.challan_date, dc.challan_type, COALESCE(c.name, v.name) AS party,
+      dc.vehicle_no, dc.is_returnable, dc.expected_return_date, dc.status
+    FROM delivery_challans dc
+    LEFT JOIN customers c ON c.id = dc.customer_id
+    LEFT JOIN vendors v ON v.id = dc.vendor_id
+    ORDER BY dc.challan_date DESC, dc.id DESC
+  `);
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No delivery challans yet.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>DC #</th><th>Date</th><th>Type</th><th>Party</th><th>Vehicle</th><th>Returnable</th><th>Status</th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, num, date, type, party, vehicle, returnable, expRet, status] of r[0].values) {
+    const tr = h('tr');
+    tr.innerHTML = `
+      <td><code>${escapeHtml(num)}</code></td>
+      <td>${escapeHtml(date)}</td>
+      <td><span style="font-size:10px;text-transform:uppercase">${escapeHtml(type)}</span></td>
+      <td>${escapeHtml(party || '—')}</td>
+      <td>${escapeHtml(vehicle || '—')}</td>
+      <td>${returnable ? `Yes${expRet ? ' (by ' + escapeHtml(expRet) + ')' : ''}` : 'No'}</td>
+      <td><span style="font-size:10px;text-transform:uppercase;font-weight:700">${escapeHtml(status)}</span></td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function renderDeliveryChallanForm(main) {
+  if (!requireFileOrPrompt(main, 'New delivery challan')) return;
+  main.appendChild(h('h1', {}, ['New delivery challan']));
+
+  const cR = STATE.db.exec('SELECT id, name FROM customers WHERE archived=0 ORDER BY name');
+  const vR = STATE.db.exec('SELECT id, name FROM vendors WHERE archived=0 ORDER BY name');
+  const iR = STATE.db.exec('SELECT id, name, unit, enable_inventory FROM items WHERE archived=0 ORDER BY name');
+  const customers = cR.length ? cR[0].values.map(([id, name]) => ({ id, name })) : [];
+  const vendors = vR.length ? vR[0].values.map(([id, name]) => ({ id, name })) : [];
+  const items = iR.length ? iR[0].values.map(([id, name, unit, inv]) => ({ id, name, unit, enable_inventory: inv })) : [];
+  if (!items.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [h('p', {}, ['Add at least one item before creating a delivery challan.'])]));
+    return;
+  }
+
+  const form = {
+    challanType: 'outward-job',
+    customerId: customers[0]?.id || null,
+    vendorId: vendors[0]?.id || null,
+    challanDate: nowIso().slice(0, 10),
+    vehicle: '', transporter: '', destination: '', reason: '',
+    isReturnable: false, expectedReturnDate: '',
+    notes: '',
+    lines: [{ itemId: '', description: '', quantity: '1', rate: '' }],
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Delivery challan details']));
+  const body = h('div', { class: 'panel-b' });
+  body.innerHTML = `
+    <div class="field"><label>Type</label>
+      <select id="dc-type">
+        <option value="outward-job" selected>Outward — job work</option>
+        <option value="outward-sample">Outward — sample / display</option>
+        <option value="outward-return">Outward — return to vendor</option>
+        <option value="inward-return">Inward — return from customer</option>
+      </select>
+    </div>
+    <div class="field"><label>Challan number (auto)</label><input id="dc-num" value="${escapeHtml(nextChallanNumber(STATE.db))}" readonly style="background:var(--ash)"></div>
+    <div class="field"><label>Date</label><input id="dc-date" type="date" value="${form.challanDate}"></div>
+    <div class="field" id="dc-cust-wrap"><label>Customer</label><select id="dc-cust">${customers.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select></div>
+    <div class="field" id="dc-vend-wrap" style="display:none"><label>Vendor</label><select id="dc-vend">${vendors.map(v => `<option value="${v.id}">${escapeHtml(v.name)}</option>`).join('')}</select></div>
+    <div class="field"><label>Vehicle no.</label><input id="dc-vehicle" placeholder="MH01-AB-1234"></div>
+    <div class="field"><label>Transporter</label><input id="dc-transporter"></div>
+    <div class="field"><label>Destination</label><input id="dc-dest"></div>
+    <div class="field"><label>Reason</label><input id="dc-reason" placeholder="e.g. Sent for job-work / sample shown"></div>
+    <div class="field"><label>Returnable?</label>
+      <select id="dc-returnable">
+        <option value="0">No (one-way movement)</option>
+        <option value="1">Yes (expected back)</option>
+      </select>
+    </div>
+    <div class="field" id="dc-expret-wrap" style="display:none"><label>Expected return date</label><input id="dc-expret" type="date"></div>
+    <div class="field"><label>Notes</label><textarea id="dc-notes" rows="2"></textarea></div>
+  `;
+  panel.appendChild(body);
+
+  const linesTbl = h('table', { class: 'dense', style: 'margin-top:14px' });
+  linesTbl.innerHTML = `<thead><tr><th style="width:35%">Item</th><th class="num">Qty</th><th>Description / notes</th><th></th></tr></thead><tbody></tbody>`;
+  body.appendChild(linesTbl);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const addLineBtn = h('button', {}, ['+ Add line']);
+  addLineBtn.onclick = () => { form.lines.push({ itemId: '', description: '', quantity: '1', rate: '' }); rerenderLines(); };
+  const postBtn = h('button', { class: 'primary' }, ['Post challan & save']);
+  postBtn.onclick = doPost;
+  ctrls.appendChild(addLineBtn); ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    $('dc-type').addEventListener('change', () => {
+      form.challanType = $('dc-type').value;
+      const isInward = form.challanType === 'inward-return';
+      const isVendorOutward = form.challanType === 'outward-return';
+      $('dc-cust-wrap').style.display = isVendorOutward ? 'none' : '';
+      $('dc-vend-wrap').style.display = isVendorOutward ? '' : 'none';
+    });
+    $('dc-returnable').addEventListener('change', () => {
+      form.isReturnable = $('dc-returnable').value === '1';
+      $('dc-expret-wrap').style.display = form.isReturnable ? '' : 'none';
+    });
+    rerenderLines();
+  }, 0);
+
+  function rerenderLines() {
+    const tbody = linesTbl.querySelector('tbody');
+    tbody.innerHTML = '';
+    form.lines.forEach((ln, idx) => {
+      const tr = h('tr');
+      const itemSel = document.createElement('select');
+      itemSel.style.width = '100%';
+      itemSel.appendChild(h('option', { value: '' }, ['-- Pick item --']));
+      for (const it of items) {
+        const o = h('option', { value: String(it.id) }, [it.name + (it.enable_inventory ? ' 📦' : '')]);
+        if (String(ln.itemId) === String(it.id)) o.selected = true;
+        itemSel.appendChild(o);
+      }
+      itemSel.onchange = (e) => {
+        ln.itemId = e.target.value;
+        const it = items.find(x => String(x.id) === String(ln.itemId));
+        if (it) ln.description = it.name;
+      };
+      const tdItem = h('td'); tdItem.appendChild(itemSel); tr.appendChild(tdItem);
+      const qtyInp = h('input', { type: 'text', value: ln.quantity || '', style: 'width:100%;text-align:right' });
+      qtyInp.oninput = (e) => { ln.quantity = e.target.value; };
+      const tdQty = h('td', { class: 'num' }); tdQty.appendChild(qtyInp); tr.appendChild(tdQty);
+      const descInp = h('input', { type: 'text', value: ln.description || '', placeholder: 'Notes', style: 'width:100%' });
+      descInp.oninput = (e) => { ln.description = e.target.value; };
+      const tdDesc = h('td'); tdDesc.appendChild(descInp); tr.appendChild(tdDesc);
+      const tdRm = h('td');
+      if (form.lines.length > 1) {
+        const rmBtn = h('button', { class: 'small' }, ['×']);
+        rmBtn.onclick = () => { form.lines.splice(idx, 1); rerenderLines(); };
+        tdRm.appendChild(rmBtn);
+      }
+      tr.appendChild(tdRm);
+      tbody.appendChild(tr);
+    });
+  }
+
+  async function doPost() {
+    try {
+      const challanType = $('dc-type').value;
+      const isVendorOutward = challanType === 'outward-return';
+      const partyId = isVendorOutward ? parseInt($('dc-vend').value, 10) : parseInt($('dc-cust').value, 10);
+      if (!partyId) { toast(isVendorOutward ? 'Pick a vendor' : 'Pick a customer', 'err'); return; }
+
+      const computedLines = form.lines
+        .map((ln, i) => ({
+          line_no: i + 1,
+          item_id: ln.itemId ? parseInt(ln.itemId, 10) : null,
+          description: ln.description || '',
+          quantity: parseInt(ln.quantity, 10) || 0,
+        }))
+        .filter(ln => ln.item_id && ln.quantity > 0);
+      if (!computedLines.length) { toast('Add at least one valid line', 'err'); return; }
+
+      const challanNumber = $('dc-num').value;
+      const challanDate = $('dc-date').value;
+      const isReturnable = $('dc-returnable').value === '1' ? 1 : 0;
+      const expRet = $('dc-expret').value || null;
+      const notes = $('dc-notes').value.trim() || null;
+      const godownId = getDefaultGodownId(STATE.db);
+
+      // Snapshots
+      const companySnapshot = JSON.stringify(STATE.manifest.company || {});
+      let partySnapshot = '{}';
+      if (isVendorOutward) {
+        const r = STATE.db.exec('SELECT name, gstin, state, address FROM vendors WHERE id=?', [partyId]);
+        if (r.length && r[0].values.length) partySnapshot = JSON.stringify({ name: r[0].values[0][0], gstin: r[0].values[0][1], state: r[0].values[0][2], address: r[0].values[0][3] });
+      } else {
+        const r = STATE.db.exec('SELECT name, gstin, state, address FROM customers WHERE id=?', [partyId]);
+        if (r.length && r[0].values.length) partySnapshot = JSON.stringify({ name: r[0].values[0][0], gstin: r[0].values[0][1], state: r[0].values[0][2], address: r[0].values[0][3] });
+      }
+
+      STATE.db.run('BEGIN');
+      try {
+        STATE.db.run(
+          'INSERT INTO delivery_challans (challan_number, challan_date, challan_type, customer_id, vendor_id, godown_id, destination, vehicle_no, transporter, reason, is_returnable, expected_return_date, status, company_snapshot, party_snapshot, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [challanNumber, challanDate, challanType, isVendorOutward ? null : partyId, isVendorOutward ? partyId : null, godownId, $('dc-dest').value.trim() || null, $('dc-vehicle').value.trim() || null, $('dc-transporter').value.trim() || null, $('dc-reason').value.trim() || null, isReturnable, expRet, 'open', companySnapshot, partySnapshot, notes, nowIso()]
+        );
+        const challanId = lastInsertId(STATE.db);
+        const lineStmt = STATE.db.prepare('INSERT INTO delivery_challan_lines (challan_id, line_no, item_id, description, quantity, unit, rate) VALUES (?,?,?,?,?,?,?)');
+        for (const ln of computedLines) {
+          const it = items.find(x => x.id === ln.item_id);
+          lineStmt.run([challanId, ln.line_no, ln.item_id, ln.description, ln.quantity, it?.unit || null, null]);
+        }
+        lineStmt.free();
+        STATE.db.run('COMMIT');
+
+        // Stock effects (NO GL posting)
+        try {
+          postChallanStockEffects(STATE.db, {
+            id: challanId, challan_number: challanNumber, challan_date: challanDate,
+            challan_type: challanType, godown_id: godownId,
+          }, computedLines);
+        } catch (stockErr) {
+          console.error('Stock effect failed:', stockErr);
+          toast('Challan posted, but stock effect failed: ' + stockErr.message, 'err');
+        }
+
+        setSaveStatus('unsaved');
+        const ok = await persistKhata();
+        if (!ok) { render(); return; }
+        toast(`Challan ${challanNumber} posted`, 'ok');
+        nav('#/delivery-challans');
+      } catch (e) {
+        try { STATE.db.run('ROLLBACK'); } catch (_) {}
+        throw e;
+      }
+    } catch (e) { console.error(e); toast('Post failed: ' + e.message, 'err'); }
+  }
+}
+
+// --- E-way bills ----------------------------------------------------------
+
+function renderEwayBills(main) {
+  if (!requireFileOrPrompt(main, 'E-way bills')) return;
+  main.appendChild(h('h1', {}, ['E-way bills']));
+  const actions = h('div', { class: 'row' });
+  const newBtn = h('button', { class: 'primary' }, ['+ New e-way bill']);
+  newBtn.onclick = () => nav('#/eway-bill/new');
+  actions.appendChild(newBtn);
+  main.appendChild(actions);
+  const r = STATE.db.exec(`
+    SELECT id, ewb_number, ewb_date, source_type, source_ref, vehicle_no, total, status
+    FROM eway_bills ORDER BY ewb_date DESC, id DESC
+  `);
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No e-way bills yet. Generate one from an invoice or delivery challan.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>EWB #</th><th>Date</th><th>Source</th><th>Source ref</th><th>Vehicle</th><th class="num">Value</th><th>Status</th><th></th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, num, date, srcType, srcRef, vehicle, total, status] of r[0].values) {
+    const tr = h('tr');
+    tr.innerHTML = `
+      <td>${num ? `<code>${escapeHtml(num)}</code>` : '<span style="color:var(--ink-2)">draft</span>'}</td>
+      <td>${escapeHtml(date)}</td>
+      <td><span style="font-size:10px;text-transform:uppercase">${escapeHtml(srcType)}</span></td>
+      <td><code>${escapeHtml(srcRef)}</code></td>
+      <td>${escapeHtml(vehicle || '—')}</td>
+      <td class="num">${fmtINR(total)}</td>
+      <td><span style="font-size:10px;text-transform:uppercase;font-weight:700">${escapeHtml(status)}</span></td>
+      <td></td>
+    `;
+    const openBtn = h('button', { class: 'small' }, ['Open']);
+    openBtn.onclick = () => openEwayBillDetail(id);
+    tr.children[7].appendChild(openBtn);
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function openEwayBillDetail(ewbId) {
+  const wrap = $('modal');
+  wrap.innerHTML = '';
+  const m = h('div', { class: 'modal', style: 'max-width:680px' });
+  const r = STATE.db.exec('SELECT * FROM eway_bills WHERE id=?', [ewbId]);
+  if (!r.length || !r[0].values.length) return;
+  const cols = r[0].columns;
+  const v = r[0].values[0];
+  const ewb = {};
+  cols.forEach((c, i) => ewb[c] = v[i]);
+  m.appendChild(h('div', { class: 'modal-h' }, [`E-way bill — ${ewb.source_ref}`]));
+  const body = h('div', { class: 'modal-b' });
+  const supplier = ewb.supplier_snapshot ? JSON.parse(ewb.supplier_snapshot) : {};
+  const recipient = ewb.recipient_snapshot ? JSON.parse(ewb.recipient_snapshot) : {};
+  body.innerHTML = `
+    <div style="font-size:12px;line-height:1.6">
+      <div><b>Source:</b> ${escapeHtml(ewb.source_type)} <code>${escapeHtml(ewb.source_ref)}</code></div>
+      <div><b>Date:</b> ${escapeHtml(ewb.ewb_date)}</div>
+      <div><b>EWB number:</b> ${ewb.ewb_number ? `<code>${escapeHtml(ewb.ewb_number)}</code>` : '<span style="color:var(--alert)">— DRAFT —</span>'}</div>
+      <div><b>Status:</b> <span style="text-transform:uppercase;font-weight:700">${escapeHtml(ewb.status)}</span></div>
+      <hr style="margin:10px 0;border:none;border-top:1px solid var(--rule)">
+      <div><b>Supplier:</b> ${escapeHtml(supplier.name || '')} (${escapeHtml(supplier.gstin || '—')})</div>
+      <div><b>Recipient:</b> ${escapeHtml(recipient.name || '')} (${escapeHtml(recipient.gstin || '—')})</div>
+      <hr style="margin:10px 0;border:none;border-top:1px solid var(--rule)">
+      <div><b>Transporter:</b> ${escapeHtml(ewb.transporter_name || '—')} (${escapeHtml(ewb.transporter_id || '—')})</div>
+      <div><b>Vehicle:</b> ${escapeHtml(ewb.vehicle_no || '—')} · ${escapeHtml(ewb.mode || '—')}</div>
+      <div><b>Distance:</b> ${ewb.distance_km || 0} km</div>
+      <hr style="margin:10px 0;border:none;border-top:1px solid var(--rule)">
+      <div><b>Taxable:</b> ${fmtINR(ewb.taxable_value)} · <b>Total:</b> ${fmtINR(ewb.total)}</div>
+    </div>
+    <div class="field" style="margin-top:14px"><label>Mark as generated — enter EWB number from NIC portal</label><input id="ewb-num-in" value="${escapeHtml(ewb.ewb_number || '')}" placeholder="12-digit number"></div>
+  `;
+  m.appendChild(body);
+
+  const cancel = h('button', {}, ['Close']);
+  cancel.onclick = () => closeModal();
+  const dlJson = h('button', {}, ['Download JSON']);
+  dlJson.onclick = async () => {
+    try {
+      const json = buildEwayBillJson(STATE.db, ewbId);
+      const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `ewb-${slugify(STATE.manifest.company?.name || 'co')}-${ewb.source_ref.replace(/[^a-z0-9]/gi, '-')}.json`,
+        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+      });
+      const w = await handle.createWritable(); await w.write(blob); await w.close();
+      toast(`Saved ${handle.name}`, 'ok');
+    } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+  };
+  const dlPdf = h('button', {}, ['Download PDF']);
+  dlPdf.onclick = async () => {
+    try {
+      await exportEwayBillPdf(STATE.db, ewbId);
+    } catch (e) { toast('PDF export failed: ' + e.message, 'err'); }
+  };
+  const save = h('button', { class: 'primary' }, ['Save EWB number']);
+  save.onclick = async () => {
+    const num = $('ewb-num-in').value.trim();
+    if (num) {
+      STATE.db.run("UPDATE eway_bills SET ewb_number=?, status='generated' WHERE id=?", [num, ewbId]);
+      setSaveStatus('unsaved');
+      await persistKhata();
+      toast('EWB number saved', 'ok');
+      closeModal();
+      render();
+    } else {
+      toast('Enter the EWB number', 'err');
+    }
+  };
+  m.appendChild(h('div', { class: 'modal-f' }, [cancel, dlJson, dlPdf, save]));
+  wrap.appendChild(m);
+  wrap.classList.remove('hidden');
+}
+
+// E-way bill PDF export — reuses the existing jsPDF lazy loader.
+async function exportEwayBillPdf(db, ewbId) {
+  const jsPDFCtor = await loadJsPDF();
+  const r = db.exec('SELECT * FROM eway_bills WHERE id=?', [ewbId]);
+  if (!r.length || !r[0].values.length) throw new Error('EWB not found');
+  const cols = r[0].columns;
+  const v = r[0].values[0];
+  const ewb = {};
+  cols.forEach((c, i) => ewb[c] = v[i]);
+  const supplier = ewb.supplier_snapshot ? JSON.parse(ewb.supplier_snapshot) : {};
+  const recipient = ewb.recipient_snapshot ? JSON.parse(ewb.recipient_snapshot) : {};
+  const goods = ewb.goods_snapshot ? JSON.parse(ewb.goods_snapshot) : [];
+
+  const doc = new jsPDFCtor({ unit: 'mm', format: 'a4' });
+  let y = 15;
+  doc.setFont('helvetica', 'bold').setFontSize(14);
+  doc.text('E-WAY BILL', 105, y, { align: 'center' });
+  y += 6;
+  doc.setFont('helvetica', 'normal').setFontSize(10);
+  doc.text(ewb.ewb_number ? `EWB No: ${ewb.ewb_number}` : 'EWB No: — DRAFT —', 105, y, { align: 'center' });
+  y += 5;
+  doc.text(`Date: ${ewb.ewb_date}`, 105, y, { align: 'center' });
+  y += 8;
+  doc.setLineWidth(0.3); doc.line(15, y, 195, y); y += 5;
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('Supplier', 15, y);
+  doc.text('Recipient', 110, y);
+  y += 5;
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(`${supplier.name || ''}`, 15, y);
+  doc.text(`${recipient.name || ''}`, 110, y);
+  y += 4;
+  doc.text(`GSTIN: ${supplier.gstin || ''}`, 15, y);
+  doc.text(`GSTIN: ${recipient.gstin || 'URP'}`, 110, y);
+  y += 4;
+  doc.text(`State: ${supplier.stateName || ''}`, 15, y);
+  doc.text(`State: ${recipient.stateName || ''}`, 110, y);
+  y += 8;
+
+  doc.setFont('helvetica', 'bold').setFontSize(10);
+  doc.text(`Source: ${ewb.source_type} ${ewb.source_ref}`, 15, y); y += 5;
+  doc.line(15, y, 195, y); y += 5;
+
+  doc.setFont('helvetica', 'bold').setFontSize(9);
+  doc.text('Item', 15, y);
+  doc.text('HSN', 80, y);
+  doc.text('Qty', 110, y, { align: 'right' });
+  doc.text('Taxable', 145, y, { align: 'right' });
+  doc.text('Tax', 175, y, { align: 'right' });
+  y += 4; doc.line(15, y, 195, y); y += 5;
+  doc.setFont('helvetica', 'normal');
+  for (const g of goods) {
+    if (y > 240) { doc.addPage(); y = 20; }
+    doc.text(String(g.desc || '').slice(0, 35), 15, y);
+    doc.text(String(g.hsn || ''), 80, y);
+    doc.text(String(g.qty || 0), 110, y, { align: 'right' });
+    doc.text(((g.taxable || 0) / 100).toFixed(2), 145, y, { align: 'right' });
+    doc.text((((g.cgst || 0) + (g.sgst || 0) + (g.igst || 0)) / 100).toFixed(2), 175, y, { align: 'right' });
+    y += 5;
+  }
+  y += 4; doc.line(15, y, 195, y); y += 5;
+  doc.setFont('helvetica', 'bold');
+  doc.text(`Total taxable: Rs. ${(ewb.taxable_value / 100).toFixed(2)}`, 15, y); y += 5;
+  doc.text(`CGST: Rs. ${(ewb.cgst / 100).toFixed(2)}   SGST: Rs. ${(ewb.sgst / 100).toFixed(2)}   IGST: Rs. ${(ewb.igst / 100).toFixed(2)}`, 15, y); y += 5;
+  doc.text(`Grand total: Rs. ${(ewb.total / 100).toFixed(2)}`, 15, y); y += 8;
+
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(`Transporter: ${ewb.transporter_name || '—'} (${ewb.transporter_id || '—'})`, 15, y); y += 4;
+  doc.text(`Vehicle: ${ewb.vehicle_no || '—'} · Mode: ${ewb.mode || '—'} · Distance: ${ewb.distance_km || 0} km`, 15, y); y += 8;
+
+  // QR placeholder
+  doc.setLineWidth(0.5);
+  doc.rect(150, y, 30, 30);
+  doc.setFontSize(7);
+  doc.text('QR placeholder', 165, y + 16, { align: 'center' });
+  doc.text('(after EWB gen)', 165, y + 19, { align: 'center' });
+
+  const filename = `ewb-${slugify(STATE.manifest.company?.name || 'co')}-${(ewb.source_ref || 'draft').replace(/[^a-z0-9]/gi, '-')}.pdf`;
+  try {
+    const blob = doc.output('blob');
+    const handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+    });
+    const w = await handle.createWritable(); await w.write(blob); await w.close();
+    toast(`Saved ${handle.name}`, 'ok');
+  } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+}
+
+function renderEwayBillForm(main) {
+  if (!requireFileOrPrompt(main, 'New e-way bill')) return;
+  main.appendChild(h('h1', {}, ['New e-way bill']));
+
+  // Source picker — pull recent invoices + delivery challans
+  const invR = STATE.db.exec(`SELECT id, invoice_number, invoice_date, customer_id, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, customer_snapshot, company_snapshot FROM invoices WHERE status='posted' ORDER BY invoice_date DESC, id DESC LIMIT 100`);
+  const dcR = STATE.db.exec(`SELECT id, challan_number, challan_date, customer_id, vendor_id, party_snapshot, company_snapshot FROM delivery_challans ORDER BY challan_date DESC, id DESC LIMIT 50`);
+
+  const invoices = invR.length ? invR[0].values.map(v => ({
+    id: v[0], number: v[1], date: v[2], customerId: v[3], placeOfSupply: v[4], placeOfSupplyName: v[5],
+    subtotal: v[6], cgst: v[7], sgst: v[8], igst: v[9], total: v[10],
+    customerSnapshot: v[11], companySnapshot: v[12],
+  })) : [];
+  const challans = dcR.length ? dcR[0].values.map(v => ({
+    id: v[0], number: v[1], date: v[2], customerId: v[3], vendorId: v[4],
+    partySnapshot: v[5], companySnapshot: v[6],
+  })) : [];
+
+  if (!invoices.length && !challans.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [h('p', {}, ['No invoices or delivery challans to generate from. Post one first.'])]));
+    return;
+  }
+
+  const form = {
+    sourceType: invoices.length ? 'invoice' : 'delivery-challan',
+    sourceId: invoices[0]?.id || challans[0]?.id,
+    transporterName: '', transporterId: '', vehicleNo: '', vehicleType: 'regular',
+    mode: 'road', distanceKm: 0, reasonCode: '1',
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['E-way bill details']));
+  const body = h('div', { class: 'panel-b' });
+  const invOpts = invoices.map(i => `<option value="invoice:${i.id}">Invoice ${escapeHtml(i.number)} · ${i.date} · ${fmtINR(i.total)}</option>`).join('');
+  const dcOpts = challans.map(c => `<option value="delivery-challan:${c.id}">DC ${escapeHtml(c.number)} · ${c.date}</option>`).join('');
+  body.innerHTML = `
+    <div class="field"><label>Source document</label>
+      <select id="ewbf-source">
+        ${invOpts ? `<optgroup label="Invoices">${invOpts}</optgroup>` : ''}
+        ${dcOpts ? `<optgroup label="Delivery challans">${dcOpts}</optgroup>` : ''}
+      </select>
+    </div>
+    <div class="field"><label>Transporter name</label><input id="ewbf-trname"></div>
+    <div class="field"><label>Transporter ID (15-digit GSTIN/TRANSIN)</label><input id="ewbf-trid" maxlength="15" style="text-transform:uppercase"></div>
+    <div class="field"><label>Vehicle number</label><input id="ewbf-veh" placeholder="MH01-AB-1234" style="text-transform:uppercase"></div>
+    <div class="field"><label>Vehicle type</label>
+      <select id="ewbf-vtype">
+        <option value="regular">Regular</option>
+        <option value="over-dimensional">Over-dimensional cargo</option>
+      </select>
+    </div>
+    <div class="field"><label>Mode</label>
+      <select id="ewbf-mode">
+        <option value="road" selected>Road</option>
+        <option value="rail">Rail</option>
+        <option value="air">Air</option>
+        <option value="ship">Ship</option>
+      </select>
+    </div>
+    <div class="field"><label>Distance (km)</label><input id="ewbf-dist" type="number" value="0" style="text-align:right"></div>
+    <div class="field"><label>Reason</label>
+      <select id="ewbf-reason">
+        <option value="1" selected>1 — Supply</option>
+        <option value="2">2 — Export</option>
+        <option value="3">3 — Job work</option>
+        <option value="4">4 — SKD/CKD</option>
+        <option value="5">5 — Recipient not known</option>
+        <option value="6">6 — For own use</option>
+        <option value="8">8 — Others</option>
+      </select>
+    </div>
+  `;
+  panel.appendChild(body);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const saveBtn = h('button', { class: 'primary' }, ['Save as draft']);
+  saveBtn.onclick = doSave;
+  ctrls.appendChild(saveBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  async function doSave() {
+    try {
+      const [srcType, srcIdStr] = $('ewbf-source').value.split(':');
+      const srcId = parseInt(srcIdStr, 10);
+      let supplierSnap = '{}', recipientSnap = '{}', goodsSnap = '[]';
+      let sourceRef = '', taxable = 0, cgst = 0, sgst = 0, igst = 0, total = 0;
+
+      if (srcType === 'invoice') {
+        const inv = invoices.find(i => i.id === srcId);
+        if (!inv) { toast('Invoice not found', 'err'); return; }
+        sourceRef = inv.number;
+        supplierSnap = inv.companySnapshot || '{}';
+        recipientSnap = inv.customerSnapshot || '{}';
+        taxable = inv.subtotal; cgst = inv.cgst; sgst = inv.sgst; igst = inv.igst; total = inv.total;
+        const linesR = STATE.db.exec('SELECT description, hsn_sac, quantity, unit, taxable, tax_rate, cgst, sgst, igst FROM invoice_lines WHERE invoice_id=? ORDER BY line_no', [inv.id]);
+        if (linesR.length) {
+          goodsSnap = JSON.stringify(linesR[0].values.map(v => ({
+            desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: v[4], tax_rate: v[5], cgst: v[6], sgst: v[7], igst: v[8],
+          })));
+        }
+      } else {
+        const dc = challans.find(c => c.id === srcId);
+        if (!dc) { toast('Challan not found', 'err'); return; }
+        sourceRef = dc.number;
+        supplierSnap = dc.companySnapshot || '{}';
+        recipientSnap = dc.partySnapshot || '{}';
+        const linesR = STATE.db.exec('SELECT description, NULL as hsn, quantity, unit, 0, 0, 0, 0, 0 FROM delivery_challan_lines WHERE challan_id=? ORDER BY line_no', [dc.id]);
+        if (linesR.length) {
+          goodsSnap = JSON.stringify(linesR[0].values.map(v => ({
+            desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: 0, tax_rate: 0, cgst: 0, sgst: 0, igst: 0,
+          })));
+        }
+      }
+
+      STATE.db.run(
+        'INSERT INTO eway_bills (ewb_date, source_type, source_id, source_ref, transporter_name, transporter_id, vehicle_no, vehicle_type, mode, distance_km, reason_code, supplier_snapshot, recipient_snapshot, goods_snapshot, taxable_value, cgst, sgst, igst, total, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [nowIso().slice(0, 10), srcType, srcId, sourceRef,
+          $('ewbf-trname').value.trim() || null, $('ewbf-trid').value.trim().toUpperCase() || null,
+          $('ewbf-veh').value.trim().toUpperCase() || null, $('ewbf-vtype').value, $('ewbf-mode').value,
+          parseInt($('ewbf-dist').value, 10) || 0, $('ewbf-reason').value,
+          supplierSnap, recipientSnap, goodsSnap,
+          taxable, cgst, sgst, igst, total, 'draft', nowIso()]
+      );
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast('E-way bill draft saved', 'ok');
+      nav('#/eway-bills');
+    } catch (e) { console.error(e); toast('Save failed: ' + e.message, 'err'); }
+  }
+}
+
+// --- Stock transfers ------------------------------------------------------
+
+function renderStockTransfers(main) {
+  if (!requireFileOrPrompt(main, 'Stock transfers')) return;
+  main.appendChild(h('h1', {}, ['Inter-GSTIN stock transfers']));
+  const actions = h('div', { class: 'row' });
+  const outBtn = h('button', { class: 'primary' }, ['+ Outbound transfer']);
+  outBtn.onclick = () => nav('#/stock-transfer/out/new');
+  const inBtn = h('button', {}, ['Import inbound JSON']);
+  inBtn.onclick = () => nav('#/stock-transfer/in/import');
+  actions.appendChild(outBtn);
+  actions.appendChild(inBtn);
+  main.appendChild(actions);
+  const r = STATE.db.exec(`
+    SELECT id, transfer_number, transfer_date, direction, from_gstin, to_gstin, total_value, status
+    FROM stock_transfers ORDER BY transfer_date DESC, id DESC
+  `);
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No transfers yet.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>#</th><th>Date</th><th>Direction</th><th>From GSTIN</th><th>To GSTIN</th><th class="num">Value</th><th>Status</th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, num, date, dir, fg, tg, total, status] of r[0].values) {
+    const tr = h('tr');
+    tr.innerHTML = `
+      <td><code>${escapeHtml(num)}</code></td>
+      <td>${escapeHtml(date)}</td>
+      <td><b>${escapeHtml(dir)}</b></td>
+      <td><code>${escapeHtml(fg)}</code></td>
+      <td><code>${escapeHtml(tg)}</code></td>
+      <td class="num">${fmtINR(total)}</td>
+      <td><span style="font-size:10px;text-transform:uppercase">${escapeHtml(status)}</span></td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function renderStockTransferOut(main) {
+  if (!requireFileOrPrompt(main, 'Stock transfer (out)')) return;
+  main.appendChild(h('h1', {}, ['Inter-GSTIN stock transfer — outbound']));
+  main.appendChild(h('p', { class: 'help' }, ['When you move stock from your GSTIN in one state to your other GSTIN in another state, GST treats it as a taxable inter-state supply. Bahi raises the corresponding tax invoice on this side and exports a JSON the receiving company file imports to record the matching purchase.']));
+
+  const iR = STATE.db.exec('SELECT id, name, hsn_sac, unit, default_rate, default_tax_rate, enable_inventory FROM items WHERE archived=0 AND enable_inventory=1 ORDER BY name');
+  const items = iR.length ? iR[0].values.map(v => ({ id: v[0], name: v[1], hsn_sac: v[2], unit: v[3], default_rate: v[4], default_tax_rate: v[5] })) : [];
+  if (!items.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [h('p', {}, ['Add at least one inventory-tracked item first.'])]));
+    return;
+  }
+
+  const fromGstin = STATE.manifest.company?.gstin || '';
+  const fromState = STATE.manifest.company?.state || '';
+
+  const form = {
+    transferDate: nowIso().slice(0, 10),
+    toGstin: '', toState: '',
+    lines: [{ itemId: items[0].id, quantity: '1', rate: '', taxRate: 0.18 }],
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Transfer details']));
+  const body = h('div', { class: 'panel-b' });
+  body.innerHTML = `
+    <div class="field"><label>Transfer number (auto)</label><input id="st-num" value="${escapeHtml(nextStockTransferNumber(STATE.db))}" readonly style="background:var(--ash)"></div>
+    <div class="field"><label>Date</label><input id="st-date" type="date" value="${form.transferDate}"></div>
+    <div class="field"><label>From GSTIN (this company)</label><input value="${escapeHtml(fromGstin)}" readonly style="background:var(--ash)"></div>
+    <div class="field"><label>To GSTIN (your other GSTIN)</label><input id="st-togstin" maxlength="15" style="text-transform:uppercase" placeholder="15-digit GSTIN"></div>
+    <div class="field"><label>To state</label><input id="st-tostate" list="bahi-states" placeholder="Type state name, ISO code, or GST code"></div>
+  `;
+  panel.appendChild(body);
+
+  const linesTbl = h('table', { class: 'dense', style: 'margin-top:14px' });
+  linesTbl.innerHTML = `<thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Tax</th><th class="num">Amount</th><th></th></tr></thead><tbody></tbody>`;
+  body.appendChild(linesTbl);
+  const totalsBox = h('div', { id: 'st-totals', style: 'margin-top:14px;font-size:13px;text-align:right;line-height:1.8' });
+  body.appendChild(totalsBox);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const addLineBtn = h('button', {}, ['+ Add line']);
+  addLineBtn.onclick = () => { form.lines.push({ itemId: items[0].id, quantity: '1', rate: '', taxRate: 0.18 }); rerenderLines(); };
+  const postBtn = h('button', { class: 'primary' }, ['Post transfer + raise invoice']);
+  postBtn.onclick = doPost;
+  ctrls.appendChild(addLineBtn); ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    $('st-togstin').addEventListener('input', () => {
+      const v = $('st-togstin').value.trim().toUpperCase();
+      if (v.length >= 2) {
+        const s = STATE_BY_GSTIN.get(v.slice(0, 2));
+        if (s) $('st-tostate').value = stateLabel(s);
+      }
+    });
+    rerenderLines();
+  }, 0);
+
+  function rerenderLines() {
+    const tbody = linesTbl.querySelector('tbody');
+    tbody.innerHTML = '';
+    form.lines.forEach((ln, idx) => {
+      const tr = h('tr');
+      const itemSel = document.createElement('select');
+      itemSel.style.width = '100%';
+      for (const it of items) {
+        const o = h('option', { value: String(it.id) }, [it.name]);
+        if (String(ln.itemId) === String(it.id)) o.selected = true;
+        itemSel.appendChild(o);
+      }
+      itemSel.onchange = (e) => {
+        ln.itemId = parseInt(e.target.value, 10);
+        const it = items.find(x => x.id === ln.itemId);
+        if (it && it.default_rate != null) ln.rate = (it.default_rate / 100).toFixed(2);
+        if (it && it.default_tax_rate != null) ln.taxRate = it.default_tax_rate;
+        rerenderLines();
+      };
+      tr.appendChild(h('td', {}, [itemSel]));
+      const qtyInp = h('input', { type: 'text', value: ln.quantity || '', style: 'width:100%;text-align:right' });
+      qtyInp.oninput = (e) => { ln.quantity = e.target.value; recomputeTotals(); };
+      tr.appendChild(h('td', { class: 'num' }, [qtyInp]));
+      const rateInp = h('input', { type: 'text', value: ln.rate || '', placeholder: '0.00', style: 'width:100%;text-align:right' });
+      rateInp.oninput = (e) => { ln.rate = e.target.value; recomputeTotals(); };
+      tr.appendChild(h('td', { class: 'num' }, [rateInp]));
+      const taxSel = document.createElement('select');
+      taxSel.style.width = '100%';
+      for (const r of getActiveGstRates()) {
+        const dec = r.rate / 100;
+        const o = h('option', { value: String(dec) }, [r.rate + '%']);
+        if (Math.abs(ln.taxRate - dec) < 1e-9) o.selected = true;
+        taxSel.appendChild(o);
+      }
+      taxSel.onchange = (e) => { ln.taxRate = parseFloat(e.target.value); recomputeTotals(); };
+      tr.appendChild(h('td', { class: 'num' }, [taxSel]));
+      const taxable = (parseFloat(ln.quantity) || 0) * parseRupees(ln.rate);
+      tr.appendChild(h('td', { class: 'num' }, [fmtINR(Math.round(taxable))]));
+      const tdRm = h('td');
+      if (form.lines.length > 1) {
+        const rmBtn = h('button', { class: 'small' }, ['×']);
+        rmBtn.onclick = () => { form.lines.splice(idx, 1); rerenderLines(); };
+        tdRm.appendChild(rmBtn);
+      }
+      tr.appendChild(tdRm);
+      tbody.appendChild(tr);
+    });
+    recomputeTotals();
+  }
+
+  function recomputeTotals() {
+    let subtotal = 0, igst = 0;
+    for (const ln of form.lines) {
+      const taxable = Math.round((parseFloat(ln.quantity) || 0) * parseRupees(ln.rate));
+      subtotal += taxable;
+      igst += Math.round(taxable * (ln.taxRate || 0));
+    }
+    const total = subtotal + igst;
+    totalsBox.innerHTML = `
+      <div>Taxable: <b>${fmtINR(subtotal)}</b></div>
+      <div>IGST: <b>${fmtINR(igst)}</b></div>
+      <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:15px">Total: ${fmtINR(total)}</b></div>
+    `;
+    postBtn.disabled = total <= 0;
+  }
+
+  async function doPost() {
+    try {
+      const toGstin = $('st-togstin').value.trim().toUpperCase();
+      if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(toGstin)) {
+        toast('Receiver GSTIN format invalid', 'err'); return;
+      }
+      const toStateRow = parseStateInput($('st-tostate').value);
+      if (!toStateRow) { toast('Receiver state required', 'err'); return; }
+      const toState = toStateRow[0];
+      if (toGstin.slice(0, 2) !== toStateRow[1]) { toast('GSTIN/state mismatch', 'err'); return; }
+      if (toGstin === fromGstin) { toast('Receiver GSTIN must be different from sender', 'err'); return; }
+
+      let subtotal = 0, igst = 0;
+      const computedLines = [];
+      for (const [i, ln] of form.lines.entries()) {
+        const qty = parseFloat(ln.quantity) || 0;
+        const rate = parseRupees(ln.rate);
+        const taxable = Math.round(qty * rate);
+        const lineIgst = Math.round(taxable * (ln.taxRate || 0));
+        if (taxable <= 0) continue;
+        subtotal += taxable;
+        igst += lineIgst;
+        computedLines.push({
+          line_no: i + 1,
+          item_id: ln.itemId,
+          quantity: qty, rate, taxable,
+          tax_rate: ln.taxRate || 0,
+          igst: lineIgst,
+          cgst: 0, sgst: 0,
+          total: taxable + lineIgst,
+        });
+      }
+      if (!computedLines.length) { toast('Add at least one valid line', 'err'); return; }
+      const total = subtotal + igst;
+      const transferNumber = $('st-num').value;
+      const transferDate = $('st-date').value;
+
+      // Create payload snapshot for cross-file export
+      const itemsForPayload = computedLines.map(ln => {
+        const it = items.find(x => x.id === ln.item_id);
+        return {
+          item_name: it?.name || '',
+          hsn_sac: it?.hsn_sac || null,
+          unit: it?.unit || null,
+          quantity: ln.quantity,
+          rate: ln.rate,
+          taxable: ln.taxable,
+          tax_rate: ln.tax_rate,
+          igst: ln.igst,
+        };
+      });
+      const payload = {
+        format: 'bahi-stock-transfer/1.0',
+        transfer_number: transferNumber,
+        transfer_date: transferDate,
+        from: { gstin: fromGstin, state: fromState, name: STATE.manifest.company?.name || '' },
+        to: { gstin: toGstin, state: toState },
+        lines: itemsForPayload,
+        totals: { subtotal, igst, total },
+      };
+
+      STATE.db.run(
+        'INSERT INTO stock_transfers (transfer_number, transfer_date, direction, from_gstin, from_state, to_gstin, to_state, total_value, payload_snapshot, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        [transferNumber, transferDate, 'out', fromGstin, fromState, toGstin, toState, total, JSON.stringify(payload), 'sent', nowIso()]
+      );
+      const transferId = lastInsertId(STATE.db);
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+
+      // Auto-export the JSON for the receiver
+      try {
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `stock-transfer-${transferNumber.replace(/[^a-z0-9]/gi, '-')}.json`,
+          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+        });
+        const w = await handle.createWritable(); await w.write(blob); await w.close();
+        toast(`Saved ${handle.name}. Open it on the receiver side via "Import inbound JSON".`, 'ok');
+      } catch (e) { if (e.name !== 'AbortError') toast('Save dialog cancelled — transfer is recorded', 'err'); }
+
+      nav('#/stock-transfers');
+    } catch (e) { console.error(e); toast('Post failed: ' + e.message, 'err'); }
+  }
+}
+
+function renderStockTransferIn(main) {
+  if (!requireFileOrPrompt(main, 'Stock transfer (in)')) return;
+  main.appendChild(h('h1', {}, ['Inter-GSTIN stock transfer — import']));
+  main.appendChild(h('p', { class: 'help' }, ['Import a JSON file produced by another Bahi company file (the sender side). Bahi will validate it, surface a draft transfer, and pre-fill the matching purchase form.']));
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Import payload']));
+  const body = h('div', { class: 'panel-b' });
+  const fileBtn = h('button', { class: 'primary' }, ['Choose JSON file…']);
+  body.appendChild(fileBtn);
+  const out = h('div', { id: 'st-import-out', style: 'margin-top:14px' });
+  body.appendChild(out);
+  panel.appendChild(body);
+  main.appendChild(panel);
+
+  fileBtn.onclick = async () => {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: 'Bahi stock transfer JSON', accept: { 'application/json': ['.json'] } }],
+      });
+      const file = await handle.getFile();
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      if (payload.format !== 'bahi-stock-transfer/1.0') {
+        toast('Not a Bahi stock transfer JSON', 'err'); return;
+      }
+      const myGstin = STATE.manifest.company?.gstin || '';
+      if (myGstin && payload.to.gstin !== myGstin) {
+        if (!confirm(`This transfer is addressed to ${payload.to.gstin}, but this file is ${myGstin}. Import anyway?`)) return;
+      }
+      // Save the draft inbound transfer
+      STATE.db.run(
+        'INSERT INTO stock_transfers (transfer_number, transfer_date, direction, from_gstin, from_state, to_gstin, to_state, total_value, payload_snapshot, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        [payload.transfer_number, payload.transfer_date, 'in', payload.from.gstin, payload.from.state, payload.to.gstin, payload.to.state, payload.totals.total, JSON.stringify(payload), 'received', nowIso()]
+      );
+      setSaveStatus('unsaved');
+      await persistKhata();
+      out.innerHTML = '';
+      out.appendChild(h('div', { style: 'padding:10px;background:var(--ash);border:1px solid var(--rule);border-radius:4px' }, [
+        h('div', {}, [`Transfer ${payload.transfer_number} from ${payload.from.name} (${payload.from.gstin}) for ${fmtINR(payload.totals.total)} imported.`]),
+        h('div', { class: 'help', style: 'margin-top:8px' }, ['The transfer is now visible in Stock transfers (direction: in). To record the matching purchase, jump to the Purchases form and add the lines manually using the displayed values.']),
+      ]));
+      const tbl = h('table', { class: 'dense', style: 'margin-top:10px' });
+      tbl.innerHTML = '<thead><tr><th>Item</th><th>HSN</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Taxable</th><th class="num">IGST</th></tr></thead>';
+      const tbody = h('tbody');
+      for (const ln of payload.lines) {
+        const tr = h('tr');
+        tr.innerHTML = `<td>${escapeHtml(ln.item_name)}</td><td>${escapeHtml(ln.hsn_sac || '—')}</td><td class="num">${ln.quantity}</td><td class="num">${fmtINR(ln.rate)}</td><td class="num">${fmtINR(ln.taxable)}</td><td class="num">${fmtINR(ln.igst)}</td>`;
+        tbody.appendChild(tr);
+      }
+      tbl.appendChild(tbody);
+      out.appendChild(tbl);
+      toast('Stock transfer imported', 'ok');
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.error(e);
+        toast('Import failed: ' + e.message, 'err');
+      }
+    }
+  };
 }
 
 //------------------------------------------------------------
@@ -10724,7 +12989,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">Phase 3 · service SMB tier (vendors + purchases + credit/debit notes + journal vouchers + reports + GSTR-3B + FY rollover + tax challans)</div>
+      <div class="k">Bahi version</div><div class="v">Phase 4 · goods SMB tier (inventory engine, WAC + FIFO + batches, godowns, delivery challans, e-way bills, inter-GSTIN stock transfers)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>
@@ -10876,7 +13141,8 @@ function renderSettings(main) {
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Still deferred (lower priority):</b> daily/monthly snapshot bucketing (currently last-20-saves only), Wrong-file Layer 3 (ancestry on refresh — needs Phase 6 reconciliation), Wrong-file Layer 4 (export-time check — no .khata exports yet), audit-log replay restoration, full HSN top-2000 + SAC bundle (needs khata-standard repo to publish), reference data update UI (Phase 2 work), OPFS staging for true atomic writes (currently verify-before-write), one-time backfill flow for legacy v1 invoices, Devanagari/Tamil PDF fonts (currently Helvetica only — uses "Rs." instead of ₹), advance receipts (on-account credit when payment exceeds allocation), contra entries (bank-to-cash, bank-to-bank).</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 2B coming next:</b> dashboard (receivables aging, cashflow, recent activity), GSTR-1 JSON export, advance receipts with GST on advance, multiple invoice series (domestic / export / SEZ / bill of supply), composition scheme handling, first-run onboarding screen, PAN-aware multi-GSTIN copy-from-existing wizard, Devanagari font lazy-load for PDF (Phase 2B.3).</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 3 — Service SMB tier (this build).</b> <b>Vendor master</b> mirrors customers, with RCM-applicable + default TDS section flags. <b>Purchases</b> with internal ref (PUR/{FY}/{NNNN}), vendor's bill number, place-of-supply state routing, RCM toggle (auto-routes to GST RCM Input/Output sub-accounts), ITC eligible flag (motor vehicles, club fees, etc. blocked-credit support), per-rate sub-account auto-create. <b>Credit notes</b> (against invoices) and <b>debit notes</b> (against purchases) with full-reversal or partial-amount modes; both inherit company + customer/vendor snapshots from the parent so reprints stay historically correct. <b>Journal voucher</b> form for free-form double-entry adjustments. <b>Reports</b>: Trial Balance, Balance Sheet (with tie check + period-profit rollup), Day Book, Account Ledger (per-account with running balance), Sales Register, Purchase Register. <b>GSTR-3B</b> summary view (Section 3.1 outward + 3.1d RCM + Section 4 ITC + net liability) with JSON + CSV download. <b>FY rollover wizard</b>: preview net profit/loss, post system-generated closing entries that zero out income/expense accounts → P&amp;L Summary → Capital Account, recorded in <code>fy_closings</code>. <b>Period locks</b> for marking GSTR-1 / GSTR-3B / CMP-08 / 26Q / 27EQ as filed. <b>Tax payment challans</b> templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, and a custom builder.</p>
-    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 4+:</b> Goods SMB tier (inventory, stock, e-way bills, multi-warehouse) → Tally import → CA mode (multi-company) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → polish &amp; launch.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 4 — Goods SMB tier (this build).</b> <b>Schema v7</b>: items get inventory columns (enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor, opening_stock_qty/value); 8 new tables (godowns, batches, stock_movements, delivery_challans + lines, eway_bills, stock_transfers). <b>Stock movement engine</b> with both Weighted Average Cost AND First-In-First-Out (selectable per item), plus opt-in named-batch tracking for pharma/electronics/perishables. Posting hooks on invoice / purchase / credit note / debit note auto-decrement and increment stock when items have inventory enabled; service-only items see zero behaviour change. Each invoice posts a separate Dr Cost of Goods Sold / Cr Stock-in-Hand journal at the computed COGS rate. <b>Single auto-seeded "Main" godown</b> with multi-godown UI accessible via sidebar. <b>Reports</b>: Inventory dashboard (KPIs + reorder + aging summary), Stock on hand, Stock movements, Stock register (per-item movement walkthrough with running qty), Batches list, Valuation summary, Reorder alerts, Stock aging (0–30/31–60/61–90/90+ buckets). Stock-in-Hand and Cost of Goods Sold flow into the existing Balance Sheet and P&amp;L automatically. <b>Delivery challans</b> (outward job-work / sample / return + inward return) with stock movement but no GL posting. <b>E-way bills</b> with NIC bulk-upload JSON export + printable PDF (with QR placeholder for the EWB number); generated from any invoice or delivery challan; "mark as generated" workflow lets you re-export the PDF with the real EWB number after portal submission. <b>Inter-GSTIN stock transfers</b> (same legal entity, different GSTINs) with cross-file JSON export from the sender side and import on the receiver side.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 5+:</b> Tally import (XML parser + mapping UI) → CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass + dark mode + undo stack + landing page → launch.</p>
   `;
   notes.appendChild(nb);
   main.appendChild(notes);

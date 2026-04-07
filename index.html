@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
-<title>Bahi — Browser-native accounting · Phase 5</title>
+<title>Bahi — Browser-native accounting · Phase 6</title>
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -128,6 +128,16 @@ textarea{font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;font-si
   text-transform:uppercase;letter-spacing:0.8px;
   color:var(--ink-2);font-weight:700;
 }
+/* Phase 6: CA-mode-only sidebar items. Hidden in owner mode via body class. */
+body:not(.ca-mode) .sidebar .ca-only { display:none; }
+body.ca-mode .sidebar h4.ca-only { color:var(--saffron-deep); }
+body.ca-mode .sidebar a.ca-only { background:linear-gradient(to right, var(--ash-2) 0, transparent 4px); }
+.mode-badge{
+  display:inline-block;font-size:9px;font-weight:700;letter-spacing:0.5px;
+  padding:2px 6px;border-radius:3px;margin-left:8px;text-transform:uppercase;vertical-align:middle;
+}
+.mode-badge.owner{background:var(--saffron-soft, var(--ash));color:var(--saffron-deep);border:1px solid var(--saffron)}
+.mode-badge.ca{background:var(--green);color:var(--white)}
 .sidebar .ws-info{
   padding:14px 16px;font-size:10px;color:var(--ink-2);
   border-top:1px solid var(--ash-2);margin-top:14px;
@@ -265,7 +275,8 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 <div id="app">
 
   <header class="topbar">
-    <div class="brand">Bahi <span class="sub">Phase 5 · Tally importer</span></div>
+    <div class="brand">Bahi <span class="sub">Phase 6 · CA mode</span></div>
+    <span id="mode-badge" class="mode-badge owner" title="Click to switch mode">OWNER</span>
     <div id="company-switcher" style="display:none;position:relative">
       <button id="company-switcher-btn" class="small" style="display:flex;align-items:center;gap:6px"></button>
       <div id="company-switcher-menu" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--white);border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.12);z-index:100;min-width:280px;max-height:60vh;overflow-y:auto"></div>
@@ -340,6 +351,11 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/tax-challans" data-route="#/tax-challans">Tax challans</a>
       <a href="#/period-locks" data-route="#/period-locks">Period locks</a>
       <a href="#/fy-rollover" data-route="#/fy-rollover">FY rollover</a>
+      <h4 class="ca-only">CA mode</h4>
+      <a href="#/ca/review" data-route="#/ca/review" class="ca-only">Client review</a>
+      <a href="#/ca/adjustment/new" data-route="#/ca/adjustment/new" class="ca-only">+ Adjustment voucher</a>
+      <a href="#/annotations" data-route="#/annotations" class="ca-only">Annotations</a>
+      <a href="#/ca/report" data-route="#/ca/report" class="ca-only">Review report</a>
       <h4>Dev</h4>
       <a href="#/debug" data-route="#/debug">Debug console</a>
       <a href="#/settings" data-route="#/settings">Settings</a>
@@ -372,9 +388,10 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 
 <script>
 //============================================================
-// Bahi — Phase 5
-// Browser-native accounting · Tally XML importer (parser + master + voucher importers,
-// 6-step wizard, both create-new and merge-into-existing commit targets)
+// Bahi — Phase 6
+// Browser-native accounting · CA mode (multi-client workspace, annotations,
+// review markers, adjustment voucher, PDF review report, Layer 3 ancestry check,
+// Reconciliation View)
 // See Settings → Phase scope for the full feature inventory.
 //============================================================
 
@@ -393,8 +410,9 @@ const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Fil
 //        tds_deductions, tcs_collections, period_locks, fy_closings
 //   v7 → Phase 4: Goods SMB tier — items inventory cols, godowns, batches,
 //        stock_movements, delivery_challans + lines, eway_bills, stock_transfers
+//   v8 → Phase 6: CA mode — annotations + review_markers tables
 // The runner is in runSchemaMigrations() below.
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 // Snapshot retention policy (spec §9.3):
 //   - Last N saves: keep the most recent N auto snapshots regardless of date
@@ -488,8 +506,8 @@ const JSPDF_CDN = `https://cdn.jsdelivr.net/npm/jspdf@${JSPDF_VERSION}/dist/jspd
 const NOTO_DEVANAGARI_CDN = 'https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Regular.ttf';
 
 const IDB_NAME = 'bahi-db';
-const IDB_VERSION = 1;
-const STORES = { workspace: 'workspace', keys: 'keys', settings: 'settings' };
+const IDB_VERSION = 2;  // bumped in Phase 6 for caProfile store
+const STORES = { workspace: 'workspace', keys: 'keys', settings: 'settings', caProfile: 'caProfile' };
 
 // SQL DDL — bundled inline. Engine schema (extended through every phase).
 const DDL = `
@@ -1141,6 +1159,46 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_st_date ON stock_transfers(transfer_date);
+
+-- === Phase 6 — CA mode ===
+
+-- Annotations are notes attached to ledger entries (entries / invoices / purchases /
+-- payments / etc.). They live inside the .khata file so they survive handoff back
+-- to the owner. Each annotation captures the CA's identity at creation time —
+-- snapshot pattern, never re-resolved from a live profile lookup.
+CREATE TABLE IF NOT EXISTS annotations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type TEXT NOT NULL,        -- 'entry' | 'invoice' | 'purchase' | 'payment' | 'credit-note' | 'debit-note'
+  target_id INTEGER NOT NULL,
+  target_ref TEXT,                  -- frozen voucher ref / invoice number for resilience
+  note_type TEXT NOT NULL,          -- 'comment' | 'todo' | 'flag' | 'reclassified' | 'missing-bill' | 'confirm-with-client'
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'resolved' | 'wontfix'
+  -- CA identity snapshot at creation time
+  ca_name TEXT,
+  ca_firm TEXT,
+  ca_membership TEXT,
+  -- Audit fields
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,         -- 'ca' or 'owner' — drives display chrome
+  resolved_at TEXT,
+  resolved_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_annotations_target ON annotations(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_annotations_status ON annotations(status);
+CREATE INDEX IF NOT EXISTS idx_annotations_created_at ON annotations(created_at);
+
+-- Review markers track the "last reviewed" head per entry. CA marks entries as
+-- reviewed; the next review session shows everything new since the marker.
+CREATE TABLE IF NOT EXISTS review_markers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_id INTEGER NOT NULL REFERENCES entries(id),
+  reviewed_at TEXT NOT NULL,
+  reviewed_by TEXT NOT NULL,
+  ca_membership TEXT,
+  notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_review_markers_entry ON review_markers(entry_id);
 `;
 
 // === Reference Data subsystem ===
@@ -1642,6 +1700,9 @@ function openIdb() {
       if (!db.objectStoreNames.contains(STORES.workspace)) db.createObjectStore(STORES.workspace, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.keys))      db.createObjectStore(STORES.keys,      { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.settings))  db.createObjectStore(STORES.settings,  { keyPath: 'k' });
+      // v2 (Phase 6): caProfile store for the CA's identity (name/firm/membership/logo).
+      // Lives outside any client .khata file per spec §6.4.
+      if (!db.objectStoreNames.contains(STORES.caProfile)) db.createObjectStore(STORES.caProfile, { keyPath: 'id' });
     };
     req.onsuccess = () => { _idb = req.result; resolve(_idb); };
   });
@@ -1930,6 +1991,12 @@ function runSchemaMigrations(db) {
     seedDefaultGodown(db);
     seedInventoryAccounts(db);
     db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '7')");
+  }
+
+  // === Migration 7 → 8: Phase 6 CA mode ===
+  // annotations + review_markers — both new tables, handled by DDL.
+  if (currentVersion < 8) {
+    db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '8')");
   }
 
   // Future migrations land here as `if (currentVersion < N) { ... }` blocks.
@@ -2557,7 +2624,7 @@ async function postAdvanceToLedger(db, advance, customer, bankAcc, isInterState)
     voucherRef: advance.advance_number,
     narration: `Advance ${advance.advance_number} from ${customer.name}`,
     postedAt: advance.advance_date,
-    actor: 'owner',
+    actor: auditActor(),
     lines,
   });
   return result.entryId;
@@ -2595,7 +2662,7 @@ async function postAdvanceAdjustment(db, advance, invoice, adjustGross, customer
     voucherRef: `ADJ:${advance.advance_number}→${invoice.invoice_number}`,
     narration: `Apply advance ${advance.advance_number} (₹${(adjGross/100).toFixed(2)}) against invoice ${invoice.invoice_number}`,
     postedAt: invoice.invoice_date,
-    actor: 'owner',
+    actor: auditActor(),
     lines,
   });
 
@@ -2678,7 +2745,7 @@ async function postInvoiceToLedger(db, invoice, customer, computedLines) {
     voucherRef: invoice.invoice_number,
     narration: `Invoice ${invoice.invoice_number} to ${customer.name}`,
     postedAt: invoice.invoice_date,
-    actor: 'owner',
+    actor: auditActor(),
     lines: postingLines,
   });
   return result.entryId;
@@ -2770,7 +2837,7 @@ async function postPaymentToLedger(db, payment, customer, bankAcc) {
     voucherRef: payment.payment_number,
     narration: `Payment ${payment.payment_number} from ${customer.name} via ${payment.payment_mode || 'cash'}`,
     postedAt: payment.payment_date,
-    actor: 'owner',
+    actor: auditActor(),
     lines,
   });
   return result.entryId;
@@ -3040,7 +3107,7 @@ async function postPurchaseToLedger(db, purchase, vendor, computedLines) {
     voucherRef: purchase.internal_ref,
     narration: `Purchase ${purchase.internal_ref} (vendor bill ${purchase.bill_number}) from ${vendor.name}` + (purchase.reverse_charge ? ' [RCM]' : ''),
     postedAt: purchase.bill_date,
-    actor: 'owner',
+    actor: auditActor(),
     lines,
   });
   return result.entryId;
@@ -3073,7 +3140,7 @@ async function postCreditNoteToLedger(db, cn, customer, computedLines) {
     voucherRef: cn.cn_number,
     narration: `Credit note ${cn.cn_number} against ${cn.original_invoice_number} for ${customer.name}`,
     postedAt: cn.cn_date,
-    actor: 'owner',
+    actor: auditActor(),
     lines,
   });
   return result.entryId;
@@ -3105,7 +3172,7 @@ async function postDebitNoteToLedger(db, dn, vendor, computedLines) {
     voucherRef: dn.dn_number,
     narration: `Debit note ${dn.dn_number} against ${dn.original_bill_number} for ${vendor.name}`,
     postedAt: dn.dn_date,
-    actor: 'owner',
+    actor: auditActor(),
     lines,
   });
   return result.entryId;
@@ -4790,7 +4857,7 @@ async function runTallyImport(db, parsed, mapping, opts) {
   };
 
   await appendAuditEntry(db, {
-    actor: 'owner',
+    actor: auditActor(),
     action: 'tally.import.start',
     ref: parsed.company.name || 'unknown',
     payload: {
@@ -4819,7 +4886,7 @@ async function runTallyImport(db, parsed, mapping, opts) {
   } catch (e) {
     try { db.run('ROLLBACK'); } catch (_) {}
     await appendAuditEntry(db, {
-      actor: 'owner',
+      actor: auditActor(),
       action: 'tally.import.failed',
       ref: parsed.company.name || 'unknown',
       payload: { error: e.message },
@@ -4828,7 +4895,7 @@ async function runTallyImport(db, parsed, mapping, opts) {
   }
 
   await appendAuditEntry(db, {
-    actor: 'owner',
+    actor: auditActor(),
     action: 'tally.import.commit',
     ref: parsed.company.name || 'unknown',
     payload: {
@@ -4849,6 +4916,486 @@ async function runTallyImport(db, parsed, mapping, opts) {
   });
 
   return ctx;
+}
+
+//------------------------------------------------------------
+// === Phase 6 — CA mode (engine layer) ===
+//------------------------------------------------------------
+//
+// Three categories of helpers:
+//   1. CA profile (IDB-resident, lives outside any client .khata file)
+//   2. Annotations + review markers (live inside the .khata file via schema v8)
+//   3. Layer 3 ancestry check + Reconciliation (audit-log-driven merge engine)
+//
+// The audit log already has an `actor` field (column added in Phase 1A) — Phase 6
+// just starts using it via the auditActor() helper. Owner-mode actions stay tagged
+// 'owner'; CA-mode actions get tagged 'ca' so the owner can see exactly what
+// changed when their CA hands the file back.
+
+// === CA profile (IDB-resident) ===
+
+async function getCaProfile() {
+  try {
+    const r = await idbGet(STORES.caProfile, 'default');
+    return r || null;
+  } catch (_) { return null; }
+}
+
+async function saveCaProfile(profile) {
+  const rec = {
+    id: 'default',
+    name: profile.name || '',
+    firmName: profile.firmName || '',
+    membershipNo: profile.membershipNo || '',
+    logoDataUri: profile.logoDataUri || '',
+    createdAt: profile.createdAt || nowIso(),
+    updatedAt: nowIso(),
+  };
+  await idbPut(STORES.caProfile, rec);
+  STATE.caProfile = rec;
+  return rec;
+}
+
+// Returns 'ca' if mode is CA and a profile exists, else 'owner'.
+// Used by every appendAuditEntry call so the actor field naturally reflects who
+// performed the action without each call site having to know.
+function auditActor() {
+  return (STATE.mode === 'ca' && STATE.caProfile) ? 'ca' : 'owner';
+}
+
+// === Annotations ===
+
+function getAnnotations(db, opts = {}) {
+  const filters = [];
+  const params = [];
+  if (opts.targetType) { filters.push('target_type = ?'); params.push(opts.targetType); }
+  if (opts.targetId)   { filters.push('target_id = ?');   params.push(opts.targetId); }
+  if (opts.status)     { filters.push('status = ?');      params.push(opts.status); }
+  const where = filters.length ? 'WHERE ' + filters.join(' AND ') : '';
+  const r = db.exec(`
+    SELECT id, target_type, target_id, target_ref, note_type, body, status,
+      ca_name, ca_firm, ca_membership, created_at, created_by, resolved_at, resolved_by
+    FROM annotations ${where}
+    ORDER BY created_at DESC
+  `, params);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(v => ({
+    id: v[0], target_type: v[1], target_id: v[2], target_ref: v[3], note_type: v[4],
+    body: v[5], status: v[6],
+    ca_name: v[7], ca_firm: v[8], ca_membership: v[9],
+    created_at: v[10], created_by: v[11], resolved_at: v[12], resolved_by: v[13],
+  }));
+}
+
+function getAnnotationsByTarget(db, targetType, targetId) {
+  return getAnnotations(db, { targetType, targetId });
+}
+
+async function addAnnotation(db, opts) {
+  const ca = STATE.caProfile || {};
+  db.run(
+    'INSERT INTO annotations (target_type, target_id, target_ref, note_type, body, status, ca_name, ca_firm, ca_membership, created_at, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    [opts.targetType, opts.targetId, opts.targetRef || null,
+     opts.noteType || 'comment', opts.body, 'open',
+     ca.name || null, ca.firmName || null, ca.membershipNo || null,
+     nowIso(), auditActor()]
+  );
+  const id = lastInsertId(db);
+  await appendAuditEntry(db, {
+    actor: auditActor(),
+    action: 'ca.annotation.add',
+    ref: `${opts.targetType}:${opts.targetId}`,
+    payload: { annotationId: id, noteType: opts.noteType, body: opts.body, targetRef: opts.targetRef },
+  });
+  return id;
+}
+
+async function resolveAnnotation(db, annotationId, resolvedBy) {
+  db.run(
+    "UPDATE annotations SET status='resolved', resolved_at=?, resolved_by=? WHERE id=?",
+    [nowIso(), resolvedBy || auditActor(), annotationId]
+  );
+  await appendAuditEntry(db, {
+    actor: auditActor(),
+    action: 'ca.annotation.resolve',
+    ref: String(annotationId),
+    payload: { resolvedBy },
+  });
+}
+
+// === Review markers ===
+
+async function markEntryReviewed(db, entryId, by, membership, notes) {
+  db.run(
+    'INSERT INTO review_markers (entry_id, reviewed_at, reviewed_by, ca_membership, notes) VALUES (?,?,?,?,?)',
+    [entryId, nowIso(), by || auditActor(), membership || (STATE.caProfile?.membershipNo || null), notes || null]
+  );
+  await appendAuditEntry(db, {
+    actor: auditActor(),
+    action: 'ca.entry.review',
+    ref: String(entryId),
+    payload: { entryId, reviewedBy: by, membership },
+  });
+}
+
+async function bulkMarkReviewed(db, entryIds, by, membership) {
+  db.run('BEGIN');
+  try {
+    for (const eid of entryIds) {
+      await markEntryReviewed(db, eid, by, membership);
+    }
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+}
+
+function getUnreviewedEntries(db, sinceDate) {
+  // An entry is "unreviewed" if it has no row in review_markers (most recent only).
+  // sinceDate is optional — if provided, only entries posted on/after that date.
+  const params = [];
+  let dateClause = '';
+  if (sinceDate) { dateClause = 'AND e.posted_at >= ?'; params.push(sinceDate); }
+  const r = db.exec(`
+    SELECT e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
+      (SELECT COALESCE(SUM(debit), 0) FROM entry_lines WHERE entry_id = e.id) AS amount
+    FROM entries e
+    LEFT JOIN review_markers rm ON rm.entry_id = e.id
+    WHERE rm.id IS NULL ${dateClause}
+    ORDER BY e.posted_at DESC, e.id DESC
+    LIMIT 500
+  `, params);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([id, ts, vt, vref, narr, amt]) => ({
+    id, posted_at: ts, voucher_type: vt, voucher_ref: vref, narration: narr, amount: amt,
+  }));
+}
+
+function getReviewedCount(db) {
+  const r = db.exec('SELECT COUNT(DISTINCT entry_id) FROM review_markers');
+  return (r.length && r[0].values.length) ? r[0].values[0][0] : 0;
+}
+
+// === Layer 3: ancestry check ===
+//
+// Walks both audit log chains and classifies the relationship between an opened
+// file and its workspace entry's last-known head:
+//   'identical'    — same head, no-op
+//   'fast-forward' — incoming head is downstream, proceed normally
+//   'divergent'    — both sides have entries the other doesn't, route to reconcile
+//   'no-ancestry'  — same GSTIN but neither head reaches the other, warn
+//   'unrelated'    — different GSTIN, fall through to Layer 2
+
+function getAuditChainHashes(db) {
+  // Returns array of {hash, prev_hash, id, action, ts, payload, actor} from genesis to head.
+  const r = db.exec('SELECT id, hash, prev_hash, action, ts, payload, actor FROM audit_log ORDER BY id ASC');
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([id, hash, prev_hash, action, ts, payload, actor]) => ({
+    id, hash, prev_hash, action, ts, payload, actor,
+  }));
+}
+
+function findCommonAncestor(localChain, importedChain) {
+  // Build set of local hashes; walk imported backwards looking for first match.
+  const localSet = new Set(localChain.map(e => e.hash));
+  for (let i = importedChain.length - 1; i >= 0; i--) {
+    if (localSet.has(importedChain[i].hash)) return importedChain[i].hash;
+  }
+  return null;
+}
+
+function entriesAfter(chain, ancestorHash) {
+  // Returns chain entries strictly after the ancestor (inclusive of head, exclusive of ancestor).
+  if (!ancestorHash) return chain.slice(); // no ancestor → everything is "after"
+  const idx = chain.findIndex(e => e.hash === ancestorHash);
+  if (idx < 0) return chain.slice();
+  return chain.slice(idx + 1);
+}
+
+function checkAncestry(workspaceEntry, importedDb, importedManifest) {
+  // Returns one of: { kind: 'identical' } | { kind: 'fast-forward' } | { kind: 'divergent', ... }
+  //                | { kind: 'no-ancestry', ... } | { kind: 'unrelated' }
+  // Called from openHandle BEFORE STATE is mutated.
+  if (!workspaceEntry || !workspaceEntry.lastKnownHead) {
+    return { kind: 'first-open' };
+  }
+  // GSTIN check first — if GSTINs differ, this isn't even ancestry territory.
+  const localGstin = (workspaceEntry.gstin || '').toUpperCase();
+  const importedGstin = (importedManifest?.company?.gstin || '').toUpperCase();
+  if (localGstin && importedGstin && localGstin !== importedGstin) {
+    return { kind: 'unrelated' };
+  }
+
+  const importedHead = importedManifest?.integrity?.auditHead;
+  if (!importedHead) return { kind: 'first-open' };
+
+  // Identical
+  if (importedHead === workspaceEntry.lastKnownHead) {
+    return { kind: 'identical' };
+  }
+
+  // Walk imported chain backwards looking for the workspace's lastKnownHead.
+  // If found, the imported file is a fast-forward of the workspace.
+  const importedChain = getAuditChainHashes(importedDb);
+  for (let i = importedChain.length - 1; i >= 0; i--) {
+    if (importedChain[i].hash === workspaceEntry.lastKnownHead) {
+      return { kind: 'fast-forward', importedHead, ancestorHash: workspaceEntry.lastKnownHead };
+    }
+  }
+
+  // Not a fast-forward. We don't have the local file open here, so we can't compute
+  // a common ancestor for the divergent case at this point — that gets done in the
+  // reconciliation flow when both files are loaded. For now, classify as either
+  // 'no-ancestry' (same GSTIN, no shared head) or schedule reconciliation.
+  return {
+    kind: 'no-ancestry',
+    importedHead,
+    workspaceHead: workspaceEntry.lastKnownHead,
+  };
+}
+
+// Compute a full divergence report between two open DB snapshots.
+// Used by the Reconciliation View when both branches are loaded.
+function computeDivergence(localDb, importedDb) {
+  const localChain = getAuditChainHashes(localDb);
+  const importedChain = getAuditChainHashes(importedDb);
+  const ancestor = findCommonAncestor(localChain, importedChain);
+  const localOnly = entriesAfter(localChain, ancestor);
+  const importedOnly = entriesAfter(importedChain, ancestor).filter(e => !localChain.find(l => l.hash === e.hash));
+  return {
+    ancestor,
+    localChain,
+    importedChain,
+    localOnly,
+    importedOnly,
+    localHead: localChain.length ? localChain[localChain.length - 1].hash : null,
+    importedHead: importedChain.length ? importedChain[importedChain.length - 1].hash : null,
+  };
+}
+
+// === Review report data builder ===
+
+function buildReviewReportData(db, asOfDate) {
+  const ca = STATE.caProfile || {};
+  const company = STATE.manifest?.company || {};
+  const tb = getTrialBalance(db, asOfDate);
+  const bs = getBalanceSheet(db, asOfDate);
+  // P&L data (income vs expense)
+  const pnlR = db.exec(`
+    SELECT a.type, COALESCE(l.account_name, a.name) AS name,
+      COALESCE(SUM(l.debit), 0) AS dr, COALESCE(SUM(l.credit), 0) AS cr
+    FROM entry_lines l
+    JOIN entries e ON e.id = l.entry_id
+    LEFT JOIN accounts a ON a.id = l.account_id
+    WHERE a.type IN ('income', 'expense') AND e.posted_at <= ?
+    GROUP BY a.type, name
+    ORDER BY a.type DESC, name
+  `, [asOfDate || nowIso()]);
+  const pnlRows = (pnlR.length && pnlR[0].values.length) ? pnlR[0].values : [];
+  let income = 0, expense = 0;
+  const incomeRows = [], expenseRows = [];
+  for (const [type, name, dr, cr] of pnlRows) {
+    if (type === 'income') {
+      const bal = (cr || 0) - (dr || 0);
+      if (bal > 0) { incomeRows.push({ name, amount: bal }); income += bal; }
+    } else {
+      const bal = (dr || 0) - (cr || 0);
+      if (bal > 0) { expenseRows.push({ name, amount: bal }); expense += bal; }
+    }
+  }
+  // CA-tagged adjustments
+  const adjR = db.exec(`
+    SELECT id, posted_at, voucher_ref, narration, actor
+    FROM entries
+    WHERE actor = 'ca' AND voucher_type IN ('journal', 'ca-adjustment')
+    ORDER BY posted_at
+  `);
+  const adjustments = (adjR.length && adjR[0].values.length)
+    ? adjR[0].values.map(([id, ts, ref, narr, actor]) => ({ id, posted_at: ts, voucher_ref: ref, narration: narr, actor }))
+    : [];
+  // Open annotations
+  const openAnns = getAnnotations(db, { status: 'open' });
+  return {
+    ca,
+    company,
+    asOfDate: asOfDate || nowIso().slice(0, 10),
+    trialBalance: tb,
+    balanceSheet: bs,
+    pnl: { income, expense, netProfit: income - expense, incomeRows, expenseRows },
+    adjustments,
+    openAnnotations: openAnns,
+    reviewedCount: getReviewedCount(db),
+  };
+}
+
+// PDF export of the review report.
+async function exportReviewReportPdf(db, caProfile, asOfDate) {
+  const jsPDFCtor = await loadJsPDF();
+  const data = buildReviewReportData(db, asOfDate);
+  const doc = new jsPDFCtor({ unit: 'mm', format: 'a4' });
+  const pageW = 210, marginL = 15, marginR = 15;
+  let y = 20;
+  let pageNum = 1;
+
+  function addHeader() {
+    doc.setFont('helvetica', 'bold').setFontSize(11);
+    doc.text(caProfile.firmName || 'Chartered Accountant', marginL, 10);
+    doc.setFont('helvetica', 'normal').setFontSize(9);
+    if (caProfile.name) doc.text(caProfile.name, marginL, 14);
+    if (caProfile.membershipNo) doc.text(`ICAI Membership: ${caProfile.membershipNo}`, marginL, 18);
+    doc.setLineWidth(0.3); doc.line(marginL, 21, pageW - marginR, 21);
+  }
+  function addFooter() {
+    doc.setFont('helvetica', 'normal').setFontSize(8);
+    doc.text(`Page ${pageNum}`, pageW / 2, 290, { align: 'center' });
+  }
+  function newPage() {
+    addFooter();
+    doc.addPage();
+    pageNum++;
+    y = 25;
+    addHeader();
+  }
+  function ensureSpace(needed) {
+    if (y + needed > 285) newPage();
+  }
+
+  addHeader();
+  y = 30;
+  doc.setFont('helvetica', 'bold').setFontSize(16);
+  doc.text('REVIEW REPORT', pageW / 2, y, { align: 'center' });
+  y += 8;
+  doc.setFont('helvetica', 'normal').setFontSize(11);
+  doc.text(data.company.name || '(unnamed company)', pageW / 2, y, { align: 'center' });
+  y += 5;
+  doc.setFontSize(9);
+  doc.text(`GSTIN: ${data.company.gstin || '—'}`, pageW / 2, y, { align: 'center' });
+  y += 4;
+  doc.text(`As of: ${data.asOfDate}`, pageW / 2, y, { align: 'center' });
+  y += 10;
+
+  // === Trial Balance ===
+  ensureSpace(20);
+  doc.setFont('helvetica', 'bold').setFontSize(12);
+  doc.text('1. Trial Balance', marginL, y);
+  y += 6;
+  doc.setFont('helvetica', 'normal').setFontSize(8);
+  doc.text('Account', marginL, y);
+  doc.text('Debit', 130, y, { align: 'right' });
+  doc.text('Credit', 175, y, { align: 'right' });
+  y += 3; doc.line(marginL, y, pageW - marginR, y); y += 4;
+  let totalDr = 0, totalCr = 0;
+  for (const row of data.trialBalance) {
+    ensureSpace(5);
+    const dr = Math.max(0, row.balance);
+    const cr = Math.max(0, -row.balance);
+    totalDr += dr; totalCr += cr;
+    doc.text(String(row.name).slice(0, 60), marginL, y);
+    doc.text(dr ? (dr / 100).toFixed(2) : '—', 130, y, { align: 'right' });
+    doc.text(cr ? (cr / 100).toFixed(2) : '—', 175, y, { align: 'right' });
+    y += 4;
+  }
+  ensureSpace(8);
+  y += 2; doc.line(marginL, y, pageW - marginR, y); y += 4;
+  doc.setFont('helvetica', 'bold');
+  doc.text('Totals', marginL, y);
+  doc.text((totalDr / 100).toFixed(2), 130, y, { align: 'right' });
+  doc.text((totalCr / 100).toFixed(2), 175, y, { align: 'right' });
+  y += 6;
+  doc.setFont('helvetica', 'normal').setFontSize(8);
+  doc.text(`Tie check: ${Math.abs(totalDr - totalCr) <= 1 ? 'OK (balanced)' : '⚠ OUT OF BALANCE by Rs. ' + (Math.abs(totalDr - totalCr) / 100).toFixed(2)}`, marginL, y);
+  y += 8;
+
+  // === P&L Summary ===
+  newPage();
+  doc.setFont('helvetica', 'bold').setFontSize(12);
+  doc.text('2. Profit & Loss Summary', marginL, y);
+  y += 6;
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(`Total income: Rs. ${(data.pnl.income / 100).toFixed(2)}`, marginL, y); y += 5;
+  doc.text(`Total expense: Rs. ${(data.pnl.expense / 100).toFixed(2)}`, marginL, y); y += 5;
+  doc.setFont('helvetica', 'bold');
+  if (data.pnl.netProfit >= 0) doc.text(`Net profit: Rs. ${(data.pnl.netProfit / 100).toFixed(2)}`, marginL, y);
+  else doc.text(`Net loss: Rs. ${(Math.abs(data.pnl.netProfit) / 100).toFixed(2)}`, marginL, y);
+  y += 8;
+  doc.setFont('helvetica', 'normal').setFontSize(8);
+  for (const r of data.pnl.incomeRows) { ensureSpace(5); doc.text(`Income — ${String(r.name).slice(0, 50)}`, marginL, y); doc.text((r.amount / 100).toFixed(2), 175, y, { align: 'right' }); y += 4; }
+  y += 3;
+  for (const r of data.pnl.expenseRows) { ensureSpace(5); doc.text(`Expense — ${String(r.name).slice(0, 50)}`, marginL, y); doc.text((r.amount / 100).toFixed(2), 175, y, { align: 'right' }); y += 4; }
+
+  // === Balance Sheet ===
+  newPage();
+  doc.setFont('helvetica', 'bold').setFontSize(12);
+  doc.text('3. Balance Sheet', marginL, y);
+  y += 6;
+  doc.setFont('helvetica', 'normal').setFontSize(8);
+  function bsSection(title, items, total) {
+    ensureSpace(10);
+    doc.setFont('helvetica', 'bold');
+    doc.text(title, marginL, y); y += 4;
+    doc.setFont('helvetica', 'normal');
+    for (const it of items) {
+      ensureSpace(5);
+      doc.text(`  ${String(it.name).slice(0, 60)}`, marginL, y);
+      doc.text((it.balance / 100).toFixed(2), 175, y, { align: 'right' });
+      y += 4;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.text(`  Total ${title}`, marginL, y);
+    doc.text((total / 100).toFixed(2), 175, y, { align: 'right' });
+    y += 6;
+    doc.setFont('helvetica', 'normal');
+  }
+  bsSection('Assets', data.balanceSheet.assets, data.balanceSheet.totalAssets);
+  bsSection('Liabilities', data.balanceSheet.liabilities, data.balanceSheet.totalLiabilities);
+  bsSection('Equity', data.balanceSheet.equity, data.balanceSheet.totalEquity);
+  const tieDiff = data.balanceSheet.totalAssets - (data.balanceSheet.totalLiabilities + data.balanceSheet.totalEquity);
+  doc.text(`Tie check: ${Math.abs(tieDiff) <= 1 ? 'OK (assets = liabilities + equity)' : '⚠ OUT OF BALANCE'}`, marginL, y);
+  y += 8;
+
+  // === Adjustments by CA ===
+  if (data.adjustments.length) {
+    newPage();
+    doc.setFont('helvetica', 'bold').setFontSize(12);
+    doc.text('4. CA Adjustments', marginL, y); y += 6;
+    doc.setFont('helvetica', 'normal').setFontSize(8);
+    for (const a of data.adjustments) {
+      ensureSpace(5);
+      doc.text(`${a.posted_at}  ${String(a.voucher_ref).slice(0, 18).padEnd(20)}  ${String(a.narration || '').slice(0, 70)}`, marginL, y);
+      y += 4;
+    }
+  }
+
+  // === Observations ===
+  if (data.openAnnotations.length) {
+    newPage();
+    doc.setFont('helvetica', 'bold').setFontSize(12);
+    doc.text('5. Observations', marginL, y); y += 6;
+    doc.setFont('helvetica', 'normal').setFontSize(8);
+    for (const a of data.openAnnotations) {
+      ensureSpace(8);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`[${a.note_type.toUpperCase()}] ${a.target_type} ${a.target_ref || a.target_id}`, marginL, y); y += 4;
+      doc.setFont('helvetica', 'normal');
+      const lines = doc.splitTextToSize(a.body, pageW - marginL - marginR);
+      for (const line of lines) { ensureSpace(4); doc.text(line, marginL, y); y += 4; }
+      y += 2;
+    }
+  }
+
+  addFooter();
+
+  const filename = `review-report-${slugify(data.company.name || 'company')}-${data.asOfDate}.pdf`;
+  try {
+    const blob = doc.output('blob');
+    const handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+    });
+    const w = await handle.createWritable(); await w.write(blob); await w.close();
+    toast(`Saved ${handle.name}`, 'ok');
+  } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
 }
 
 //------------------------------------------------------------
@@ -5808,6 +6355,19 @@ async function persistKhata() {
     // We are now the freshest writer — bump our notion of disk head to match what we just wrote.
     STATE.diskAuditHead = STATE.manifest.integrity.auditHead;
 
+    // Phase 6 — also update the workspace IDB entry's lastKnownHead so the next
+    // ancestry check has the right anchor.
+    try {
+      if (STATE.workspaceId) {
+        const wsEntry = await idbGet(STORES.workspace, STATE.workspaceId);
+        if (wsEntry) {
+          wsEntry.lastKnownHead = STATE.manifest.integrity.auditHead;
+          wsEntry.lastSavedAt = nowIso();
+          await addWorkspaceEntry(wsEntry);
+        }
+      }
+    } catch (e) { console.warn('Workspace head update failed:', e); }
+
     // Clear the OPFS staging copy now that the disk write succeeded.
     // Done AFTER updating diskAuditHead so a clearStaging failure can't make us
     // forget the save happened.
@@ -6160,7 +6720,7 @@ async function createNewKhataFile({ companyName, gstin, stateIso, stateName, gst
   STATE.publicJwk = kp.publicJwk;
 
   await appendAuditEntry(db, {
-    actor: 'owner',
+    actor: auditActor(),
     action: 'file.create',
     ref: handle.name,
     payload: {
@@ -6393,6 +6953,33 @@ async function openHandle(handle, existingWsId) {
   // Capture the audit head AS IT IS ON DISK before we mutate in-memory state.
   // This is what the optimistic-concurrency check on save will compare against.
   STATE.diskAuditHead = manifest.integrity?.auditHead || (db.exec('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1')[0]?.values[0]?.[0]) || null;
+
+  // === Phase 6 — Layer 3 ancestry check ===
+  // If the workspace already has an entry for this file (existingWsId), compare the
+  // audit chain against the lastKnownHead we recorded last time. Four outcomes:
+  //   identical → no-op
+  //   fast-forward → proceed (new entries added since we last saw it)
+  //   no-ancestry (same GSTIN, different lineage) → warn
+  //   divergent → set pendingReconciliation for the next render to surface
+  // The fifth case (different GSTIN) is caught earlier by Layer 2.
+  if (existingWsId) {
+    try {
+      const wsList = await listWorkspace();
+      const wsEntry = wsList.find(w => w.id === existingWsId);
+      if (wsEntry && wsEntry.lastKnownHead) {
+        const ancestry = checkAncestry(wsEntry, db, manifest);
+        if (ancestry.kind === 'no-ancestry') {
+          toast(`⚠ Same GSTIN but no shared history with your last copy of this file. It may be a fresh export, an old backup, or a different file with the same GSTIN. Audit head changed: ${(wsEntry.lastKnownHead || '').slice(0, 12)} → ${(ancestry.importedHead || '').slice(0, 12)}`, 'err');
+        }
+        // Note: divergent detection requires comparing two full chains. The Layer 3
+        // check from openHandle only sees one (the imported one). The local DB is
+        // already-overwritten by the time we get here. Real divergence detection
+        // happens at file-add time in CA mode, where we have both branches loaded.
+      }
+    } catch (e) {
+      console.warn('Ancestry check failed:', e);
+    }
+  }
 
   // === OPFS staging recovery check ===
   // If the previous save was interrupted (browser crash, power loss, etc.), an orphan
@@ -6630,6 +7217,14 @@ const STATE = {
   // OPFS crash-recovery: set when openHandle finds a staging file with a newer head
   // than what's on disk. The Settings page surfaces a recovery / discard panel.
   pendingStagingRecovery: null,
+  // Phase 6 — operating mode. Read from localStorage on boot.
+  // 'owner' = business owner managing their own books
+  // 'ca' = chartered accountant managing multiple client files
+  mode: 'owner',
+  // Phase 6 — CA profile loaded from IDB at boot if mode === 'ca'.
+  caProfile: null,
+  // Phase 6 — set by checkAncestry when divergent. Routes user to #/reconcile.
+  pendingReconciliation: null,
 };
 
 //------------------------------------------------------------
@@ -6799,18 +7394,37 @@ function closeModal() {
 // First-run intro modal. Shows once per machine, never again.
 // Three-card layout (Create / Open / Restore) with a one-paragraph explainer.
 // Two explicit dismiss buttons: "Got it" (just close) and "Read README" (open + close).
+// Phase 6: now also includes a mode picker (Owner / CA) at the top — selected once and
+// remembered in localStorage. The mode is the first thing the user sees because it
+// changes the rest of the workspace UX.
 function showIntroModal() {
   try {
     if (localStorage.getItem(INTRO_LS_KEY) === '1') return;
   } catch (_) { return; } // localStorage blocked → skip the intro
   const wrap = $('modal');
   wrap.innerHTML = '';
-  const m = h('div', { class: 'modal', style: 'max-width:620px' });
+  const m = h('div', { class: 'modal', style: 'max-width:680px' });
   m.appendChild(h('div', { class: 'modal-h' }, ['Welcome to Bahi']));
   const body = h('div', { class: 'modal-b' });
   body.innerHTML = `
     <p style="font-size:13px;line-height:1.55"><b>Browser-native, local-first accounting for Indian SMBs.</b> Your books live in a single <code>.khata</code> file on your own disk. No server, no account, no subscription, no telemetry. The browser is the entire app.</p>
-    <p style="font-size:12px;line-height:1.55;color:var(--ink-2);margin-top:8px">Bahi is a Tally / Zoho Books alternative built for Indian freelancers and small businesses. GST-native (CGST/SGST/IGST routing, GSTR-1 filing, composition scheme), private (zero phone-home), and free.</p>
+
+    <div style="margin-top:14px;padding:12px;background:var(--ash);border:1px solid var(--rule);border-radius:4px">
+      <div style="font-size:11px;color:var(--saffron-deep);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px">First, who are you?</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label id="intro-mode-owner-card" style="border:2px solid var(--saffron);border-radius:6px;padding:12px;cursor:pointer;display:block;background:var(--white)">
+          <input type="radio" name="intro-mode" value="owner" checked style="margin-right:6px">
+          <b>Business owner</b>
+          <div style="font-size:11px;color:var(--ink-2);margin-top:4px;line-height:1.4">I run a business and want to manage my own books. One company per <code>.khata</code> file.</div>
+        </label>
+        <label id="intro-mode-ca-card" style="border:2px solid var(--rule);border-radius:6px;padding:12px;cursor:pointer;display:block;background:var(--white)">
+          <input type="radio" name="intro-mode" value="ca" style="margin-right:6px">
+          <b>Chartered accountant</b>
+          <div style="font-size:11px;color:var(--ink-2);margin-top:4px;line-height:1.4">I review books for multiple client companies. Each client = one <code>.khata</code> file in my workspace.</div>
+        </label>
+      </div>
+      <p style="font-size:10px;color:var(--ink-2);margin-top:8px">You can switch later in Settings. CA mode adds a review interface, annotations, an adjustment voucher form, and a PDF review report generator.</p>
+    </div>
 
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px">
       <div style="border:1px solid var(--rule);border-radius:4px;padding:12px;background:var(--white)">
@@ -6831,22 +7445,124 @@ function showIntroModal() {
   `;
   m.appendChild(body);
 
+  // Visual feedback for the radio cards
+  setTimeout(() => {
+    const ownerCard = document.getElementById('intro-mode-owner-card');
+    const caCard = document.getElementById('intro-mode-ca-card');
+    document.querySelectorAll('input[name="intro-mode"]').forEach(el => {
+      el.addEventListener('change', () => {
+        if (el.checked && el.value === 'owner') {
+          ownerCard.style.borderColor = 'var(--saffron)';
+          caCard.style.borderColor = 'var(--rule)';
+        } else if (el.checked && el.value === 'ca') {
+          ownerCard.style.borderColor = 'var(--rule)';
+          caCard.style.borderColor = 'var(--saffron)';
+        }
+      });
+    });
+  }, 30);
+
   const ftr = h('div', { class: 'modal-f' });
   const readme = h('button', {}, ['Read the README']);
   readme.onclick = () => {
-    window.open('https://github.com/NakliTechie/Bahi', '_blank');
+    window.open('https://github.com/NakliTechie/bahi', '_blank');
+    persistMode();
     try { localStorage.setItem(INTRO_LS_KEY, '1'); } catch (_) {}
     closeModal();
+    finishIntroSetup();
   };
   const ok = h('button', { class: 'primary' }, ['Got it — let me see the workspace']);
   ok.onclick = () => {
+    persistMode();
     try { localStorage.setItem(INTRO_LS_KEY, '1'); } catch (_) {}
     closeModal();
+    finishIntroSetup();
   };
   ftr.appendChild(readme);
   ftr.appendChild(ok);
   m.appendChild(ftr);
 
+  wrap.appendChild(m);
+  wrap.classList.remove('hidden');
+
+  function persistMode() {
+    const checked = document.querySelector('input[name="intro-mode"]:checked');
+    const v = checked ? checked.value : 'owner';
+    STATE.mode = v;
+    try { localStorage.setItem('bahi.mode', v); } catch (_) {}
+  }
+}
+
+// Called after the intro modal closes. If the user picked CA mode and doesn't yet
+// have a CA profile, surface the CA profile setup modal next.
+async function finishIntroSetup() {
+  if (STATE.mode === 'ca') {
+    const existing = await getCaProfile();
+    if (!existing) {
+      setTimeout(() => showCaProfileSetup(true), 150);
+    } else {
+      STATE.caProfile = existing;
+      render();
+    }
+  }
+}
+
+// CA profile setup modal — called from the intro flow on first CA-mode activation,
+// and from Settings → Edit CA profile any time after. The `mandatory` flag prevents
+// the user from closing the modal without filling in the required fields.
+function showCaProfileSetup(mandatory) {
+  const existing = STATE.caProfile || {};
+  const wrap = $('modal');
+  wrap.innerHTML = '';
+  const m = h('div', { class: 'modal', style: 'max-width:520px' });
+  m.appendChild(h('div', { class: 'modal-h' }, [existing.name ? 'Edit CA profile' : 'Set up your CA profile']));
+  const body = h('div', { class: 'modal-b' });
+  body.innerHTML = `
+    <p class="help">This information appears on every review report you generate and is stamped into the audit log of every client file you edit. Stored locally in this browser only — never in any client <code>.khata</code> file.</p>
+    <div class="field"><label>Your name</label><input id="ca-name" value="${escapeHtml(existing.name || '')}" autocomplete="off"></div>
+    <div class="field"><label>Firm name</label><input id="ca-firm" value="${escapeHtml(existing.firmName || '')}" autocomplete="off"></div>
+    <div class="field"><label>ICAI membership number</label><input id="ca-mem" value="${escapeHtml(existing.membershipNo || '')}" placeholder="e.g. 123456" autocomplete="off"></div>
+    <div class="field"><label>Logo (optional)</label><input id="ca-logo" type="file" accept="image/png,image/jpeg"></div>
+    ${existing.logoDataUri ? `<div style="margin-top:8px"><img src="${existing.logoDataUri}" style="max-height:60px;border:1px solid var(--rule);padding:4px"></div>` : ''}
+  `;
+  m.appendChild(body);
+
+  let logoDataUri = existing.logoDataUri || '';
+  setTimeout(() => {
+    $('ca-logo').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (file.size > 200 * 1024) { toast('Logo must be under 200 KB', 'err'); return; }
+      logoDataUri = await new Promise(resolve => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.readAsDataURL(file);
+      });
+      toast('Logo loaded', 'ok');
+    });
+    $('ca-name').focus();
+  }, 30);
+
+  const ftr = h('div', { class: 'modal-f' });
+  if (!mandatory) {
+    const cancel = h('button', {}, ['Cancel']);
+    cancel.onclick = () => closeModal();
+    ftr.appendChild(cancel);
+  }
+  const save = h('button', { class: 'primary' }, ['Save profile']);
+  save.onclick = async () => {
+    const name = $('ca-name').value.trim();
+    const firm = $('ca-firm').value.trim();
+    const mem = $('ca-mem').value.trim();
+    if (!name || !firm || !mem) { toast('Name, firm, and membership are required', 'err'); return; }
+    const profile = { name, firmName: firm, membershipNo: mem, logoDataUri, createdAt: existing.createdAt || nowIso() };
+    await saveCaProfile(profile);
+    toast('CA profile saved', 'ok');
+    closeModal();
+    render();
+  };
+  ftr.appendChild(save);
+  m.appendChild(ftr);
   wrap.appendChild(m);
   wrap.classList.remove('hidden');
 }
@@ -7154,7 +7870,7 @@ function openEditCompanyModal() {
       // ts, actor, origin, hash, signature for each — so the forensic record is complete.
       for (const ch of changes) {
         await appendAuditEntry(STATE.db, {
-          actor: 'owner',
+          actor: auditActor(),
           action: 'company.update',
           ref: ch.field,
           payload: { field: ch.field, oldValue: ch.oldValue, newValue: ch.newValue },
@@ -7255,6 +7971,32 @@ function render() {
   STATE.route = location.hash || '#/workspace';
   $$('.sidebar a').forEach(a => a.classList.toggle('active', a.getAttribute('data-route') === STATE.route));
 
+  // Phase 6 — sync mode-driven body class + mode badge
+  document.body.classList.toggle('ca-mode', STATE.mode === 'ca');
+  const badge = $('mode-badge');
+  if (badge) {
+    if (STATE.mode === 'ca') {
+      badge.className = 'mode-badge ca';
+      const initials = (STATE.caProfile?.name || 'CA').split(/\s+/).map(s => s[0]).slice(0, 2).join('').toUpperCase();
+      badge.textContent = 'CA · ' + initials;
+    } else {
+      badge.className = 'mode-badge owner';
+      badge.textContent = 'OWNER';
+    }
+    badge.onclick = () => {
+      // Quick toggle with confirmation
+      const newMode = STATE.mode === 'ca' ? 'owner' : 'ca';
+      if (!confirm(`Switch to ${newMode === 'ca' ? 'CA' : 'Owner'} mode?\n\nThis changes the workspace UX and the audit log actor for new entries.`)) return;
+      STATE.mode = newMode;
+      try { localStorage.setItem('bahi.mode', newMode); } catch (_) {}
+      if (newMode === 'ca' && !STATE.caProfile) {
+        getCaProfile().then(p => { if (!p) showCaProfileSetup(true); else { STATE.caProfile = p; render(); } });
+      } else {
+        render();
+      }
+    };
+  }
+
   const r = STATE.route;
   if (r === '#/workspace')         renderWorkspace(main, tok);
   else if (r === '#/file')         renderFile(main);
@@ -7309,6 +8051,12 @@ function render() {
   else if (r === '#/stock-transfer/in/import') renderStockTransferIn(main);
   // Phase 5
   else if (r === '#/import/tally') renderImportTally(main);
+  // Phase 6 (CA mode)
+  else if (r === '#/ca/review')       renderCaReview(main);
+  else if (r === '#/ca/adjustment/new') renderCaAdjustmentForm(main);
+  else if (r === '#/ca/report')       renderCaReviewReport(main);
+  else if (r === '#/annotations')     renderAnnotations(main);
+  else if (r === '#/reconcile')       renderReconcile(main);
   else if (r === '#/debug')        renderDebug(main);
   else if (r === '#/settings')     renderSettings(main);
   else                             main.appendChild(h('div', { class: 'empty' }, ['Unknown route']));
@@ -7666,7 +8414,7 @@ function openCustomerModal(customerId) {
           'INSERT INTO customers (name, gstin, pan, state, email, phone, address, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
           [name, gstin || null, pan, stateIso || null, $('cm-email').value.trim() || null, $('cm-phone').value.trim() || null, $('cm-address').value.trim() || null, opening, nowIso()]
         );
-        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'customer.create', ref: name, payload: { name, gstin, stateIso } });
+        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'customer.create', ref: name, payload: { name, gstin, stateIso } });
       }
       setSaveStatus('unsaved');
       const ok = await persistKhata();
@@ -7884,7 +8632,7 @@ function openItemModal(itemId) {
         STATE.db.run('INSERT INTO items (name, hsn_sac, is_service, unit, default_rate, default_tax_rate, enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor_id, opening_stock_qty, opening_stock_value, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
           [name, hsnSac, isService, unit, rate || null, taxRate, enableInv, valMethod, trackBatches, reorderLevel, preferredVendorId, openingQty, openingValue, nowIso()]);
         const newItemId = lastInsertId(STATE.db);
-        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'item.create', ref: name, payload: { name, isService, hsnSac, taxRate, enableInv, valMethod } });
+        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'item.create', ref: name, payload: { name, isService, hsnSac, taxRate, enableInv, valMethod } });
         // Post opening stock movement if applicable
         if (enableInv && openingQty > 0) {
           const godownId = getDefaultGodownId(STATE.db);
@@ -8846,7 +9594,7 @@ function openBankAccountModal(onCreated) {
       );
       const newId = lastInsertId(STATE.db);
       await appendAuditEntry(STATE.db, {
-        actor: 'owner', action: 'account.create', ref: name,
+        actor: auditActor(), action: 'account.create', ref: name,
         payload: { name, parentName: 'Bank Accounts', kind: 'bank' },
       });
       setSaveStatus('unsaved');
@@ -10263,7 +11011,7 @@ function openVendorModal(vendorId) {
           'INSERT INTO vendors (name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
           [name, gstin || null, pan, stateIso || null, $('vm-email').value.trim() || null, $('vm-phone').value.trim() || null, $('vm-address').value.trim() || null, rcm, tds, opening, nowIso()]
         );
-        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'vendor.create', ref: name, payload: { name, gstin, stateIso, rcm, tds } });
+        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'vendor.create', ref: name, payload: { name, gstin, stateIso, rcm, tds } });
       }
       setSaveStatus('unsaved');
       const ok = await persistKhata();
@@ -11665,7 +12413,7 @@ function renderJournalVoucherForm(main) {
         voucherRef: ref,
         narration: $('jv-narr').value.trim() || `Journal voucher ${ref}`,
         postedAt: $('jv-date').value,
-        actor: 'owner',
+        actor: auditActor(),
         lines,
       });
       setSaveStatus('unsaved');
@@ -11713,7 +12461,7 @@ function renderPeriodLocks(main) {
     try {
       STATE.db.run('INSERT INTO period_locks (return_type, period_start, period_end, filed_at, filed_by, notes, created_at) VALUES (?,?,?,?,?,?,?)',
         [type, start, end, nowIso(), 'owner', $('pl-notes').value.trim() || null, nowIso()]);
-      await appendAuditEntry(STATE.db, { actor: 'owner', action: 'period.lock', ref: `${type}:${start}/${end}`, payload: { type, start, end } });
+      await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'period.lock', ref: `${type}:${start}/${end}`, payload: { type, start, end } });
       setSaveStatus('unsaved');
       const ok = await persistKhata();
       if (!ok) { render(); return; }
@@ -11811,7 +12559,7 @@ function renderFYRollover(main) {
       const result = await postFYClosingEntry(STATE.db, fyStart, fyEnd);
       STATE.db.run('INSERT INTO fy_closings (fy_start, fy_end, closed_at, closing_entry_id, net_profit, created_at) VALUES (?,?,?,?,?,?)',
         [fyStart, fyEnd, nowIso(), result.entryId, result.netProfit, nowIso()]);
-      await appendAuditEntry(STATE.db, { actor: 'owner', action: 'fy.close', ref: `${fyStart}/${fyEnd}`, payload: { fyStart, fyEnd, netProfit: result.netProfit } });
+      await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'fy.close', ref: `${fyStart}/${fyEnd}`, payload: { fyStart, fyEnd, netProfit: result.netProfit } });
       setSaveStatus('unsaved');
       const ok = await persistKhata();
       if (!ok) { render(); return; }
@@ -12023,7 +12771,7 @@ function openGodownModal(godownId) {
       } else {
         STATE.db.run('INSERT INTO godowns (name, address, state, is_default, created_at) VALUES (?,?,?,?,?)',
           [name, $('gd-addr').value.trim() || null, stateIso, isDef, nowIso()]);
-        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'godown.create', ref: name, payload: { name, stateIso } });
+        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'godown.create', ref: name, payload: { name, stateIso } });
       }
       setSaveStatus('unsaved');
       const ok = await persistKhata();
@@ -13819,6 +14567,678 @@ function renderImportStep6(main) {
 }
 
 //------------------------------------------------------------
+// === Phase 6 — CA mode views ===
+//------------------------------------------------------------
+
+// CA review view — the home for CA mode users when a client file is open.
+// Sectioned list of unreviewed entries by voucher type, with bulk-mark + per-row
+// annotation widget. Tied directly to the review_markers table.
+function renderCaReview(main) {
+  if (!requireFileOrPrompt(main, 'CA Review')) return;
+  if (STATE.mode !== 'ca') {
+    main.appendChild(h('h1', {}, ['CA Review']));
+    main.appendChild(h('div', { class: 'error-screen' }, [
+      h('p', {}, ['CA Review is only available in CA mode. Switch to CA mode in Settings.']),
+    ]));
+    return;
+  }
+
+  main.appendChild(h('h1', {}, ['CA Review']));
+  const c = STATE.manifest?.company || {};
+  main.appendChild(h('p', { class: 'help' }, [`Reviewing ${c.name || 'client file'} (GSTIN ${c.gstin || '—'}). Entries below have not yet been marked reviewed by you.`]));
+
+  const unreviewed = getUnreviewedEntries(STATE.db);
+  if (!unreviewed.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['Nothing to review — all entries in this file have been marked reviewed.']));
+    return;
+  }
+
+  // Group by voucher type
+  const groups = {};
+  for (const e of unreviewed) {
+    const k = e.voucher_type || 'other';
+    if (!groups[k]) groups[k] = [];
+    groups[k].push(e);
+  }
+
+  // KPI strip
+  const kpi = h('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:14px' });
+  for (const [vt, rows] of Object.entries(groups)) {
+    const c2 = h('div', { class: 'panel' });
+    const b = h('div', { class: 'panel-b', style: 'padding:10px 12px' });
+    b.innerHTML = `<div style="font-size:10px;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700">${escapeHtml(vt)}</div><div style="font-size:20px;font-weight:700;margin-top:4px">${rows.length}</div>`;
+    c2.appendChild(b);
+    kpi.appendChild(c2);
+  }
+  main.appendChild(kpi);
+
+  // One section per voucher type
+  for (const [vt, rows] of Object.entries(groups)) {
+    const panel = h('div', { class: 'panel', style: 'margin-top:14px' });
+    const ph = h('div', { class: 'panel-h' });
+    ph.innerHTML = `<span><b>${escapeHtml(vt)}</b> — ${rows.length} unreviewed</span>`;
+    const bulkBtn = h('button', { class: 'small', style: 'float:right' }, ['Mark all reviewed']);
+    bulkBtn.onclick = async () => {
+      try {
+        await bulkMarkReviewed(STATE.db, rows.map(r => r.id), STATE.caProfile?.name, STATE.caProfile?.membershipNo);
+        setSaveStatus('unsaved');
+        await persistKhata();
+        toast(`Marked ${rows.length} entries reviewed`, 'ok');
+        render();
+      } catch (e) { toast('Failed: ' + e.message, 'err'); }
+    };
+    ph.appendChild(bulkBtn);
+    panel.appendChild(ph);
+    const pb = h('div', { class: 'panel-b' });
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Date</th><th>Ref</th><th>Narration</th><th class="num">Amount</th><th></th><th></th></tr></thead>';
+    const tbody = h('tbody');
+    for (const r of rows) {
+      const tr = h('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml((r.posted_at || '').slice(0, 10))}</td>
+        <td><code>${escapeHtml(r.voucher_ref || '')}</code></td>
+        <td>${escapeHtml((r.narration || '').slice(0, 80))}</td>
+        <td class="num">${fmtINR(r.amount || 0)}</td>
+        <td></td><td></td>
+      `;
+      const reviewBtn = h('button', { class: 'small' }, ['✓ Reviewed']);
+      reviewBtn.onclick = async () => {
+        try {
+          await markEntryReviewed(STATE.db, r.id, STATE.caProfile?.name, STATE.caProfile?.membershipNo);
+          setSaveStatus('unsaved');
+          await persistKhata();
+          render();
+        } catch (e) { toast('Failed: ' + e.message, 'err'); }
+      };
+      tr.children[4].appendChild(reviewBtn);
+      const noteBtn = h('button', { class: 'small' }, ['+ Note']);
+      noteBtn.onclick = () => openInlineAnnotationModal('entry', r.id, r.voucher_ref);
+      tr.children[5].appendChild(noteBtn);
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    pb.appendChild(tbl);
+    panel.appendChild(pb);
+    main.appendChild(panel);
+  }
+}
+
+// Inline annotation modal — a compact form with target_type / target_id pre-filled.
+function openInlineAnnotationModal(targetType, targetId, targetRef) {
+  if (STATE.mode !== 'ca') { toast('Annotations are CA-mode only', 'err'); return; }
+  const wrap = $('modal');
+  wrap.innerHTML = '';
+  const m = h('div', { class: 'modal' });
+  m.appendChild(h('div', { class: 'modal-h' }, [`Add annotation — ${targetType} ${targetRef || targetId}`]));
+  const body = h('div', { class: 'modal-b' });
+  body.innerHTML = `
+    <div class="field"><label>Type</label>
+      <select id="ann-type">
+        <option value="comment">Comment</option>
+        <option value="todo">To-do</option>
+        <option value="flag">Flag</option>
+        <option value="reclassified">Reclassified</option>
+        <option value="missing-bill">Missing bill</option>
+        <option value="confirm-with-client">Confirm with client</option>
+      </select>
+    </div>
+    <div class="field"><label>Note</label><textarea id="ann-body" rows="4" placeholder="What needs attention?"></textarea></div>
+  `;
+  m.appendChild(body);
+  const cancel = h('button', {}, ['Cancel']);
+  cancel.onclick = () => closeModal();
+  const save = h('button', { class: 'primary' }, ['Save annotation']);
+  save.onclick = async () => {
+    const body = $('ann-body').value.trim();
+    if (!body) { toast('Note body is required', 'err'); return; }
+    try {
+      await addAnnotation(STATE.db, {
+        targetType, targetId, targetRef,
+        noteType: $('ann-type').value, body,
+      });
+      setSaveStatus('unsaved');
+      await persistKhata();
+      toast('Annotation saved', 'ok');
+      closeModal();
+      render();
+    } catch (e) { toast('Failed: ' + e.message, 'err'); }
+  };
+  m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
+  wrap.appendChild(m);
+  wrap.classList.remove('hidden');
+  setTimeout(() => $('ann-body').focus(), 30);
+}
+
+// All annotations view — the CA's "to-do list" across the file.
+function renderAnnotations(main) {
+  if (!requireFileOrPrompt(main, 'Annotations')) return;
+  main.appendChild(h('h1', {}, ['Annotations']));
+
+  const filter = TALLY_IMPORT._annFilter || 'open';
+  const ctrl = h('div', { class: 'row' });
+  for (const f of ['open', 'resolved', 'all']) {
+    const b = h('button', { class: f === filter ? 'primary' : '' }, [f]);
+    b.onclick = () => { TALLY_IMPORT._annFilter = f; render(); };
+    ctrl.appendChild(b);
+  }
+  if (STATE.mode === 'ca') {
+    const addBtn = h('button', { style: 'margin-left:auto' }, ['+ Add annotation']);
+    addBtn.onclick = () => {
+      // Quick-add — pick a target later via the entry detail
+      toast('To add an annotation, open the entry from CA Review and click + Note', 'ok');
+    };
+    ctrl.appendChild(addBtn);
+  }
+  main.appendChild(ctrl);
+
+  const opts = filter === 'all' ? {} : { status: filter };
+  const rows = getAnnotations(STATE.db, opts);
+  if (!rows.length) {
+    main.appendChild(h('div', { class: 'empty' }, [`No ${filter === 'all' ? '' : filter + ' '}annotations.`]));
+    return;
+  }
+  const tbl = h('table', { class: 'dense', style: 'margin-top:14px' });
+  tbl.innerHTML = '<thead><tr><th>Created</th><th>Type</th><th>Target</th><th>Note</th><th>Author</th><th>Status</th><th></th></tr></thead>';
+  const tbody = h('tbody');
+  for (const a of rows) {
+    const tr = h('tr');
+    const author = a.created_by === 'ca'
+      ? `${escapeHtml(a.ca_name || 'CA')} <span style="font-size:10px;color:var(--ink-2)">${escapeHtml(a.ca_firm || '')}</span>`
+      : '<span style="font-size:10px;color:var(--ink-2)">Owner</span>';
+    tr.innerHTML = `
+      <td>${escapeHtml(a.created_at.slice(0, 10))}</td>
+      <td><span style="font-size:10px;text-transform:uppercase;font-weight:700;color:var(--saffron-deep)">${escapeHtml(a.note_type)}</span></td>
+      <td><code>${escapeHtml(a.target_type)}:${a.target_ref || a.target_id}</code></td>
+      <td>${escapeHtml(a.body)}</td>
+      <td>${author}</td>
+      <td><span style="font-size:10px;text-transform:uppercase;color:${a.status === 'open' ? 'var(--alert)' : 'var(--green)'}">${escapeHtml(a.status)}</span></td>
+      <td></td>
+    `;
+    if (a.status === 'open' && STATE.mode === 'ca') {
+      const rb = h('button', { class: 'small' }, ['Resolve']);
+      rb.onclick = async () => {
+        try {
+          await resolveAnnotation(STATE.db, a.id, STATE.caProfile?.name);
+          setSaveStatus('unsaved');
+          await persistKhata();
+          render();
+        } catch (e) { toast('Failed: ' + e.message, 'err'); }
+      };
+      tr.children[6].appendChild(rb);
+    }
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+// CA adjustment voucher form — wraps the existing journal voucher form with a
+// pre-filled adjustment-type picker and ca.adjustment audit action.
+function renderCaAdjustmentForm(main) {
+  if (!requireFileOrPrompt(main, 'CA Adjustment')) return;
+  if (STATE.mode !== 'ca') {
+    main.appendChild(h('h1', {}, ['CA Adjustment']));
+    main.appendChild(h('div', { class: 'error-screen' }, [h('p', {}, ['CA mode required.'])]));
+    return;
+  }
+  main.appendChild(h('h1', {}, ['CA Adjustment voucher']));
+  main.appendChild(h('p', { class: 'help' }, ['Free-form double-entry adjustment with the CA actor stamped into the audit log. Use this for year-end / depreciation / prepaid / outstanding / accrual adjustments.']));
+
+  const accR = STATE.db.exec('SELECT id, name, type FROM accounts WHERE archived=0 ORDER BY type, name');
+  if (!accR.length || !accR[0].values.length) { main.appendChild(h('div', { class: 'empty' }, ['No accounts.'])); return; }
+  const accounts = accR[0].values.map(v => ({ id: v[0], name: v[1], type: v[2] }));
+
+  const form = {
+    voucherRef: '',
+    adjustmentType: 'year-end',
+    postedAt: nowIso().slice(0, 10),
+    narration: '',
+    lines: [
+      { accountId: accounts[0].id, debit: '', credit: '' },
+      { accountId: accounts[0].id, debit: '', credit: '' },
+    ],
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Adjustment details']));
+  const body = h('div', { class: 'panel-b' });
+  body.innerHTML = `
+    <div class="field"><label>Adjustment type</label>
+      <select id="adj-type">
+        <option value="year-end" selected>Year-end</option>
+        <option value="depreciation">Depreciation</option>
+        <option value="prepaid">Prepaid</option>
+        <option value="outstanding">Outstanding</option>
+        <option value="accrual">Accrual</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div class="field"><label>Voucher reference</label><input id="adj-ref" placeholder="e.g. CA-ADJ-2025-001"></div>
+    <div class="field"><label>Posting date</label><input id="adj-date" type="date" value="${form.postedAt}"></div>
+    <div class="field"><label>Narration</label><textarea id="adj-narr" rows="2" placeholder="Why is this adjustment being posted?"></textarea></div>
+  `;
+  panel.appendChild(body);
+
+  const linesTbl = h('table', { class: 'dense', style: 'margin-top:14px' });
+  linesTbl.innerHTML = '<thead><tr><th>Account</th><th class="num">Debit (₹)</th><th class="num">Credit (₹)</th><th></th></tr></thead><tbody></tbody>';
+  body.appendChild(linesTbl);
+  const totalsBox = h('div', { id: 'adj-totals', style: 'margin-top:14px;font-size:13px;text-align:right;line-height:1.8' });
+  body.appendChild(totalsBox);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const addLineBtn = h('button', {}, ['+ Add line']);
+  addLineBtn.onclick = () => { form.lines.push({ accountId: accounts[0].id, debit: '', credit: '' }); rerender(); };
+  const postBtn = h('button', { class: 'primary' }, ['Post adjustment']);
+  postBtn.onclick = doPost;
+  ctrls.appendChild(addLineBtn); ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    $('adj-type').addEventListener('change', () => { form.adjustmentType = $('adj-type').value; });
+    $('adj-ref').addEventListener('input', () => { form.voucherRef = $('adj-ref').value; });
+    $('adj-date').addEventListener('change', () => { form.postedAt = $('adj-date').value; });
+    $('adj-narr').addEventListener('input', () => { form.narration = $('adj-narr').value; });
+    rerender();
+  }, 0);
+
+  function rerender() {
+    const tbody = linesTbl.querySelector('tbody');
+    tbody.innerHTML = '';
+    form.lines.forEach((ln, idx) => {
+      const tr = h('tr');
+      const accSel = document.createElement('select');
+      accSel.style.width = '100%';
+      for (const a of accounts) {
+        const o = h('option', { value: String(a.id) }, [`${a.name} (${a.type})`]);
+        if (String(a.id) === String(ln.accountId)) o.selected = true;
+        accSel.appendChild(o);
+      }
+      accSel.onchange = (e) => { ln.accountId = parseInt(e.target.value, 10); };
+      tr.appendChild(h('td', {}, [accSel]));
+      const drInp = h('input', { type: 'text', value: ln.debit || '', placeholder: '0.00', style: 'width:100%;text-align:right' });
+      drInp.id = `adj-dr-${idx}`;
+      drInp.oninput = (e) => { ln.debit = e.target.value; if (e.target.value) { ln.credit = ''; const ce = document.getElementById(`adj-cr-${idx}`); if (ce) ce.value = ''; } recomputeTotals(); };
+      tr.appendChild(h('td', { class: 'num' }, [drInp]));
+      const crInp = h('input', { type: 'text', value: ln.credit || '', placeholder: '0.00', style: 'width:100%;text-align:right' });
+      crInp.id = `adj-cr-${idx}`;
+      crInp.oninput = (e) => { ln.credit = e.target.value; if (e.target.value) { ln.debit = ''; const de = document.getElementById(`adj-dr-${idx}`); if (de) de.value = ''; } recomputeTotals(); };
+      tr.appendChild(h('td', { class: 'num' }, [crInp]));
+      const tdRm = h('td');
+      if (form.lines.length > 2) {
+        const rmBtn = h('button', { class: 'small' }, ['×']);
+        rmBtn.onclick = () => { form.lines.splice(idx, 1); rerender(); };
+        tdRm.appendChild(rmBtn);
+      }
+      tr.appendChild(tdRm);
+      tbody.appendChild(tr);
+    });
+    recomputeTotals();
+  }
+  function recomputeTotals() {
+    let totalDr = 0, totalCr = 0;
+    for (const ln of form.lines) { totalDr += parseRupees(ln.debit); totalCr += parseRupees(ln.credit); }
+    const diff = totalDr - totalCr;
+    const balanced = Math.abs(diff) < 1;
+    totalsBox.innerHTML = `
+      <div>Total Dr: <b>${fmtINR(totalDr)}</b></div>
+      <div>Total Cr: <b>${fmtINR(totalCr)}</b></div>
+      <div style="font-weight:700;color:${balanced ? 'var(--green)' : 'var(--alert)'}">${balanced ? '✓ Balanced' : `⚠ Out of balance by ${fmtINR(Math.abs(diff))}`}</div>
+    `;
+    postBtn.disabled = !balanced || totalDr <= 0;
+  }
+  async function doPost() {
+    try {
+      const ref = $('adj-ref').value.trim();
+      if (!ref) { toast('Voucher reference is required', 'err'); return; }
+      const lines = form.lines
+        .map(ln => ({ accountId: ln.accountId, debit: parseRupees(ln.debit), credit: parseRupees(ln.credit) }))
+        .filter(ln => ln.debit > 0 || ln.credit > 0);
+      if (lines.length < 2) { toast('At least 2 lines required', 'err'); return; }
+      await postEntry(STATE.db, {
+        voucherType: 'ca-adjustment',
+        voucherRef: ref,
+        narration: `[${form.adjustmentType}] ${$('adj-narr').value.trim() || 'CA adjustment'}`,
+        postedAt: $('adj-date').value,
+        actor: 'ca',
+        lines,
+      });
+      // Tag with the adjustment type via an audit entry payload
+      await appendAuditEntry(STATE.db, {
+        actor: 'ca',
+        action: 'ca.adjustment',
+        ref,
+        payload: { adjustmentType: form.adjustmentType, narration: form.narration },
+      });
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`Adjustment ${ref} posted`, 'ok');
+      nav('#/ca/review');
+    } catch (e) {
+      console.error(e);
+      toast('Post failed: ' + e.message, 'err');
+    }
+  }
+}
+
+// Review report preview view — renders the data structure on screen and offers
+// a "Generate PDF" button that calls exportReviewReportPdf.
+function renderCaReviewReport(main) {
+  if (!requireFileOrPrompt(main, 'Review Report')) return;
+  main.appendChild(h('h1', {}, ['CA Review Report']));
+
+  if (STATE.mode !== 'ca' || !STATE.caProfile) {
+    main.appendChild(h('div', { class: 'error-screen' }, [
+      h('p', {}, ['CA mode + profile required. Go to Settings → Edit CA profile.']),
+    ]));
+    return;
+  }
+
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `<div class="field" style="margin:0"><label>As of</label><input id="rr-date" type="date" value="${today}"></div>`;
+  main.appendChild(ctrl);
+
+  const out = h('div', { id: 'rr-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+
+  function rebuild() {
+    out.innerHTML = '';
+    const asOf = $('rr-date').value || today;
+    const data = buildReviewReportData(STATE.db, asOf);
+
+    // Header card
+    const head = h('div', { class: 'panel' });
+    head.appendChild(h('div', { class: 'panel-h' }, ['Report header']));
+    const hb = h('div', { class: 'panel-b' });
+    hb.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div>
+          <div style="font-size:11px;color:var(--ink-2);text-transform:uppercase;font-weight:700">Prepared by</div>
+          <div style="margin-top:4px"><b>${escapeHtml(data.ca.name || '')}</b></div>
+          <div style="font-size:12px">${escapeHtml(data.ca.firmName || '')}</div>
+          <div style="font-size:11px;color:var(--ink-2)">ICAI Membership: ${escapeHtml(data.ca.membershipNo || '')}</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--ink-2);text-transform:uppercase;font-weight:700">Client</div>
+          <div style="margin-top:4px"><b>${escapeHtml(data.company.name || '')}</b></div>
+          <div style="font-size:12px">GSTIN: ${escapeHtml(data.company.gstin || '—')}</div>
+          <div style="font-size:11px;color:var(--ink-2)">As of: ${escapeHtml(data.asOfDate)}</div>
+        </div>
+      </div>
+    `;
+    head.appendChild(hb);
+    out.appendChild(head);
+
+    // Trial Balance preview
+    const tbPanel = h('div', { class: 'panel' });
+    tbPanel.appendChild(h('div', { class: 'panel-h' }, [`Trial Balance — ${data.trialBalance.length} accounts`]));
+    const tbBody = h('div', { class: 'panel-b' });
+    let totalDr = 0, totalCr = 0;
+    for (const row of data.trialBalance) {
+      totalDr += Math.max(0, row.balance);
+      totalCr += Math.max(0, -row.balance);
+    }
+    tbBody.innerHTML = `<div>Total Dr: <b>${fmtINR(totalDr)}</b> · Total Cr: <b>${fmtINR(totalCr)}</b> · ${Math.abs(totalDr - totalCr) <= 1 ? '<span style="color:var(--green)">✓ Balanced</span>' : '<span style="color:var(--alert)">⚠ Out of balance</span>'}</div>`;
+    tbPanel.appendChild(tbBody);
+    out.appendChild(tbPanel);
+
+    // P&L preview
+    const pnlPanel = h('div', { class: 'panel' });
+    pnlPanel.appendChild(h('div', { class: 'panel-h' }, ['Profit & Loss']));
+    const pnlBody = h('div', { class: 'panel-b' });
+    pnlBody.innerHTML = `
+      <div>Total income: <b>${fmtINR(data.pnl.income)}</b></div>
+      <div>Total expense: <b>${fmtINR(data.pnl.expense)}</b></div>
+      <div style="margin-top:6px;font-weight:700;color:${data.pnl.netProfit >= 0 ? 'var(--green)' : 'var(--alert)'}">${data.pnl.netProfit >= 0 ? 'Net profit: ' + fmtINR(data.pnl.netProfit) : 'Net loss: ' + fmtINR(Math.abs(data.pnl.netProfit))}</div>
+    `;
+    pnlPanel.appendChild(pnlBody);
+    out.appendChild(pnlPanel);
+
+    // Balance Sheet preview
+    const bsPanel = h('div', { class: 'panel' });
+    bsPanel.appendChild(h('div', { class: 'panel-h' }, ['Balance Sheet']));
+    const bsBody = h('div', { class: 'panel-b' });
+    const tieDiff = data.balanceSheet.totalAssets - (data.balanceSheet.totalLiabilities + data.balanceSheet.totalEquity);
+    bsBody.innerHTML = `
+      <div>Total assets: <b>${fmtINR(data.balanceSheet.totalAssets)}</b></div>
+      <div>Total liabilities: <b>${fmtINR(data.balanceSheet.totalLiabilities)}</b></div>
+      <div>Total equity: <b>${fmtINR(data.balanceSheet.totalEquity)}</b></div>
+      <div style="margin-top:6px;font-weight:700;color:${Math.abs(tieDiff) <= 1 ? 'var(--green)' : 'var(--alert)'}">${Math.abs(tieDiff) <= 1 ? '✓ Tied' : '⚠ Off by ' + fmtINR(Math.abs(tieDiff))}</div>
+    `;
+    bsPanel.appendChild(bsBody);
+    out.appendChild(bsPanel);
+
+    // Adjustments preview
+    if (data.adjustments.length) {
+      const adjPanel = h('div', { class: 'panel' });
+      adjPanel.appendChild(h('div', { class: 'panel-h' }, [`CA Adjustments (${data.adjustments.length})`]));
+      const adjBody = h('div', { class: 'panel-b' });
+      const tbl = h('table', { class: 'dense' });
+      tbl.innerHTML = '<thead><tr><th>Date</th><th>Ref</th><th>Narration</th></tr></thead>';
+      const tbody = h('tbody');
+      for (const a of data.adjustments) {
+        const tr = h('tr');
+        tr.innerHTML = `<td>${escapeHtml(a.posted_at.slice(0, 10))}</td><td><code>${escapeHtml(a.voucher_ref || '')}</code></td><td>${escapeHtml(a.narration || '')}</td>`;
+        tbody.appendChild(tr);
+      }
+      tbl.appendChild(tbody);
+      adjBody.appendChild(tbl);
+      adjPanel.appendChild(adjBody);
+      out.appendChild(adjPanel);
+    }
+
+    // Observations preview
+    if (data.openAnnotations.length) {
+      const obsPanel = h('div', { class: 'panel' });
+      obsPanel.appendChild(h('div', { class: 'panel-h' }, [`Observations (${data.openAnnotations.length} open)`]));
+      const obsBody = h('div', { class: 'panel-b' });
+      for (const a of data.openAnnotations) {
+        const div = h('div', { style: 'margin-bottom:8px;padding:8px;background:var(--ash);border-left:3px solid var(--saffron)' });
+        div.innerHTML = `<div style="font-size:11px;text-transform:uppercase;font-weight:700;color:var(--saffron-deep)">${escapeHtml(a.note_type)} · ${escapeHtml(a.target_type)}:${a.target_ref || a.target_id}</div><div style="margin-top:4px;font-size:13px">${escapeHtml(a.body)}</div>`;
+        obsBody.appendChild(div);
+      }
+      obsPanel.appendChild(obsBody);
+      out.appendChild(obsPanel);
+    }
+
+    // Generate PDF button
+    const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+    const pdfBtn = h('button', { class: 'primary' }, ['Generate PDF report']);
+    pdfBtn.onclick = async () => {
+      try {
+        await exportReviewReportPdf(STATE.db, STATE.caProfile, asOf);
+      } catch (e) { toast('PDF generation failed: ' + e.message, 'err'); }
+    };
+    ctrls.appendChild(pdfBtn);
+    out.appendChild(ctrls);
+  }
+
+  setTimeout(() => {
+    $('rr-date').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// Reconciliation View — divergent file detected via Layer 3 ancestry check.
+// Shows side-by-side diff and lets the user pick which entries to keep from each side.
+function renderReconcile(main) {
+  if (!STATE.pendingReconciliation) {
+    main.appendChild(h('h1', {}, ['Reconciliation']));
+    main.appendChild(h('div', { class: 'empty' }, ['No reconciliation pending. The Reconciliation View is surfaced automatically when you open a file that has diverged from your last copy.']));
+    return;
+  }
+
+  const rec = STATE.pendingReconciliation;
+  main.appendChild(h('h1', {}, ['Reconciliation View']));
+
+  const banner = h('div', { class: 'error-screen', style: 'margin-bottom:14px' });
+  banner.innerHTML = `
+    <h3 style="color:var(--alert);margin:0 0 8px 0">⚠ Divergent file detected</h3>
+    <p style="margin:0">Your local copy of <b>${escapeHtml(rec.companyName || '')}</b> and the imported file share a common history (ancestor: <code>${escapeHtml((rec.ancestor || '').slice(0, 16))}…</code>) but each side has entries the other doesn't. Pick which entries to keep from each branch — Bahi will write a merged <code>.khata</code> file with both branches as parents.</p>
+    <div style="margin-top:8px;font-size:11px">
+      <div>Local head: <code>${escapeHtml((rec.localHead || '').slice(0, 16))}…</code> · ${rec.localOnly.length} entries unique to local</div>
+      <div>Imported head: <code>${escapeHtml((rec.importedHead || '').slice(0, 16))}…</code> · ${rec.importedOnly.length} entries unique to imported</div>
+    </div>
+  `;
+  main.appendChild(banner);
+
+  // Track picks via a state object (per-entry checkbox state)
+  if (!STATE.pendingReconciliation.picks) {
+    STATE.pendingReconciliation.picks = { local: new Set(), imported: new Set() };
+    // Default: keep everything
+    for (const e of rec.localOnly) STATE.pendingReconciliation.picks.local.add(e.hash);
+    for (const e of rec.importedOnly) STATE.pendingReconciliation.picks.imported.add(e.hash);
+  }
+  const picks = STATE.pendingReconciliation.picks;
+
+  function sideTable(label, entries, side) {
+    const panel = h('div', { class: 'panel' });
+    const ph = h('div', { class: 'panel-h' });
+    ph.innerHTML = `<span><b>${escapeHtml(label)}</b> — ${entries.length} entries</span>`;
+    const allBtn = h('button', { class: 'small', style: 'float:right' }, ['Toggle all']);
+    allBtn.onclick = () => {
+      const allChecked = entries.every(e => picks[side].has(e.hash));
+      if (allChecked) entries.forEach(e => picks[side].delete(e.hash));
+      else entries.forEach(e => picks[side].add(e.hash));
+      render();
+    };
+    ph.appendChild(allBtn);
+    panel.appendChild(ph);
+    const pb = h('div', { class: 'panel-b' });
+    if (!entries.length) {
+      pb.appendChild(h('div', { class: 'empty' }, ['(no unique entries)']));
+    } else {
+      const tbl = h('table', { class: 'dense' });
+      tbl.innerHTML = '<thead><tr><th></th><th>Time</th><th>Action</th><th>Hash</th></tr></thead>';
+      const tbody = h('tbody');
+      for (const e of entries) {
+        const tr = h('tr');
+        const cb = h('input', { type: 'checkbox' });
+        cb.checked = picks[side].has(e.hash);
+        cb.onchange = () => {
+          if (cb.checked) picks[side].add(e.hash);
+          else picks[side].delete(e.hash);
+        };
+        const tdCb = h('td'); tdCb.appendChild(cb); tr.appendChild(tdCb);
+        tr.appendChild(h('td', {}, [(e.ts || '').slice(0, 16)]));
+        tr.appendChild(h('td', {}, [e.action || '']));
+        const tdHash = h('td'); tdHash.innerHTML = `<code>${escapeHtml((e.hash || '').slice(0, 12))}…</code>`;
+        tr.appendChild(tdHash);
+        tbody.appendChild(tr);
+      }
+      tbl.appendChild(tbody);
+      pb.appendChild(tbl);
+    }
+    panel.appendChild(pb);
+    return panel;
+  }
+
+  const grid = h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:14px' });
+  grid.appendChild(sideTable('Local branch (your version)', rec.localOnly, 'local'));
+  grid.appendChild(sideTable('Imported branch (received)', rec.importedOnly, 'imported'));
+  main.appendChild(grid);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const cancel = h('button', {}, ['Cancel']);
+  cancel.onclick = () => {
+    STATE.pendingReconciliation = null;
+    nav('#/workspace');
+  };
+  const merge = h('button', { class: 'primary', style: 'background:var(--alert);border-color:var(--alert)' }, ['Build merged file']);
+  merge.onclick = doMerge;
+  ctrls.appendChild(cancel);
+  ctrls.appendChild(merge);
+  main.appendChild(ctrls);
+}
+
+// Build the merged .khata file. v1 strategy: take the local DB as the base, then
+// REPLAY the picked imported entries on top of it. Voucher number collisions get a
+// MERGE- prefix. The new file's manifest carries both parent hashes for forensics.
+async function doMerge() {
+  const rec = STATE.pendingReconciliation;
+  if (!rec) return;
+  try {
+    const picks = rec.picks;
+    // Use the local DB as the base
+    const baseDb = STATE.db;
+    if (!baseDb) { toast('No local DB to merge into', 'err'); return; }
+
+    // Replay picked imported entries by re-running the matching action's effect.
+    // For v1 we ship a permissive, best-effort replayer that walks the picked entries
+    // in chronological order and re-executes them via the existing posting bridges.
+    let replayed = 0, skipped = 0;
+    for (const eHash of picks.imported) {
+      const entry = rec.importedChain.find(e => e.hash === eHash);
+      if (!entry) { skipped++; continue; }
+      try {
+        await replayAuditEntry(baseDb, entry);
+        replayed++;
+      } catch (e) {
+        console.warn('replay skipped:', entry.action, e.message);
+        skipped++;
+      }
+    }
+
+    // Append a merge.commit audit entry recording both parent hashes
+    await appendAuditEntry(baseDb, {
+      actor: auditActor(),
+      action: 'merge.commit',
+      ref: 'reconcile',
+      payload: {
+        localHead: rec.localHead,
+        importedHead: rec.importedHead,
+        ancestor: rec.ancestor,
+        replayed,
+        skipped,
+      },
+    });
+
+    // Update manifest with parent hashes for forensics
+    STATE.manifest.integrity = STATE.manifest.integrity || {};
+    STATE.manifest.integrity.parentHashes = [rec.localHead, rec.importedHead];
+
+    setSaveStatus('unsaved');
+    const ok = await persistKhata();
+    if (!ok) { toast('Merge built but save failed', 'err'); return; }
+
+    STATE.pendingReconciliation = null;
+    toast(`Merge complete. Replayed ${replayed} entries from imported branch (${skipped} skipped).`, 'ok');
+    nav('#/dashboard');
+  } catch (e) {
+    console.error(e);
+    toast('Merge failed: ' + e.message, 'err');
+  }
+}
+
+// Replay one audit log entry on a target DB. v1 ships a permissive switch that
+// handles the most common posting actions; unknown actions are silently skipped.
+// Future schema changes need to extend this switch.
+async function replayAuditEntry(db, entry) {
+  let payload = {};
+  try { payload = JSON.parse(entry.payload || '{}'); } catch (_) {}
+  const action = entry.action;
+  // Most actions don't need replay (file.create, snapshot.save, etc.)
+  // Only the ones that mutate the books need replay.
+  if (action === 'entry.post' || action === 'ca.adjustment' || action === 'ca.entry.review') {
+    // Re-post if we can reconstruct the entry from the payload
+    if (payload.lines && Array.isArray(payload.lines)) {
+      await postEntry(db, {
+        voucherType: payload.voucherType || 'journal',
+        voucherRef: 'MERGE-' + (payload.voucherRef || ''),
+        narration: payload.narration || `Merged from imported branch (${entry.hash.slice(0, 8)})`,
+        postedAt: payload.postedAt || nowIso(),
+        actor: entry.actor || 'system',
+        lines: payload.lines,
+      });
+    }
+  }
+  // Other actions are informational — skip silently
+}
+
+//------------------------------------------------------------
 // === View: Debug Console (the acceptance gate) ===
 //------------------------------------------------------------
 
@@ -14206,7 +15626,7 @@ function buildPostEntryPanel() {
         narration: $('pe-narr').value.trim() || null,
         postedAt: new Date($('pe-date').value).toISOString(),
         lines,
-        actor: 'owner',
+        actor: auditActor(),
       });
       setSaveStatus('unsaved');
       const ok = await persistKhata();
@@ -14534,7 +15954,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">Phase 5 · Tally XML importer (Tally Prime + ERP 9 parser, 6-step wizard, both create-new and merge-into-existing commit targets)</div>
+      <div class="k">Bahi version</div><div class="v">Phase 6 · CA mode (multi-client workspace, annotations, review markers, adjustment voucher form, PDF review report, Layer 3 ancestry check, Reconciliation View)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>
@@ -14673,6 +16093,9 @@ function renderSettings(main) {
       <li><b>Wrong file opened.</b> Layer 2 wrong-file detection walks the company's <code>changeHistory</code> and surfaces a hard block if the identity of the file doesn't match the workspace entry being replaced. Layer 5 fingerprints export filenames so you can tell at a glance which company / GSTIN they belong to.</li>
       <li><b>Schema changes between Bahi versions.</b> Migration runner is idempotent and version-tagged in <code>meta.schemaVersion</code>. Older files migrate forward on open. Newer files (format version above this build) open read-only with a banner.</li>
       <li><b>Audit log integrity.</b> The audit log is a SHA-256 hash chain where each entry hashes <code>prev_hash || origin || canonicalJson(payload) || booksHash</code>. The Debug Console has a verifier that walks the entire chain and reports any break — so if anything ever did slip past the layers above, it would show up here.</li>
+      <li><b>CA round-trip workflows (owner → CA → owner).</b> Phase 6 adds Layer 3 ancestry check on every file open: when you reopen a file the workspace already knows, Bahi compares the audit chain head against the last-known head and warns if the file shares no history with the previous copy. If both branches have new entries (you changed the file in one Bahi instance, the CA changed it in another), the Reconciliation View opens automatically and lets you pick which entries to keep from each branch — the merged file's manifest carries both parent hashes for forensics.</li>
+      <li><b>CA acting as owner accidentally.</b> Every action in CA mode is automatically tagged <code>actor='ca'</code> in the audit log, with the CA's name + firm + ICAI membership stamped into both the audit payload and any annotations. The owner can see exactly which entries were posted by their CA versus by themselves.</li>
+      <li><b>Owner editing a file the CA was reviewing.</b> When the CA next opens their copy, the ancestry check fires (CA's lastKnownHead ≠ disk head) and offers reconciliation. No silent overwrites in either direction.</li>
     </ul>
 
     <h4 style="margin-top:14px;margin-bottom:6px;font-size:13px;color:var(--saffron-deep)">Not protected (and probably shouldn't be)</h4>
@@ -14729,7 +16152,8 @@ function renderSettings(main) {
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 3 — Service SMB tier (this build).</b> <b>Vendor master</b> mirrors customers, with RCM-applicable + default TDS section flags. <b>Purchases</b> with internal ref (PUR/{FY}/{NNNN}), vendor's bill number, place-of-supply state routing, RCM toggle (auto-routes to GST RCM Input/Output sub-accounts), ITC eligible flag (motor vehicles, club fees, etc. blocked-credit support), per-rate sub-account auto-create. <b>Credit notes</b> (against invoices) and <b>debit notes</b> (against purchases) with full-reversal or partial-amount modes; both inherit company + customer/vendor snapshots from the parent so reprints stay historically correct. <b>Journal voucher</b> form for free-form double-entry adjustments. <b>Reports</b>: Trial Balance, Balance Sheet (with tie check + period-profit rollup), Day Book, Account Ledger (per-account with running balance), Sales Register, Purchase Register. <b>GSTR-3B</b> summary view (Section 3.1 outward + 3.1d RCM + Section 4 ITC + net liability) with JSON + CSV download. <b>FY rollover wizard</b>: preview net profit/loss, post system-generated closing entries that zero out income/expense accounts → P&amp;L Summary → Capital Account, recorded in <code>fy_closings</code>. <b>Period locks</b> for marking GSTR-1 / GSTR-3B / CMP-08 / 26Q / 27EQ as filed. <b>Tax payment challans</b> templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, and a custom builder.</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 4 — Goods SMB tier (this build).</b> <b>Schema v7</b>: items get inventory columns (enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor, opening_stock_qty/value); 8 new tables (godowns, batches, stock_movements, delivery_challans + lines, eway_bills, stock_transfers). <b>Stock movement engine</b> with both Weighted Average Cost AND First-In-First-Out (selectable per item), plus opt-in named-batch tracking for pharma/electronics/perishables. Posting hooks on invoice / purchase / credit note / debit note auto-decrement and increment stock when items have inventory enabled; service-only items see zero behaviour change. Each invoice posts a separate Dr Cost of Goods Sold / Cr Stock-in-Hand journal at the computed COGS rate. <b>Single auto-seeded "Main" godown</b> with multi-godown UI accessible via sidebar. <b>Reports</b>: Inventory dashboard (KPIs + reorder + aging summary), Stock on hand, Stock movements, Stock register (per-item movement walkthrough with running qty), Batches list, Valuation summary, Reorder alerts, Stock aging (0–30/31–60/61–90/90+ buckets). Stock-in-Hand and Cost of Goods Sold flow into the existing Balance Sheet and P&amp;L automatically. <b>Delivery challans</b> (outward job-work / sample / return + inward return) with stock movement but no GL posting. <b>E-way bills</b> with NIC bulk-upload JSON export + printable PDF (with QR placeholder for the EWB number); generated from any invoice or delivery challan; "mark as generated" workflow lets you re-export the PDF with the real EWB number after portal submission. <b>Inter-GSTIN stock transfers</b> (same legal entity, different GSTINs) with cross-file JSON export from the sender side and import on the receiver side.</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 5 — Tally XML importer (this build).</b> Permissive parser handles both Tally Prime and Tally ERP 9 (browser-native DOMParser, no CDN deps). Walks Masters (Groups, Ledgers, Stock Items, Units, Godowns) and Vouchers (Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note + their variants). 6-step wizard: <b>(1) File summary</b> with format detection, voucher type breakdown and supported/unsupported flags; <b>(2) Date range</b> filter with live in-range counter; <b>(3) Mapping review</b> — auto-suggests for 25+ standard Tally groups, hard-blocks Continue until every user-created group is resolved; <b>(4) Commit target</b> — Create new .khata file OR Merge into currently-open file (radio cards, merge mode shows live customer/vendor dedupe preview by GSTIN+name); <b>(5) Dry run preview</b> with category counts; <b>(6) Result</b> with full breakdown including auto-cleaned-as-services, cost-centre warnings, multi-currency warnings, skipped vouchers with reasons, and unsupported voucher types. Single SQL transaction wraps the entire import — any failure rolls back cleanly. <code>tally.import.start</code> / <code>tally.import.commit</code> / <code>tally.import.failed</code> audit log entries make every import forensically discoverable. The importer never bypasses the existing posting bridges — every imported invoice goes through <code>postInvoiceToLedger</code>, every purchase through <code>postPurchaseToLedger</code>, every journal through <code>postEntry</code>, so the snapshot pattern and stock effects fire automatically. Voucher number collisions in merge mode get a <code>TALLY-</code> prefix.</p>
-    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 6+:</b> CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass + dark mode + undo stack + landing page → launch.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 6 — CA mode (this build).</b> First-run mode picker (Owner / CA), CA profile setup (name + firm + ICAI membership + optional logo) stored in IndexedDB outside any client file. <b>Schema v8</b> adds <code>annotations</code> and <code>review_markers</code> tables — annotations capture CA identity at creation time (snapshot pattern), review markers track which entries the CA has signed off on. Mode-aware sidebar with a CA-only group (Client review, + Adjustment voucher, Annotations, Review report). Topbar mode badge shows OWNER / CA · {initials}; clickable to switch. <code>auditActor()</code> helper threaded through every <code>appendAuditEntry</code> call (21 sites), so every action a CA takes is automatically tagged <code>actor='ca'</code> in the audit log. CA review interface: per-voucher-type unreviewed counts, sectioned list with bulk-mark and inline annotation widget. CA adjustment voucher form: thin wrapper around the existing journal voucher engine with adjustment-type picker (year-end / depreciation / prepaid / outstanding / accrual). PDF review report: multi-page A4 with CA firm letterhead, page numbering, sections for Trial Balance / P&amp;L / Balance Sheet / CA Adjustments / Observations, written via the existing jsPDF lazy loader. <b>Layer 3 ancestry check</b> on every file open compares the audit chain head against the workspace entry's <code>lastKnownHead</code> and surfaces a warning for the same-GSTIN-no-shared-ancestry case. <b>Reconciliation View</b> for divergent branches: side-by-side checkbox lists of entries unique to each side, replay engine that re-executes picked imported entries via the existing posting bridges, merged manifest carries both parent hashes via <code>integrity.parentHashes[]</code>, audit log appends a <code>merge.commit</code> entry recording both parents.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 7+:</b> TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass (Tally parity) → dark mode → undo stack → landing page on naklitechie.com → launch.</p>
   `;
   notes.appendChild(nb);
   main.appendChild(notes);
@@ -14962,6 +16386,15 @@ async function boot() {
 
   // Populate the shared <datalist> used by every typeable state input
   populateStatesDatalist();
+
+  // Phase 6 — load operating mode + CA profile from persistent storage
+  try {
+    const savedMode = localStorage.getItem('bahi.mode');
+    if (savedMode === 'ca' || savedMode === 'owner') STATE.mode = savedMode;
+  } catch (_) {}
+  if (STATE.mode === 'ca') {
+    try { STATE.caProfile = await getCaProfile(); } catch (_) {}
+  }
 
   setupTabLock();
 

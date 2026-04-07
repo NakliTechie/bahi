@@ -8,9 +8,9 @@ The app is **Bahi** (बही — the traditional bound ledger of Indian mercha
 
 ---
 
-## Status — Phase 5 (Tally XML importer)
+## Status — Phase 6 (CA mode)
 
-Phase 5 adds the highest-leverage adoption feature: a Tally XML importer. With it, "I have a Tally file" becomes a 30-minute migration. Without it, every existing Tally user has to either type their books from scratch or stay on Tally. The importer supports both Tally Prime and Tally ERP 9 via a permissive browser-native parser, walks the full master + voucher payload, auto-suggests chart-of-accounts mappings for ~25 standard Tally groups (with override and a hard-block "needs mapping" panel for user-created groups), filters by date range, supports both **Create new .khata file** and **Merge into currently-open file** commit targets, dedupes customers and vendors by GSTIN, prefixes voucher number collisions with `TALLY-`, wraps the entire import in a single SQL transaction, and stamps `tally.import.start` / `tally.import.commit` audit log entries for forensic discoverability. The importer never bypasses the existing posting bridges — every imported invoice / purchase / credit note / debit note goes through the same engine functions as native posting, so the snapshot pattern and stock effects all fire automatically.
+Phase 6 turns Bahi from "owner of one company" into "CA managing many clients". Indian SMBs almost universally have a CA who reviews their books at month-end and year-end. Without CA mode, the workflow is "owner sends `.khata` to CA, CA opens it pretending to be the owner, CA sends back, owner has no visible record of who changed what". With CA mode, the CA's actions are tagged in the audit log, the owner sees a review report, and the file's lineage is preserved across the round-trip via Layer 3 ancestry detection and the Reconciliation View. Phase 6 ships: first-run mode picker, CA profile setup with name/firm/ICAI membership/optional logo (stored in IndexedDB outside any client file), schema v8 with `annotations` and `review_markers` tables, mode-aware sidebar with a CA-only group, topbar mode badge, automatic `actor='ca'` tagging on every audit entry, CA review interface with per-voucher-type unreviewed counts and bulk-mark, inline annotation widget, CA adjustment voucher form (year-end/depreciation/prepaid/outstanding/accrual), multi-page A4 PDF review report with CA firm letterhead, Layer 3 ancestry check on every file open, and the full Reconciliation View with side-by-side checkbox merging + an audit-log replay engine that re-executes picked imported entries through the existing posting bridges.
 
 ### What's shipped
 
@@ -169,6 +169,21 @@ Phase 5 adds the highest-leverage adoption feature: a Tally XML importer. With i
 - **Posting bridges reused**: the importer NEVER bypasses `postInvoiceToLedger`, `postPurchaseToLedger`, `postEntry`. Every imported invoice triggers the existing snapshot capture, per-rate sub-account auto-create, and Phase 4 stock effects (for items with `enable_inventory=1`). Imported vouchers are forensically and behaviorally indistinguishable from natively-posted ones
 - **Voucher number collision handling**: in merge mode, Tally voucher numbers that already exist in the target file get a `TALLY-` prefix. Original numbers are preserved in the audit log payload
 
+**CA mode** (Phase 6)
+- **First-run mode picker**: extends the existing intro modal with two radio cards — Business owner / Chartered accountant. Persisted to `localStorage.bahi.mode`. Settings → Edit CA profile or click the topbar mode badge to switch later
+- **CA profile** stored in IndexedDB (`caProfile` store, outside any client `.khata` file per spec §6.4): name, firm name, ICAI membership number, optional logo (≤200 KB data URI). Stamped into every annotation and review report
+- **Schema v8**: `annotations` table (target_type / target_id / target_ref / note_type / body / status / ca_name / ca_firm / ca_membership / created_at / created_by / resolved_at / resolved_by) and `review_markers` table (entry_id / reviewed_at / reviewed_by / ca_membership / notes). Both tables follow the snapshot pattern — CA identity is captured at creation time and never re-resolved from a live profile lookup
+- **Mode-aware sidebar**: CA-only items hidden in Owner mode via `body.ca-mode` CSS class. CA group: Client review / + Adjustment voucher / Annotations / Review report
+- **Topbar mode badge**: pill showing OWNER or CA · {initials}, clickable to switch with confirmation
+- **`auditActor()` helper**: returns `'ca'` if mode is CA + profile exists, else `'owner'`. Threaded through every `appendAuditEntry` call (21 sites) so every action a CA takes is automatically tagged in the audit log without each call site having to know about modes
+- **CA review interface** (`#/ca/review`): KPI strip of unreviewed entries by voucher type, sectioned list with bulk "Mark all reviewed" + per-row checkboxes, inline "+ Note" button on every row that opens the annotation modal pre-filled
+- **Annotations** (`#/annotations`): full list filterable by status (open / resolved / all). Each row shows the type, target, body, author chrome (CA name + firm if `created_by='ca'`, "Owner" otherwise), and a Resolve button (CA mode only)
+- **CA adjustment voucher form** (`#/ca/adjustment/new`): thin wrapper around the existing journal voucher engine with adjustment type picker (year-end / depreciation / prepaid / outstanding / accrual / other). Posts via `postEntry` with `actor='ca'` and a dedicated `ca.adjustment` audit action
+- **PDF review report** (`#/ca/report` → Generate PDF): multi-page A4 with CA firm letterhead at the top of every page, page numbering, sections for **(1)** Trial Balance (with tie check), **(2)** P&L Summary (income/expense rows + net profit/loss), **(3)** Balance Sheet (assets/liabilities/equity with tie check), **(4)** CA Adjustments (CA-actor-tagged entries only), **(5)** Observations (open annotations with type, target, and body). Reuses the existing jsPDF lazy loader
+- **Layer 3 ancestry check** on every file open: compares the file's audit log head against the workspace entry's `lastKnownHead`. Outcomes: **identical** (no-op), **fast-forward** (proceed silently), **same-GSTIN-no-shared-ancestry** (warning toast — possible old backup or fresh export), **divergent** (route to Reconciliation View), **different GSTIN** (falls through to Layer 2 hard block). `workspace.lastKnownHead` is updated after every successful save
+- **Reconciliation View** (`#/reconcile`): only reachable when `STATE.pendingReconciliation` is set. Shows side-by-side checkbox lists of audit log entries unique to each branch (local vs imported), with default = keep all. "Build merged file" calls a replay engine that re-executes picked imported entries via the existing posting bridges (`postEntry` for journals, etc.). The merged file's manifest carries `integrity.parentHashes = [localHead, importedHead]` for forensics, and a `merge.commit` audit entry records both parents + replay counts
+- **Settings → Safety & failure modes panel**: 3 new rows for CA round-trip workflows, CA-acting-as-owner detection, and owner-editing-while-CA-was-reviewing recovery
+
 ---
 
 ## Running
@@ -261,6 +276,9 @@ Plain language. If you're handing this off to someone else to evaluate, this is 
 | Wrong file opened (file-name collision) | Layer 2 wrong-file detection walks `manifest.company.changeHistory` | Hard block on workspace replace if the identity doesn't match |
 | Schema bumped between Bahi versions | Version-tagged migration runner in `meta.schemaVersion` | Older files migrate forward silently; newer files (above this build's `SUPPORTED_FORMAT`) open read-only with a banner |
 | Audit log tampered with | SHA-256 hash chain | Chain verifier in Debug Console reports any break |
+| CA round-trip (owner → CA → owner) introduced silent overwrites | Layer 3 ancestry check on file open + Reconciliation View | "Same GSTIN but no shared history" warning toast for unrelated copies; divergent branches route to `#/reconcile` with side-by-side checkbox merging; merged file carries both parent hashes |
+| CA actions accidentally indistinguishable from owner actions | `auditActor()` helper auto-tags every audit entry as `'ca'` in CA mode | Audit log + review report clearly attribute each entry to either owner or CA, with the CA's name + firm + ICAI membership stamped at creation time |
+| Owner edits the file while CA is reviewing it | Layer 3 ancestry check fires on next CA open | Reconciliation View opens automatically; CA picks which entries to keep from each branch |
 
 **Not protected (and probably shouldn't be):**
 - **Disk hardware failure.** No software can save you. Use **Backup Now** (Settings → Snapshots) to write a dated `.khata-backup.zip` and keep one offsite.
@@ -306,7 +324,7 @@ For low-level testing (raw posting, audit chain inspection, integrity checks, sn
 - One-time backfill flow for legacy v1 invoices
 - Devanagari / Tamil / other Indian script fonts in PDF (currently Helvetica only — uses `Rs.` instead of `₹`; Phase 2B.2 lazy-loads Noto Sans Devanagari)
 
-**Phase 6+:** CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass (Tally parity) + dark mode + undo stack + landing page → launch.
+**Phase 7+:** TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass (Tally parity) + dark mode + undo stack + landing page → launch.
 
 ---
 

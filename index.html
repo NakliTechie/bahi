@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
-<title>Bahi — Browser-native accounting · Phase 6</title>
+<title>Bahi — Browser-native accounting · Phase 7</title>
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -275,14 +275,14 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 <div id="app">
 
   <header class="topbar">
-    <div class="brand">Bahi <span class="sub">Phase 6 · CA mode</span></div>
+    <div class="brand">Bahi <span class="sub">Phase 7 · polish &amp; launch prep</span></div>
     <span id="mode-badge" class="mode-badge owner" title="Click to switch mode">OWNER</span>
     <div id="company-switcher" style="display:none;position:relative">
       <button id="company-switcher-btn" class="small" style="display:flex;align-items:center;gap:6px"></button>
       <div id="company-switcher-menu" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--white);border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.12);z-index:100;min-width:280px;max-height:60vh;overflow-y:auto"></div>
     </div>
     <div class="spacer"></div>
-    <button id="backup-btn" class="small" onclick="window._bahi.backupNow()" style="display:none">Backup Now</button>
+    <button id="backup-btn" class="small" onclick="window._bahi.backupNow()" style="display:none" title="Ctrl+Shift+B">Backup Now</button>
     <div id="savestatus" class="save-indicator idle">
       <span class="dot"></span>
       <span class="lbl">no file</span>
@@ -1650,6 +1650,19 @@ const THEMES = {
       '--alert': '#a8201f', '--alert-soft': '#f2d8d4',
     },
   },
+  'sumi': {
+    name: 'Sumi (dark)',
+    desc: 'Black ink on washi at midnight. Inverted for late-night CAs and reduced eye strain. Auto-picked when the OS is in dark mode.',
+    vars: {
+      '--bg': '#1a1817', '--white': '#252321',
+      '--ink': '#e8e6e0', '--ink-2': '#a09c95',
+      '--saffron': '#d6603a', '--saffron-soft': '#3a221a', '--saffron-deep': '#f08055',
+      '--green': '#7a9b4a', '--green-soft': '#1f2818',
+      '--navy': '#7494c0', '--navy-hover': '#94b0d8', '--navy-soft': '#1a2030',
+      '--ash': '#26241f', '--ash-2': '#312e29', '--rule': '#403d36',
+      '--alert': '#e85544', '--alert-soft': '#3a1f1c',
+    },
+  },
 };
 const DEFAULT_THEME = 'crisp-paper';
 const THEME_LS_KEY = 'bahi.theme';
@@ -1665,6 +1678,19 @@ function applyTheme(themeId) {
     document.documentElement.style.setProperty(k, v);
   }
   try { localStorage.setItem(THEME_LS_KEY, themeId); } catch (_) {}
+}
+// Phase 7 — pick a theme automatically the first time the user opens Bahi.
+// If they've explicitly chosen one before, always use that. Otherwise, check the
+// OS dark-mode preference and default to Sumi if the OS is in dark mode.
+function autoPickTheme() {
+  try {
+    const stored = localStorage.getItem(THEME_LS_KEY);
+    if (stored && THEMES[stored]) return stored;
+  } catch (_) {}
+  if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    return 'sumi';
+  }
+  return DEFAULT_THEME;
 }
 function loadStoredTheme() {
   try {
@@ -2165,10 +2191,310 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
     });
 
     db.run('COMMIT');
+
+    // Phase 7 — push onto the session-scoped undo stack. Only "user" actors get
+    // pushed (system actions like FY closing entries shouldn't be undone via Ctrl+Z).
+    // The 'system' actor for tally.import and ca.adjustment are still user-initiated
+    // through a wizard, so they remain undoable.
+    if (actor !== 'system' || voucherType === 'ca-adjustment') {
+      pushUndo({ entryId, voucherType, voucherRef: voucherRef || null, narration: narration || null, postedAt, ts: nowIso() });
+    }
+
     return { entryId };
   } catch (e) {
     try { db.run('ROLLBACK'); } catch (_) {}
     throw e;
+  }
+}
+
+// === Phase 7 — Keyboard shortcuts (Tally parity) ===
+// Honors Tally's well-known keys where the browser doesn't hijack them. Where Tally
+// uses a key the browser owns (F11=fullscreen, F12=DevTools), we map Alt+F11/Alt+F12
+// per spec §11. Bahi-specific shortcuts use the Ctrl+Shift+X namespace.
+const SHORTCUTS = [
+  // Vouchers (Tally function keys)
+  { key: 'F4',  mod: '',    label: 'F4',          action: 'Contra (journal voucher)',     route: '#/journal/new',     group: 'Vouchers' },
+  { key: 'F5',  mod: '',    label: 'F5',          action: 'Payment voucher',              route: '#/payment/new',     group: 'Vouchers' },
+  { key: 'F6',  mod: '',    label: 'F6',          action: 'Receipt voucher',              route: '#/payment/new',     group: 'Vouchers' },
+  { key: 'F7',  mod: '',    label: 'F7',          action: 'Journal voucher',              route: '#/journal/new',     group: 'Vouchers' },
+  { key: 'F8',  mod: '',    label: 'F8',          action: 'Sales voucher (new invoice)',  route: '#/invoice/new',     group: 'Vouchers' },
+  { key: 'F9',  mod: '',    label: 'F9',          action: 'Purchase voucher',             route: '#/purchase/new',    group: 'Vouchers' },
+  { key: 'F10', mod: '',    label: 'F10',         action: 'Other vouchers menu',          route: '#/dashboard',       group: 'Vouchers' },
+  // Navigation (Tally)
+  { key: 'F1',  mod: '',    label: 'F1',          action: 'Company picker',               action2: 'companySwitcher', group: 'Navigation' },
+  { key: 'F3',  mod: '',    label: 'F3',          action: 'Company info',                 route: '#/file',            group: 'Navigation' },
+  { key: 'F11', mod: 'alt', label: 'Alt+F11',     action: 'Company features (Settings)',  route: '#/settings',        group: 'Navigation' },
+  { key: 'F12', mod: 'alt', label: 'Alt+F12',     action: 'Configure (Settings)',         route: '#/settings',        group: 'Navigation' },
+  { key: 'q',   mod: 'ctrl',label: 'Ctrl+Q',      action: 'Quit to dashboard',            route: '#/dashboard',       group: 'Navigation' },
+  // Edit / save
+  { key: 'a',   mod: 'ctrl',label: 'Ctrl+A',      action: 'Accept / save current form',   action2: 'submitForm',      group: 'Edit' },
+  { key: 'Enter', mod: '',  label: 'Enter',       action: 'Advance to next field',        group: 'Edit', native: true },
+  { key: 'Escape', mod: '', label: 'Esc',         action: 'Back / cancel modal',          group: 'Edit', native: true },
+  // Bahi-specific (Ctrl+Shift+X namespace)
+  { key: 'd',   mod: 'ctrl+shift', label: 'Ctrl+Shift+D', action: 'Debug console',         route: '#/debug',          group: 'Bahi' },
+  { key: 'b',   mod: 'ctrl+shift', label: 'Ctrl+Shift+B', action: 'Backup Now',           action2: 'backupNow',       group: 'Bahi' },
+  { key: 'm',   mod: 'ctrl+shift', label: 'Ctrl+Shift+M', action: 'Toggle mode (Owner / CA)', action2: 'toggleMode', group: 'Bahi' },
+  { key: 'z',   mod: 'ctrl', label: 'Ctrl+Z',     action: 'Undo last posting',            action2: 'undoLast',        group: 'Bahi' },
+  { key: '?',   mod: '',    label: '?',           action: 'Open shortcut help',           action2: 'showShortcutHelp', group: 'Bahi' },
+  { key: '/',   mod: 'shift', label: 'Shift+/',   action: 'Open shortcut help',           action2: 'showShortcutHelp', group: 'Bahi' },
+];
+
+// Returns true if the event matches the shortcut spec
+function shortcutMatches(e, sc) {
+  // Mod string: '', 'ctrl', 'alt', 'shift', 'ctrl+shift', 'ctrl+alt', etc.
+  const mods = (sc.mod || '').split('+').filter(Boolean);
+  const wantsCtrl = mods.includes('ctrl');
+  const wantsAlt  = mods.includes('alt');
+  const wantsShift= mods.includes('shift');
+  if (wantsCtrl !== (e.ctrlKey || e.metaKey)) return false;
+  if (wantsAlt !== e.altKey) return false;
+  if (wantsShift !== e.shiftKey) return false;
+  // Function keys + named keys vs character keys
+  if (sc.key.startsWith('F') && sc.key.length <= 3) return e.key === sc.key;
+  if (sc.key === 'Enter' || sc.key === 'Escape') return e.key === sc.key;
+  // Character keys: case-insensitive
+  return e.key.toLowerCase() === sc.key.toLowerCase();
+}
+
+function isTextInputFocused() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = (el.tagName || '').toLowerCase();
+  if (tag === 'input') {
+    const t = (el.type || '').toLowerCase();
+    return t === '' || ['text','number','search','email','password','tel','url','date','time','month','week','datetime-local'].includes(t);
+  }
+  return tag === 'textarea' || el.isContentEditable;
+}
+
+function handleShortcutKey(e) {
+  // Native shortcuts (Enter/Esc) handled elsewhere
+  if (e.key === 'Enter' || e.key === 'Escape') return;
+
+  // Don't fire character-key shortcuts when typing into a text input/textarea.
+  // Function keys (F1-F12) and Alt-combo shortcuts still fire because they're not
+  // text input. This prevents F8 from accidentally jumping to the invoice form
+  // when the user is typing into a description field.
+  const inText = isTextInputFocused();
+  for (const sc of SHORTCUTS) {
+    if (sc.native) continue;
+    if (!shortcutMatches(e, sc)) continue;
+    // Block character-key shortcuts in text inputs
+    const isFunctionKey = sc.key.startsWith('F') && sc.key.length <= 3;
+    const isAltOrCtrl = (sc.mod || '').includes('alt') || (sc.mod || '').includes('ctrl');
+    if (inText && !isFunctionKey && !isAltOrCtrl) continue;
+    // Match!
+    e.preventDefault();
+    if (sc.route) { nav(sc.route); return; }
+    if (sc.action2) { dispatchShortcutAction(sc.action2); return; }
+    return;
+  }
+}
+
+function dispatchShortcutAction(name) {
+  switch (name) {
+    case 'backupNow': if (typeof backupNow === 'function') backupNow(); break;
+    case 'undoLast': undoLast(); break;
+    case 'showShortcutHelp': showShortcutHelp(); break;
+    case 'toggleMode': {
+      const newMode = STATE.mode === 'ca' ? 'owner' : 'ca';
+      STATE.mode = newMode;
+      try { localStorage.setItem('bahi.mode', newMode); } catch (_) {}
+      if (newMode === 'ca' && !STATE.caProfile) {
+        getCaProfile().then(p => { if (!p) showCaProfileSetup(true); else { STATE.caProfile = p; render(); } });
+      } else { render(); }
+      break;
+    }
+    case 'companySwitcher': {
+      const btn = $('company-switcher-btn');
+      if (btn) btn.click();
+      break;
+    }
+    case 'submitForm': {
+      // Find the active primary submit button on the current form and click it
+      const active = document.querySelector('button.primary');
+      if (active) active.click();
+      break;
+    }
+  }
+}
+
+// === Phase 7 — Shortcut help overlay + cheat sheet PDF ===
+
+function showShortcutHelp() {
+  const wrap = $('modal');
+  wrap.innerHTML = '';
+  const m = h('div', { class: 'modal', style: 'max-width:760px' });
+  m.appendChild(h('div', { class: 'modal-h' }, ['Keyboard shortcuts']));
+  const body = h('div', { class: 'modal-b' });
+  const groups = {};
+  for (const sc of SHORTCUTS) {
+    if (!groups[sc.group]) groups[sc.group] = [];
+    groups[sc.group].push(sc);
+  }
+  let html = '<p class="help">Bahi follows Tally\'s keyboard conventions wherever the browser allows. Function keys + Alt combos work even when you\'re typing in a field.</p>';
+  for (const [g, items] of Object.entries(groups)) {
+    html += `<h3 style="margin-top:14px;font-size:12px;color:var(--saffron-deep);text-transform:uppercase;letter-spacing:0.5px">${escapeHtml(g)}</h3>`;
+    html += '<table class="dense" style="margin-top:6px"><tbody>';
+    for (const sc of items) {
+      html += `<tr><td style="width:160px"><kbd style="background:var(--ash);border:1px solid var(--rule);padding:2px 8px;border-radius:3px;font-family:monospace;font-size:11px">${escapeHtml(sc.label)}</kbd></td><td>${escapeHtml(sc.action)}</td></tr>`;
+    }
+    html += '</tbody></table>';
+  }
+  body.innerHTML = html;
+  m.appendChild(body);
+  const close = h('button', {}, ['Close']);
+  close.onclick = () => closeModal();
+  const dlPdf = h('button', { class: 'primary' }, ['Download cheat sheet PDF']);
+  dlPdf.onclick = exportShortcutCheatSheetPdf;
+  m.appendChild(h('div', { class: 'modal-f' }, [close, dlPdf]));
+  wrap.appendChild(m);
+  wrap.classList.remove('hidden');
+}
+
+async function exportShortcutCheatSheetPdf() {
+  try {
+    const jsPDFCtor = await loadJsPDF();
+    const doc = new jsPDFCtor({ unit: 'mm', format: 'a4' });
+    let y = 18;
+    doc.setFont('helvetica', 'bold').setFontSize(14);
+    doc.text('Bahi keyboard shortcuts', 105, y, { align: 'center' });
+    y += 6;
+    doc.setFont('helvetica', 'normal').setFontSize(8);
+    doc.text('Tally keyboard parity for browser-native accounting · naklitechie.com/bahi', 105, y, { align: 'center' });
+    y += 8;
+    doc.setLineWidth(0.3); doc.line(15, y, 195, y); y += 5;
+
+    // Two-column layout
+    const colW = 90, leftX = 15, rightX = 110;
+    let leftY = y, rightY = y;
+    const groups = {};
+    for (const sc of SHORTCUTS) {
+      if (!groups[sc.group]) groups[sc.group] = [];
+      groups[sc.group].push(sc);
+    }
+    const groupKeys = Object.keys(groups);
+    // Split groups across columns roughly evenly by item count
+    let leftCount = 0, total = SHORTCUTS.length;
+    const leftGroups = [], rightGroups = [];
+    for (const k of groupKeys) {
+      if (leftCount < total / 2) {
+        leftGroups.push(k);
+        leftCount += groups[k].length;
+      } else {
+        rightGroups.push(k);
+      }
+    }
+    function drawColumn(groups, x, startY) {
+      let yy = startY;
+      for (const g of groups) {
+        doc.setFont('helvetica', 'bold').setFontSize(10);
+        doc.text(g, x, yy); yy += 5;
+        doc.setFont('helvetica', 'normal').setFontSize(8);
+        for (const sc of groups[g] || []) {
+          doc.setFont('helvetica', 'bold');
+          doc.text(sc.label, x, yy);
+          doc.setFont('helvetica', 'normal');
+          doc.text(String(sc.action).slice(0, 50), x + 28, yy);
+          yy += 4;
+        }
+        yy += 3;
+      }
+      return yy;
+    }
+    // Hack: drawColumn expects { g: [items] } shape, so adapt
+    function drawCol(keys, x, startY) {
+      let yy = startY;
+      for (const g of keys) {
+        doc.setFont('helvetica', 'bold').setFontSize(10);
+        doc.text(g, x, yy); yy += 5;
+        doc.setFont('helvetica', 'normal').setFontSize(8);
+        for (const sc of (groups[g] || [])) {
+          doc.setFont('helvetica', 'bold');
+          doc.text(sc.label, x, yy);
+          doc.setFont('helvetica', 'normal');
+          doc.text(String(sc.action).slice(0, 48), x + 28, yy);
+          yy += 4;
+        }
+        yy += 3;
+      }
+      return yy;
+    }
+    drawCol(leftGroups, leftX, y);
+    drawCol(rightGroups, rightX, y);
+
+    doc.setFont('helvetica', 'normal').setFontSize(7);
+    doc.text('Bahi · local-first browser-native accounting for Indian SMBs · github.com/NakliTechie/bahi', 105, 290, { align: 'center' });
+
+    const blob = doc.output('blob');
+    const handle = await window.showSaveFilePicker({
+      suggestedName: `bahi-shortcuts-cheatsheet.pdf`,
+      types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+    });
+    const w = await handle.createWritable(); await w.write(blob); await w.close();
+    toast(`Saved ${handle.name}`, 'ok');
+  } catch (e) {
+    if (e.name !== 'AbortError') toast('PDF export failed: ' + e.message, 'err');
+  }
+}
+
+// === Phase 7 — Undo stack ===
+// Session-scoped, in-memory only, capped at 20 entries. Reverses by posting a
+// counter-entry (Dr/Cr swapped), not by SQL DELETE. Both the original and the
+// reversal stay in the audit log forever.
+const UNDO_STACK = [];
+const UNDO_LIMIT = 20;
+
+function pushUndo(entry) {
+  UNDO_STACK.push(entry);
+  while (UNDO_STACK.length > UNDO_LIMIT) UNDO_STACK.shift();
+}
+
+function clearUndoStack() {
+  UNDO_STACK.length = 0;
+}
+
+async function undoLast() {
+  if (!STATE.db) { toast('No file open', 'err'); return; }
+  if (!UNDO_STACK.length) { toast('Nothing to undo in this session', 'err'); return; }
+  const last = UNDO_STACK.pop();
+  // Read the entry's lines, swap debit/credit, post a counter-entry
+  const r = STATE.db.exec('SELECT account_id, debit, credit FROM entry_lines WHERE entry_id = ?', [last.entryId]);
+  if (!r.length || !r[0].values.length) {
+    toast(`Cannot undo ${last.voucherRef || '#' + last.entryId} — entry lines not found`, 'err');
+    return;
+  }
+  const swapped = r[0].values.map(([accId, dr, cr]) => ({
+    accountId: accId,
+    debit: cr | 0,    // swap
+    credit: dr | 0,
+  }));
+  try {
+    const result = await postEntry(STATE.db, {
+      voucherType: 'undo',
+      voucherRef: 'UNDO-' + (last.voucherRef || '#' + last.entryId),
+      narration: `Undo of ${last.voucherType} ${last.voucherRef || '#' + last.entryId}` + (last.narration ? ` — ${last.narration}` : ''),
+      postedAt: nowIso(),
+      actor: 'system',  // system so the undo itself doesn't push back onto the stack
+      lines: swapped,
+    });
+    // The audit log entry is appended automatically by postEntry. Add a marker so
+    // future readers can identify undo events specifically.
+    await appendAuditEntry(STATE.db, {
+      actor: auditActor(),
+      action: 'bahi.undo',
+      ref: `entry:${last.entryId}`,
+      payload: { originalEntryId: last.entryId, originalVoucherRef: last.voucherRef, undoEntryId: result.entryId },
+    });
+    setSaveStatus('unsaved');
+    await persistKhata();
+    toast(`Undid ${last.voucherRef || '#' + last.entryId} via counter-entry. Both entries are in the audit log.`, 'ok');
+    render();
+  } catch (e) {
+    console.error('Undo failed:', e);
+    toast('Undo failed: ' + e.message, 'err');
+    // Push back so the user can retry
+    UNDO_STACK.push(last);
   }
 }
 
@@ -7179,6 +7505,8 @@ function closeCurrentFile() {
   STATE.snapshots = {};
   STATE.pendingManualSnapshot = false;
   STATE.pendingStagingRecovery = null;
+  STATE.pendingReconciliation = null;
+  clearUndoStack();   // Phase 7 — undo stack is per-file-session
   hideIdentityBanner();
   setSaveStatus('idle');
 }
@@ -8085,7 +8413,7 @@ async function renderWorkspace(main, tok) {
     w.innerHTML = `
       <h3>Bahi — local-first accounting for Indian SMBs</h3>
       <p>Your books live in a single <code>.khata</code> file on your own disk. No server. No account. No subscription. The browser is the entire app.</p>
-      <p style="margin-top:8px"><b>Phase 4 — Goods SMB tier.</b> Everything from the Freelancer tier (multi-series invoices, advances, payments, GSTR-1 / CMP-08, Devanagari PDFs, multi-company switcher) and the Service SMB tier (vendors, purchases, credit/debit notes, journal vouchers, Trial Balance, Balance Sheet, Day Book, Account Ledger, GSTR-3B, FY rollover, period locks, tax challans) — plus inventory with WAC + FIFO + named batches, godowns, automatic stock posting on every invoice / purchase / note, Cost of Goods Sold journal, delivery challans, e-way bills (NIC JSON + printable PDF), and inter-GSTIN stock transfers with cross-file JSON export/import.</p>
+      <p style="margin-top:8px"><b>Phase 7 — Polish &amp; launch prep.</b> All 7 functional phases shipped. Freelancer tier (invoices, payments, advances, GSTR-1 / CMP-08, Devanagari PDFs, multi-company switcher) → Service SMB tier (vendors, purchases, credit/debit notes, journal vouchers, full reports, GSTR-3B, FY rollover, period locks, tax challans) → Goods SMB tier (inventory engine with WAC + FIFO + batches, godowns, COGS journals, delivery challans, e-way bills, inter-GSTIN stock transfers) → Tally XML importer (Prime + ERP 9, 6-step wizard, create-new + merge-into-existing) → CA mode (multi-client workspace, annotations, review markers, adjustment voucher form, PDF review report, Layer 3 ancestry check, Reconciliation View) → Polish (Sumi dark theme, Tally keyboard parity with help overlay + cheat sheet PDF, undo stack via counter-entry, Backup Now polish + 30-day nudge, getting-started / Tally migration / CA guide docs). Hit <kbd>?</kbd> any time for the keyboard cheat sheet.</p>
     `;
     main.appendChild(w);
   }
@@ -9355,6 +9683,18 @@ function renderDashboard(main) {
   const c = STATE.manifest.company || {};
   main.appendChild(h('h1', {}, [c.name || 'Dashboard']));
   main.appendChild(h('p', { class: 'help' }, [`As of ${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`]));
+
+  // === Phase 7 — 30-day backup nudge (yellow banner if last backup > 30 days old) ===
+  const bk = getLastBackupInfo();
+  if (!bk.ts || bk.ageDays > 30) {
+    const nudge = h('div', { style: 'margin-bottom:14px;padding:12px 14px;background:var(--saffron-soft);border-left:6px solid var(--saffron);border-radius:4px' });
+    const last = bk.ts ? `${bk.ageDays} days ago (${escapeHtml(bk.name || '')})` : '<b>never</b>';
+    nudge.innerHTML = `
+      <div style="font-weight:700;font-size:13px;color:var(--saffron-deep)">⚠ Backup recommended</div>
+      <p style="margin:6px 0 0 0;font-size:12px">Last backup: ${last}. Hit <kbd style="background:var(--white);border:1px solid var(--rule);padding:1px 5px;border-radius:3px;font-family:monospace;font-size:10px">Ctrl+Shift+B</kbd> or click <b>Backup Now</b> in the topbar to save a dated archive zip you can keep on a different drive.</p>
+    `;
+    main.appendChild(nudge);
+  }
 
   // === Crash recovery banner (sticky at top of dashboard until resolved) ===
   // Set on file open by the OPFS staging recovery check in openHandle. We surface
@@ -15954,7 +16294,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">Phase 6 · CA mode (multi-client workspace, annotations, review markers, adjustment voucher form, PDF review report, Layer 3 ancestry check, Reconciliation View)</div>
+      <div class="k">Bahi version</div><div class="v">Phase 7 · Polish &amp; launch prep (Sumi dark theme + auto-pick on OS dark mode, keyboard shortcut handler with Tally parity, shortcut help overlay + cheat sheet PDF, undo stack with counter-entry semantics, Backup Now polish + 30-day nudge, getting-started / Tally migration / CA guide docs)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>
@@ -16073,6 +16413,51 @@ function renderSettings(main) {
     main.appendChild(recoveryPanel);
   }
 
+  // === Phase 7 — Backup status panel ===
+  const bk = getLastBackupInfo();
+  const backupPanel = h('div', { class: 'panel' });
+  backupPanel.appendChild(h('div', { class: 'panel-h' }, ['Backup status']));
+  const backupBody = h('div', { class: 'panel-b' });
+  if (bk.ts) {
+    const ageText = bk.ageDays === 0 ? 'today' : (bk.ageDays === 1 ? 'yesterday' : `${bk.ageDays} days ago`);
+    const sizeText = bk.size ? `${(bk.size / 1024).toFixed(0)} KB` : '';
+    const colour = bk.ageDays > 30 ? 'var(--alert)' : (bk.ageDays > 7 ? 'var(--saffron-deep)' : 'var(--green)');
+    backupBody.innerHTML = `
+      <div style="font-size:13px">Last backup: <b style="color:${colour}">${ageText}</b>${sizeText ? ' · ' + sizeText : ''}</div>
+      <div style="font-size:11px;color:var(--ink-2);margin-top:4px">${escapeHtml(bk.name || '')}</div>
+      <p class="help" style="margin-top:8px">Backups are dated <code>.khata-backup.zip</code> archives containing the current file + audit log CSV + meta.json. Keep one offsite copy. Hit <kbd>Ctrl+Shift+B</kbd> or click Backup Now in the topbar.</p>
+    `;
+  } else {
+    backupBody.innerHTML = `
+      <div style="font-size:13px;color:var(--alert)"><b>No backup recorded</b></div>
+      <p class="help" style="margin-top:8px">Bahi recommends a backup at the end of every working session. Hit <kbd>Ctrl+Shift+B</kbd> or click Backup Now in the topbar to write a dated archive zip.</p>
+    `;
+  }
+  backupPanel.appendChild(backupBody);
+  main.appendChild(backupPanel);
+
+  // === Phase 7 — Undo stack panel (session-scoped) ===
+  if (UNDO_STACK.length > 0) {
+    const undoPanel = h('div', { class: 'panel' });
+    undoPanel.appendChild(h('div', { class: 'panel-h' }, [`Undo stack (${UNDO_STACK.length} / ${UNDO_LIMIT})`]));
+    const undoBody = h('div', { class: 'panel-b' });
+    undoBody.innerHTML = `<p class="help">Posting actions in this session can be reversed via <kbd>Ctrl+Z</kbd>. Each undo posts a counter-entry — the original is preserved in the audit log forever, the reversal is auditable, nothing is silently deleted.</p>`;
+    const tbl = h('table', { class: 'dense', style: 'margin-top:8px' });
+    tbl.innerHTML = '<thead><tr><th>#</th><th>Type</th><th>Ref</th><th>Narration</th><th>When</th></tr></thead>';
+    const tbody = h('tbody');
+    // Most recent first
+    for (let i = UNDO_STACK.length - 1; i >= 0; i--) {
+      const u = UNDO_STACK[i];
+      const tr = h('tr');
+      tr.innerHTML = `<td>${UNDO_STACK.length - i}</td><td><span style="font-size:10px;text-transform:uppercase">${escapeHtml(u.voucherType || '')}</span></td><td><code>${escapeHtml(u.voucherRef || '#' + u.entryId)}</code></td><td>${escapeHtml((u.narration || '').slice(0, 60))}</td><td>${escapeHtml((u.ts || '').slice(11, 19))}</td>`;
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    undoBody.appendChild(tbl);
+    undoPanel.appendChild(undoBody);
+    main.appendChild(undoPanel);
+  }
+
   // === Safety & failure modes (always visible documentation panel) ===
   // Confidence-building summary of what protects the file in adverse conditions.
   // Plain language so a non-engineer can verify "yes, the obvious failure modes
@@ -16096,6 +16481,7 @@ function renderSettings(main) {
       <li><b>CA round-trip workflows (owner → CA → owner).</b> Phase 6 adds Layer 3 ancestry check on every file open: when you reopen a file the workspace already knows, Bahi compares the audit chain head against the last-known head and warns if the file shares no history with the previous copy. If both branches have new entries (you changed the file in one Bahi instance, the CA changed it in another), the Reconciliation View opens automatically and lets you pick which entries to keep from each branch — the merged file's manifest carries both parent hashes for forensics.</li>
       <li><b>CA acting as owner accidentally.</b> Every action in CA mode is automatically tagged <code>actor='ca'</code> in the audit log, with the CA's name + firm + ICAI membership stamped into both the audit payload and any annotations. The owner can see exactly which entries were posted by their CA versus by themselves.</li>
       <li><b>Owner editing a file the CA was reviewing.</b> When the CA next opens their copy, the ancestry check fires (CA's lastKnownHead ≠ disk head) and offers reconciliation. No silent overwrites in either direction.</li>
+      <li><b>Posting mistake — wrong amounts, wrong account, wrong customer.</b> Phase 7 adds a session-scoped undo stack (last 20 posting actions). Hit <kbd>Ctrl+Z</kbd> to reverse the most recent post via a counter-entry — the original stays in the audit log, the reversal is a separate auditable entry, both are visible to your CA. The undo is convenience, not a way to make mistakes disappear.</li>
     </ul>
 
     <h4 style="margin-top:14px;margin-bottom:6px;font-size:13px;color:var(--saffron-deep)">Not protected (and probably shouldn't be)</h4>
@@ -16153,7 +16539,8 @@ function renderSettings(main) {
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 4 — Goods SMB tier (this build).</b> <b>Schema v7</b>: items get inventory columns (enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor, opening_stock_qty/value); 8 new tables (godowns, batches, stock_movements, delivery_challans + lines, eway_bills, stock_transfers). <b>Stock movement engine</b> with both Weighted Average Cost AND First-In-First-Out (selectable per item), plus opt-in named-batch tracking for pharma/electronics/perishables. Posting hooks on invoice / purchase / credit note / debit note auto-decrement and increment stock when items have inventory enabled; service-only items see zero behaviour change. Each invoice posts a separate Dr Cost of Goods Sold / Cr Stock-in-Hand journal at the computed COGS rate. <b>Single auto-seeded "Main" godown</b> with multi-godown UI accessible via sidebar. <b>Reports</b>: Inventory dashboard (KPIs + reorder + aging summary), Stock on hand, Stock movements, Stock register (per-item movement walkthrough with running qty), Batches list, Valuation summary, Reorder alerts, Stock aging (0–30/31–60/61–90/90+ buckets). Stock-in-Hand and Cost of Goods Sold flow into the existing Balance Sheet and P&amp;L automatically. <b>Delivery challans</b> (outward job-work / sample / return + inward return) with stock movement but no GL posting. <b>E-way bills</b> with NIC bulk-upload JSON export + printable PDF (with QR placeholder for the EWB number); generated from any invoice or delivery challan; "mark as generated" workflow lets you re-export the PDF with the real EWB number after portal submission. <b>Inter-GSTIN stock transfers</b> (same legal entity, different GSTINs) with cross-file JSON export from the sender side and import on the receiver side.</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 5 — Tally XML importer (this build).</b> Permissive parser handles both Tally Prime and Tally ERP 9 (browser-native DOMParser, no CDN deps). Walks Masters (Groups, Ledgers, Stock Items, Units, Godowns) and Vouchers (Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note + their variants). 6-step wizard: <b>(1) File summary</b> with format detection, voucher type breakdown and supported/unsupported flags; <b>(2) Date range</b> filter with live in-range counter; <b>(3) Mapping review</b> — auto-suggests for 25+ standard Tally groups, hard-blocks Continue until every user-created group is resolved; <b>(4) Commit target</b> — Create new .khata file OR Merge into currently-open file (radio cards, merge mode shows live customer/vendor dedupe preview by GSTIN+name); <b>(5) Dry run preview</b> with category counts; <b>(6) Result</b> with full breakdown including auto-cleaned-as-services, cost-centre warnings, multi-currency warnings, skipped vouchers with reasons, and unsupported voucher types. Single SQL transaction wraps the entire import — any failure rolls back cleanly. <code>tally.import.start</code> / <code>tally.import.commit</code> / <code>tally.import.failed</code> audit log entries make every import forensically discoverable. The importer never bypasses the existing posting bridges — every imported invoice goes through <code>postInvoiceToLedger</code>, every purchase through <code>postPurchaseToLedger</code>, every journal through <code>postEntry</code>, so the snapshot pattern and stock effects fire automatically. Voucher number collisions in merge mode get a <code>TALLY-</code> prefix.</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 6 — CA mode (this build).</b> First-run mode picker (Owner / CA), CA profile setup (name + firm + ICAI membership + optional logo) stored in IndexedDB outside any client file. <b>Schema v8</b> adds <code>annotations</code> and <code>review_markers</code> tables — annotations capture CA identity at creation time (snapshot pattern), review markers track which entries the CA has signed off on. Mode-aware sidebar with a CA-only group (Client review, + Adjustment voucher, Annotations, Review report). Topbar mode badge shows OWNER / CA · {initials}; clickable to switch. <code>auditActor()</code> helper threaded through every <code>appendAuditEntry</code> call (21 sites), so every action a CA takes is automatically tagged <code>actor='ca'</code> in the audit log. CA review interface: per-voucher-type unreviewed counts, sectioned list with bulk-mark and inline annotation widget. CA adjustment voucher form: thin wrapper around the existing journal voucher engine with adjustment-type picker (year-end / depreciation / prepaid / outstanding / accrual). PDF review report: multi-page A4 with CA firm letterhead, page numbering, sections for Trial Balance / P&amp;L / Balance Sheet / CA Adjustments / Observations, written via the existing jsPDF lazy loader. <b>Layer 3 ancestry check</b> on every file open compares the audit chain head against the workspace entry's <code>lastKnownHead</code> and surfaces a warning for the same-GSTIN-no-shared-ancestry case. <b>Reconciliation View</b> for divergent branches: side-by-side checkbox lists of entries unique to each side, replay engine that re-executes picked imported entries via the existing posting bridges, merged manifest carries both parent hashes via <code>integrity.parentHashes[]</code>, audit log appends a <code>merge.commit</code> entry recording both parents.</p>
-    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 7+:</b> TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass (Tally parity) → dark mode → undo stack → landing page on naklitechie.com → launch.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 7 — Polish &amp; launch prep (this build).</b> <b>Sumi (dark) theme</b> joins the existing 4-theme palette; auto-picks on first load if the OS prefers dark. <b>Keyboard shortcuts</b> with full Tally parity: F4 contra, F5 payment, F6 receipt, F7 journal, F8 sales, F9 purchase, F10 other vouchers menu, F1 company picker, F3 company info, Alt+F11 / Alt+F12 settings (browser-hijacked F11/F12 mapped to Alt variants per spec §11), Ctrl+Q quit to dashboard, Ctrl+A submit form, plus Bahi-specific Ctrl+Shift+D debug, Ctrl+Shift+B backup, Ctrl+Shift+M mode toggle, Ctrl+Z undo, ? help. Function keys + Alt combos work even when typing in a field; character-key shortcuts are blocked inside text inputs to prevent accidents. <b>Shortcut help overlay</b> (`?` or Shift+/) lists every shortcut grouped by section; one-click <b>cheat sheet PDF</b> generator for desk-printing. <b>Undo stack</b> — session-scoped, last 20 posting actions, reverses by posting a counter-entry (Dr/Cr swapped) so the audit log preserves both the original and the reversal. Pushed onto automatically by every <code>postEntry</code> call. <code>Ctrl+Z</code> triggers, Settings panel shows the current stack. <b>Backup Now polish</b> — topbar button now visible whenever a file is open, <code>Ctrl+Shift+B</code> shortcut, last-backup indicator in Settings (with relative time + size), <b>30-day nudge banner</b> on the dashboard if the last backup is older than 30 days. <b>Documentation</b> — getting-started.md / tally-migration.md / ca-guide.md ship in the repo at <code>docs/</code>. <code>khata-format.md</code> updated for schema v8 (annotations + review_markers tables, parentHashes manifest field).</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 8 (post-launch, v1.5):</b> BYOK Cloudflare R2 sync, e-invoicing IRN (if GSP integration is feasible), recurring invoices, bank statement reconciliation auto-match, Firefox/Safari degraded mode, TDS Form 26Q export, TCS Form 27EQ export, Form 27D certificates.</p>
   `;
   notes.appendChild(nb);
   main.appendChild(notes);
@@ -16233,11 +16620,33 @@ async function backupNow() {
     const w = await handle.createWritable();
     await w.write(blob);
     await w.close();
-    toast(`Backup saved: ${handle.name}`, 'ok');
+    // Phase 7 — record the timestamp + size for the Settings indicator + 30-day nudge
+    try {
+      localStorage.setItem('bahi.lastBackupAt', nowIso());
+      localStorage.setItem('bahi.lastBackupSize', String(blob.size));
+      localStorage.setItem('bahi.lastBackupName', handle.name);
+    } catch (_) {}
+    const sizeKb = (blob.size / 1024).toFixed(0);
+    toast(`Backup saved: ${handle.name} (${sizeKb} KB)`, 'ok');
   } catch (e) {
     if (e.name === 'AbortError') return;
     console.error(e);
     toast('Backup failed: ' + e.message, 'err');
+  }
+}
+
+// Phase 7 — read the last-backup metadata for the Settings indicator + dashboard nudge.
+function getLastBackupInfo() {
+  try {
+    const ts = localStorage.getItem('bahi.lastBackupAt');
+    if (!ts) return { ts: null };
+    const sz = parseInt(localStorage.getItem('bahi.lastBackupSize') || '0', 10);
+    const name = localStorage.getItem('bahi.lastBackupName') || '';
+    const ageMs = Date.now() - new Date(ts).getTime();
+    const ageDays = Math.floor(ageMs / 86400000);
+    return { ts, size: sz, name, ageDays };
+  } catch (_) {
+    return { ts: null };
   }
 }
 
@@ -16381,8 +16790,9 @@ function offerRestoreCandidates(candidates, sourceName) {
 }
 
 async function boot() {
-  // Apply persisted theme before anything else paints
-  applyTheme(loadStoredTheme());
+  // Apply persisted theme before anything else paints. Phase 7 adds OS dark-mode
+  // detection on first run so the very first paint matches the user's environment.
+  applyTheme(autoPickTheme());
 
   // Populate the shared <datalist> used by every typeable state input
   populateStatesDatalist();
@@ -16419,15 +16829,18 @@ async function boot() {
     return;
   }
 
+  // Phase 7 — global keyboard shortcut handler. Consults the SHORTCUTS map and
+  // dispatches to either a route nav or a named action. Suppressed when typing
+  // into a text input/textarea (except for Escape, which the modal handler still
+  // honors). Function keys + Alt combos are still allowed inside text inputs since
+  // they're not text input.
   document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
-      e.preventDefault();
-      nav('#/debug');
-    }
     if (e.key === 'Escape') {
       const m = $('modal');
       if (m && !m.classList.contains('hidden')) closeModal();
+      return;
     }
+    handleShortcutKey(e);
   });
 
   window.addEventListener('hashchange', () => { render(); });

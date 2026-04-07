@@ -4,6 +4,9 @@
 !khata-format.md
 !LICENSE
 !.gitignore
+!docs
+!docs/**
+docs/.DS_Store
 
 # wrangler files
 .wrangler

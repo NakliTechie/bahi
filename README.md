@@ -8,9 +8,9 @@ The app is **Bahi** (बही — the traditional bound ledger of Indian mercha
 
 ---
 
-## Status — Phase 6 (CA mode)
+## Status — Phase 7 (Polish & launch prep)
 
-Phase 6 turns Bahi from "owner of one company" into "CA managing many clients". Indian SMBs almost universally have a CA who reviews their books at month-end and year-end. Without CA mode, the workflow is "owner sends `.khata` to CA, CA opens it pretending to be the owner, CA sends back, owner has no visible record of who changed what". With CA mode, the CA's actions are tagged in the audit log, the owner sees a review report, and the file's lineage is preserved across the round-trip via Layer 3 ancestry detection and the Reconciliation View. Phase 6 ships: first-run mode picker, CA profile setup with name/firm/ICAI membership/optional logo (stored in IndexedDB outside any client file), schema v8 with `annotations` and `review_markers` tables, mode-aware sidebar with a CA-only group, topbar mode badge, automatic `actor='ca'` tagging on every audit entry, CA review interface with per-voucher-type unreviewed counts and bulk-mark, inline annotation widget, CA adjustment voucher form (year-end/depreciation/prepaid/outstanding/accrual), multi-page A4 PDF review report with CA firm letterhead, Layer 3 ancestry check on every file open, and the full Reconciliation View with side-by-side checkbox merging + an audit-log replay engine that re-executes picked imported entries through the existing posting bridges.
+Phase 7 is the **last functional build before launch**. All 7 functional phases are now shipped. On top of everything Phases 1–6 delivered, Phase 7 adds: **Sumi (dark) theme** that auto-picks on first load if the OS prefers dark, **full Tally keyboard parity** (F4 contra, F5 payment, F6 receipt, F7 journal, F8 sales, F9 purchase, F10 menu, F1 company picker, F3 company info, Alt+F11/Alt+F12 settings, Ctrl+Q quit, Ctrl+A submit, plus Bahi-specific Ctrl+Shift+D / B / M and Ctrl+Z), **shortcut help overlay** (open with `?`) with a one-click **printable cheat sheet PDF**, **session-scoped undo stack** (last 20 posting actions, reverses by posting a counter-entry so the audit log preserves both the original and the reversal), **Backup Now polish** (topbar button revealed when a file is open, last-backup indicator in Settings, 30-day nudge banner on the dashboard), and **3 documentation files** at `docs/getting-started.md`, `docs/tally-migration.md`, `docs/ca-guide.md`. All 7 phases plus the failure-model docs are now complete; what remains is the launch batch (portfolio publish + landing page push).
 
 ### What's shipped
 
@@ -184,6 +184,14 @@ Phase 6 turns Bahi from "owner of one company" into "CA managing many clients". 
 - **Reconciliation View** (`#/reconcile`): only reachable when `STATE.pendingReconciliation` is set. Shows side-by-side checkbox lists of audit log entries unique to each branch (local vs imported), with default = keep all. "Build merged file" calls a replay engine that re-executes picked imported entries via the existing posting bridges (`postEntry` for journals, etc.). The merged file's manifest carries `integrity.parentHashes = [localHead, importedHead]` for forensics, and a `merge.commit` audit entry records both parents + replay counts
 - **Settings → Safety & failure modes panel**: 3 new rows for CA round-trip workflows, CA-acting-as-owner detection, and owner-editing-while-CA-was-reviewing recovery
 
+**Polish & launch prep** (Phase 7)
+- **Sumi (dark) theme**: 5th entry in the existing 4-theme palette. New `autoPickTheme()` checks `prefers-color-scheme` on the very first boot — picks Sumi if the OS is in dark mode, otherwise the default. Once the user picks a theme manually, it sticks
+- **Keyboard shortcuts (Tally parity)**: full SHORTCUTS map with 22 entries across Vouchers / Navigation / Edit / Bahi-specific groups. Function keys (F1–F10) and Alt combos work even when typing into a text field; character-key shortcuts are blocked inside text inputs to prevent accidents like F8 jumping when the user is typing a description. Browser-hijacked keys (Ctrl+N/T/W/Tab) are not used. Where Tally uses a key the browser owns (F11=fullscreen, F12=DevTools), Bahi maps Alt+F11 / Alt+F12 per spec §11
+- **Shortcut help overlay** triggered by `?` or `Shift+/`, listing every shortcut grouped by section. One-click **Download cheat sheet PDF** generates a desk-printable A4 with two-column layout
+- **Undo stack** — session-scoped, in-memory, capped at 20 entries. Pushed onto by every successful `postEntry` call. `Ctrl+Z` triggers `undoLast()` which reads the entry's lines, swaps Dr/Cr, and posts a counter-entry via the same `postEntry` engine. **The original is preserved in the audit log forever; the reversal is a separate auditable entry; nothing is silently deleted.** System-actor entries (FY closing, file.create, etc.) are excluded from the stack. Settings panel shows the current stack contents
+- **Backup Now polish** — topbar button revealed when a file is open, `Ctrl+Shift+B` shortcut, last-backup indicator in Settings (with relative time + size + colour-coded urgency), 30-day nudge banner on the dashboard
+- **Documentation** — three Markdown files at `docs/getting-started.md` (~150 lines, blank-slate-to-first-invoice walkthrough), `docs/tally-migration.md` (~250 lines, full Tally export → Bahi import flow with common gotchas), `docs/ca-guide.md` (~250 lines, CA mode workflow including reconciliation). Allowed via `.gitignore` `!docs` + `!docs/**`
+
 ---
 
 ## Running
@@ -279,6 +287,8 @@ Plain language. If you're handing this off to someone else to evaluate, this is 
 | CA round-trip (owner → CA → owner) introduced silent overwrites | Layer 3 ancestry check on file open + Reconciliation View | "Same GSTIN but no shared history" warning toast for unrelated copies; divergent branches route to `#/reconcile` with side-by-side checkbox merging; merged file carries both parent hashes |
 | CA actions accidentally indistinguishable from owner actions | `auditActor()` helper auto-tags every audit entry as `'ca'` in CA mode | Audit log + review report clearly attribute each entry to either owner or CA, with the CA's name + firm + ICAI membership stamped at creation time |
 | Owner edits the file while CA is reviewing it | Layer 3 ancestry check fires on next CA open | Reconciliation View opens automatically; CA picks which entries to keep from each branch |
+| Posting mistake — wrong amount, wrong account | Session-scoped undo stack via Ctrl+Z | Counter-entry posted via the same engine; both the original and the reversal stay in the audit log forever; the undo is auditable, not stealthy |
+| User forgot to back up | 30-day nudge banner on the dashboard | Yellow banner appears when last backup is > 30 days old (or never recorded), with a "Backup Now" CTA pointing at Ctrl+Shift+B |
 
 **Not protected (and probably shouldn't be):**
 - **Disk hardware failure.** No software can save you. Use **Backup Now** (Settings → Snapshots) to write a dated `.khata-backup.zip` and keep one offsite.
@@ -324,7 +334,7 @@ For low-level testing (raw posting, audit chain inspection, integrity checks, sn
 - One-time backfill flow for legacy v1 invoices
 - Devanagari / Tamil / other Indian script fonts in PDF (currently Helvetica only — uses `Rs.` instead of `₹`; Phase 2B.2 lazy-loads Noto Sans Devanagari)
 
-**Phase 7+:** TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass (Tally parity) + dark mode + undo stack + landing page → launch.
+**Phase 8 (post-launch, v1.5):** BYOK Cloudflare R2 sync, e-invoicing IRN (if GSP integration is feasible), recurring invoices, bank statement reconciliation auto-match, Firefox / Safari degraded mode, TDS Form 26Q export, TCS Form 27EQ export, Form 27D certificates.
 
 ---
 

@@ -110,7 +110,7 @@ textarea{font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;font-si
 .body-grid{display:grid;grid-template-columns:200px 1fr;overflow:hidden;min-height:0}
 .sidebar{
   background:var(--ash);border-right:1px solid var(--rule);
-  padding:12px 0;overflow-y:auto;
+  padding:0 0 12px;overflow-y:auto;
 }
 .sidebar a{
   display:block;padding:9px 16px;color:var(--ink);
@@ -128,8 +128,14 @@ textarea{font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;font-si
   text-transform:uppercase;letter-spacing:0.8px;
   color:var(--ink-2);font-weight:700;
 }
-/* Phase 8A.2 — sidebar search (BOFH pattern) */
-.sidebar-search{padding:10px 12px;border-bottom:1px solid var(--ash-2);background:var(--white)}
+/* Phase 8A.2 — sidebar search (BOFH pattern). Sticky-pinned to the top of the
+   scrollable sidebar so it stays visible when the user scrolls through the menu. */
+.sidebar-search{
+  position:sticky;top:0;z-index:5;
+  padding:10px 12px;border-bottom:1px solid var(--ash-2);
+  background:var(--white);
+  box-shadow:0 1px 2px rgba(0,0,0,0.04);
+}
 .sidebar-search input{
   width:100%;padding:6px 10px;font-size:12px;
   background:var(--ash);border:1px solid var(--rule);border-radius:4px;

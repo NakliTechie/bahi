@@ -8,9 +8,9 @@ The app is **Bahi** (बही — the traditional bound ledger of Indian mercha
 
 ---
 
-## Status — Phase 4 (goods SMB tier)
+## Status — Phase 5 (Tally XML importer)
 
-Phase 4 turns Bahi from a service-business accounting tool into a full goods business accounting tool with inventory, e-way bills, and inter-GSTIN stock transfers. On top of everything Phases 2C and 3 shipped, Phase 4 adds: **schema v7** with 11 new columns/tables, a **stock movement engine** supporting both Weighted Average Cost AND First-In-First-Out (selectable per item), opt-in **named-batch tracking** for pharma/electronics/perishables, **godowns** (single auto-seeded "Main" with multi-godown UI), automatic **stock posting hooks** on every invoice / purchase / credit note / debit note, automatic **Cost of Goods Sold journal entries** that flow into the existing Balance Sheet (Stock-in-Hand) and P&L, a full inventory module (dashboard, stock on hand, stock register, batches, valuation summary, reorder alerts, stock aging), **delivery challans** with stock movement but no GL posting, **e-way bills** with NIC bulk-upload JSON + printable PDF (with QR placeholder for the EWB number), and **inter-GSTIN stock transfers** with cross-file JSON export/import for businesses with multiple GSTINs.
+Phase 5 adds the highest-leverage adoption feature: a Tally XML importer. With it, "I have a Tally file" becomes a 30-minute migration. Without it, every existing Tally user has to either type their books from scratch or stay on Tally. The importer supports both Tally Prime and Tally ERP 9 via a permissive browser-native parser, walks the full master + voucher payload, auto-suggests chart-of-accounts mappings for ~25 standard Tally groups (with override and a hard-block "needs mapping" panel for user-created groups), filters by date range, supports both **Create new .khata file** and **Merge into currently-open file** commit targets, dedupes customers and vendors by GSTIN, prefixes voucher number collisions with `TALLY-`, wraps the entire import in a single SQL transaction, and stamps `tally.import.start` / `tally.import.commit` audit log entries for forensic discoverability. The importer never bypasses the existing posting bridges — every imported invoice / purchase / credit note / debit note goes through the same engine functions as native posting, so the snapshot pattern and stock effects all fire automatically.
 
 ### What's shipped
 
@@ -152,6 +152,23 @@ Phase 4 turns Bahi from a service-business accounting tool into a full goods bus
 - **Sidebar grew** from 37 → 53 routes with the Inventory group
 - **Purchase form extended** with an item picker (free-text fallback for one-off services) so item-level inventory effects can be wired
 
+**Tally XML importer** (Phase 5)
+- **Permissive parser** handles both Tally Prime and Tally ERP 9 via browser-native `DOMParser` — no CDN deps. Walks Masters (Groups, Ledgers, Stock Items, Units, Godowns) and Vouchers (Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note + variants). ~250 lines of parser, idempotent, returns a structured object the orchestrator consumes
+- **Default group → Bahi account map** covers 25+ reserved Tally groups (Sundry Debtors, Sundry Creditors, Bank Accounts, Cash-in-Hand, Sales/Purchase Accounts, Direct/Indirect Expenses, Capital Account, Duties & Taxes, Stock-in-Hand, Fixed Assets, Current Assets/Liabilities, Loans, Investments, Provisions, etc.)
+- **Voucher classifier**: case-insensitive substring match on `VCHTYPE` → Bahi voucher class. Unsupported types (Stock Journal, Memorandum, Reversing, Sales Order, etc.) get counted and surfaced separately, never silently dropped
+- **6-step wizard** at `#/import/tally`:
+  - **Step 1 — File summary**: source company / GSTIN / format detection / counts (groups, ledgers, stock items, godowns, vouchers) / date range / voucher type breakdown with supported/unsupported flags
+  - **Step 2 — Date range**: from/to pickers defaulted to the full file range, live "vouchers in range" counter
+  - **Step 3 — Mapping review**: auto-mapped groups in a collapsible section with per-row override; user-created groups in a "Needs mapping" section that hard-blocks Continue until every row is resolved
+  - **Step 4 — Commit target**: radio cards for **Create new .khata file** vs **Merge into currently-open file** (merge disabled if no file is open). Merge mode shows a live customer/vendor dedupe preview
+  - **Step 5 — Dry run preview**: full category counts, date range, commit target confirmation
+  - **Step 6 — Result**: full breakdown (created / matched / auto-cleaned-as-services / cost-centre warnings / multi-currency warnings / skipped vouchers with reasons / unsupported voucher types), download import report as JSON
+- **Edge case handling per spec §5.9**: cost centres ignored with a counted warning; multi-currency lines taken at face from the INR column with a counted warning; service-shaped stock items (zero opening, no HSN, name contains "service"/"consulting"/"advice"/"fee") auto-cleaned to `is_service=1, enable_inventory=0`; unbalanced ledger-only vouchers skipped with reason "unbalanced (Dr X ≠ Cr Y)"
+- **Atomic transaction**: the entire import runs inside `BEGIN` / `COMMIT`. Any failure rolls back cleanly, surfaces the error, and writes a `tally.import.failed` audit entry
+- **Forensic audit trail**: `tally.import.start` (with source filename, date range, mode, voucher count) and `tally.import.commit` (with full result counts) entries make every import discoverable in the audit log
+- **Posting bridges reused**: the importer NEVER bypasses `postInvoiceToLedger`, `postPurchaseToLedger`, `postEntry`. Every imported invoice triggers the existing snapshot capture, per-rate sub-account auto-create, and Phase 4 stock effects (for items with `enable_inventory=1`). Imported vouchers are forensically and behaviorally indistinguishable from natively-posted ones
+- **Voucher number collision handling**: in merge mode, Tally voucher numbers that already exist in the target file get a `TALLY-` prefix. Original numbers are preserved in the audit log payload
+
 ---
 
 ## Running
@@ -289,7 +306,7 @@ For low-level testing (raw posting, audit chain inspection, integrity checks, sn
 - One-time backfill flow for legacy v1 invoices
 - Devanagari / Tamil / other Indian script fonts in PDF (currently Helvetica only — uses `Rs.` instead of `₹`; Phase 2B.2 lazy-loads Noto Sans Devanagari)
 
-**Phase 5+:** Tally import (XML parser + mapping UI) → CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass + dark mode + undo stack + landing page → launch.
+**Phase 6+:** CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass (Tally parity) + dark mode + undo stack + landing page → launch.
 
 ---
 

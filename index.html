@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
-<title>Bahi — Browser-native accounting · Phase 4</title>
+<title>Bahi — Browser-native accounting · Phase 5</title>
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -265,7 +265,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 <div id="app">
 
   <header class="topbar">
-    <div class="brand">Bahi <span class="sub">Phase 4 · goods SMB tier</span></div>
+    <div class="brand">Bahi <span class="sub">Phase 5 · Tally importer</span></div>
     <div id="company-switcher" style="display:none;position:relative">
       <button id="company-switcher-btn" class="small" style="display:flex;align-items:center;gap:6px"></button>
       <div id="company-switcher-menu" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--white);border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.12);z-index:100;min-width:280px;max-height:60vh;overflow-y:auto"></div>
@@ -372,9 +372,9 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 
 <script>
 //============================================================
-// Bahi — Phase 4
-// Browser-native accounting · Goods SMB tier (inventory engine with WAC + FIFO + batches,
-// godowns, delivery challans, e-way bills, inter-GSTIN stock transfers)
+// Bahi — Phase 5
+// Browser-native accounting · Tally XML importer (parser + master + voucher importers,
+// 6-step wizard, both create-new and merge-into-existing commit targets)
 // See Settings → Phase scope for the full feature inventory.
 //============================================================
 
@@ -3930,6 +3930,928 @@ function buildEwayBillJson(db, ewbId) {
 }
 
 //------------------------------------------------------------
+// === Phase 5 — Tally XML importer ===
+//------------------------------------------------------------
+//
+// Parser is permissive — walks the DOM by tag name rather than relying on a fixed
+// schema, so the same code path handles Tally Prime (TALLYMESSAGE.LIST + Pascal-case)
+// and Tally ERP 9 (similar but slightly different tag names).
+//
+// The importer NEVER bypasses the existing posting bridges. Every imported invoice
+// goes through postInvoiceToLedger; every purchase through postPurchaseToLedger;
+// every journal voucher through postEntry. Stock effects fire automatically via the
+// Phase 4 hooks for items with enable_inventory=1. The snapshot pattern applies to
+// imported records exactly the same way it applies to natively-posted ones.
+
+// Default Tally group → Bahi account map. Case-insensitive lookup. Reserved Tally
+// groups all have a sensible default; user-created groups have no entry and require
+// explicit mapping in Step 3 of the wizard.
+const TALLY_GROUP_MAP = {
+  'sundry debtors':              'Sundry Debtors',
+  'sundry creditors':            'Sundry Creditors',
+  'bank accounts':               'Bank Accounts',
+  'bank ocaccounts':             'Bank Accounts',  // some Prime exports
+  'bank od accounts':            'Bank Accounts',
+  'cash-in-hand':                'Cash',
+  'cash in hand':                'Cash',
+  'sales accounts':              'Sales',
+  'purchase accounts':           'Purchases',
+  'direct expenses':             'Direct Expenses',
+  'indirect expenses':           'Indirect Expenses',
+  'direct incomes':              'Sales',
+  'indirect incomes':            'Sales',
+  'capital account':             'Capital Account',
+  'reserves & surplus':          'Capital Account',
+  'duties & taxes':              'Duties & Taxes',
+  'stock-in-hand':               'Stock-in-Hand',
+  'fixed assets':                'Fixed Assets',
+  'investments':                 'Current Assets',
+  'loans (liability)':           'Current Liabilities',
+  'loans & advances (asset)':    'Current Assets',
+  'misc. expenses (asset)':      'Current Assets',
+  'suspense a/c':                'Current Assets',
+  'branch / divisions':          'Current Assets',
+  'current assets':              'Current Assets',
+  'current liabilities':         'Current Liabilities',
+  'provisions':                  'Current Liabilities',
+  'secured loans':               'Current Liabilities',
+  'unsecured loans':             'Current Liabilities',
+  'deposits (asset)':            'Current Assets',
+};
+
+// Tally voucher type → Bahi voucher class. Substring match (case-insensitive prefix).
+function classifyTallyVoucherType(vchType) {
+  if (!vchType) return 'unsupported';
+  const t = vchType.toLowerCase().trim();
+  if (t.includes('credit note')) return 'credit-note';
+  if (t.includes('debit note')) return 'debit-note';
+  if (t.includes('sales')) return 'invoice';
+  if (t.includes('purchase')) return 'purchase';
+  if (t.includes('receipt')) return 'payment-in';
+  if (t.includes('payment')) return 'payment-out';
+  if (t.includes('journal')) return 'journal';
+  if (t.includes('contra')) return 'contra';
+  if (t.includes('delivery note')) return 'delivery-out';
+  if (t.includes('receipt note')) return 'delivery-in';
+  return 'unsupported';
+}
+
+// Helper: get text content of the first child element with the given tag name
+// (case-insensitive). Returns '' if missing.
+function tallyText(el, tag) {
+  if (!el) return '';
+  const wanted = tag.toUpperCase();
+  for (const child of el.children) {
+    if (child.tagName.toUpperCase() === wanted) return (child.textContent || '').trim();
+  }
+  return '';
+}
+
+// Helper: get all child elements with the given tag name (case-insensitive).
+function tallyChildren(el, tag) {
+  if (!el) return [];
+  const wanted = tag.toUpperCase();
+  const out = [];
+  for (const child of el.children) {
+    if (child.tagName.toUpperCase() === wanted) out.push(child);
+  }
+  return out;
+}
+
+// Tally date YYYYMMDD → ISO YYYY-MM-DD. Empty / invalid returns ''.
+function tallyDateToIso(s) {
+  if (!s || s.length !== 8) return '';
+  return s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8);
+}
+
+// Tally amount string (float, may have trailing 'Cr' / 'Dr') → integer paise.
+// Negative values represent credit balance in some Tally exports — caller decides.
+function tallyAmount(s) {
+  if (!s) return 0;
+  const m = String(s).trim().match(/^(-?[\d.]+)/);
+  if (!m) return 0;
+  return Math.round(parseFloat(m[1]) * 100);
+}
+
+// Walk a Tally XML document and extract everything we care about.
+// Returns a structured object the importer orchestrator consumes.
+function parseTallyXml(xmlText) {
+  const result = {
+    format: 'unknown',           // 'prime' | 'erp9' | 'unknown'
+    company: { name: '', gstin: '', state: '', address: '' },
+    groups: [],                  // [{ name, parent, primaryGroup }]
+    ledgers: [],                 // [{ name, parent, openingBalance, gstin, state, address, isDeemedPositive }]
+    stockItems: [],              // [{ name, hsn, unit, openingQty, openingValue, openingRate }]
+    units: [],                   // [{ name }]
+    godowns: [],                 // [{ name, parent }]
+    vouchers: [],                // [{ vchType, vchNo, date, narration, lines, partyName, voucherClass }]
+    voucherTypeCount: {},        // { 'Sales': 12, 'Receipt': 5, ... }
+    dateMin: null,
+    dateMax: null,
+    errors: [],
+  };
+
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+  } catch (e) {
+    result.errors.push('XML parse failed: ' + e.message);
+    return result;
+  }
+  const parserError = doc.getElementsByTagName('parsererror')[0];
+  if (parserError) {
+    result.errors.push('XML parse error: ' + parserError.textContent.slice(0, 200));
+    return result;
+  }
+
+  // Detect format. Tally Prime uses TALLYMESSAGE; ERP 9 uses TALLYMESSAGE too but
+  // different attribute casing. We don't strictly need to distinguish, but it's
+  // useful to surface in the wizard's Step 1.
+  const env = doc.getElementsByTagName('ENVELOPE')[0];
+  if (!env) {
+    result.errors.push('No <ENVELOPE> root element found. Is this a Tally XML export?');
+    return result;
+  }
+  const allTags = env.getElementsByTagName('*').length;
+  result.format = allTags > 0 ? 'tally-xml' : 'unknown';
+
+  // Company info — Tally exports include a COMPANY element in masters
+  const companyEl = doc.getElementsByTagName('COMPANY')[0];
+  if (companyEl) {
+    result.company.name = tallyText(companyEl, 'NAME') || companyEl.getAttribute('NAME') || '';
+    result.company.gstin = tallyText(companyEl, 'GSTREGISTRATIONNUMBER') || tallyText(companyEl, 'GSTIN') || '';
+    result.company.state = tallyText(companyEl, 'STATENAME') || '';
+    result.company.address = tallyText(companyEl, 'ADDRESS') || '';
+  }
+
+  // Groups
+  for (const g of doc.getElementsByTagName('GROUP')) {
+    const name = g.getAttribute('NAME') || tallyText(g, 'NAME');
+    if (!name) continue;
+    result.groups.push({
+      name,
+      parent: tallyText(g, 'PARENT'),
+      primaryGroup: tallyText(g, 'PRIMARYGROUP') || tallyText(g, 'NATUREOFGROUP'),
+    });
+  }
+
+  // Ledgers
+  for (const l of doc.getElementsByTagName('LEDGER')) {
+    const name = l.getAttribute('NAME') || tallyText(l, 'NAME');
+    if (!name) continue;
+    result.ledgers.push({
+      name,
+      parent: tallyText(l, 'PARENT'),
+      openingBalance: tallyAmount(tallyText(l, 'OPENINGBALANCE')),
+      gstin: tallyText(l, 'PARTYGSTIN') || tallyText(l, 'GSTREGISTRATIONNUMBER') || tallyText(l, 'GSTIN'),
+      state: tallyText(l, 'LEDSTATENAME') || tallyText(l, 'STATENAME'),
+      address: tallyText(l, 'LEDMAILINGNAME') || tallyText(l, 'MAILINGNAME') || '',
+      isDeemedPositive: tallyText(l, 'ISDEEMEDPOSITIVE') === 'Yes',
+    });
+  }
+
+  // Stock items
+  for (const s of doc.getElementsByTagName('STOCKITEM')) {
+    const name = s.getAttribute('NAME') || tallyText(s, 'NAME');
+    if (!name) continue;
+    const openingQtyText = tallyText(s, 'OPENINGBALANCE');
+    const openingValueText = tallyText(s, 'OPENINGVALUE');
+    const openingRateText = tallyText(s, 'OPENINGRATE');
+    // Tally qty often has the unit appended ("100 Nos" or "50.5 Kg"); strip
+    const qtyMatch = openingQtyText.match(/^(-?[\d.]+)/);
+    const openingQty = qtyMatch ? Math.round(parseFloat(qtyMatch[1])) : 0;
+    result.stockItems.push({
+      name,
+      hsn: tallyText(s, 'GSTAPPLICABLE') === 'Applicable'
+        ? (tallyText(s, 'HSNCODE') || tallyText(s, 'HSN'))
+        : (tallyText(s, 'HSNCODE') || tallyText(s, 'HSN')),
+      unit: tallyText(s, 'BASEUNITS') || tallyText(s, 'UNIT'),
+      openingQty,
+      openingValue: tallyAmount(openingValueText),
+      openingRate: tallyAmount(openingRateText),
+      gstRate: parseFloat(tallyText(s, 'GSTOVRDNRATE') || tallyText(s, 'GSTAPPLICABLERATE') || '0') / 100,
+    });
+  }
+
+  // Units
+  for (const u of doc.getElementsByTagName('UNIT')) {
+    const name = u.getAttribute('NAME') || tallyText(u, 'NAME');
+    if (name) result.units.push({ name });
+  }
+
+  // Godowns
+  for (const g of doc.getElementsByTagName('GODOWN')) {
+    const name = g.getAttribute('NAME') || tallyText(g, 'NAME');
+    if (name) result.godowns.push({ name, parent: tallyText(g, 'PARENT') });
+  }
+
+  // Vouchers — the main payload
+  for (const v of doc.getElementsByTagName('VOUCHER')) {
+    const vchType = v.getAttribute('VCHTYPE') || tallyText(v, 'VOUCHERTYPENAME') || '';
+    const vchNo = tallyText(v, 'VOUCHERNUMBER');
+    const dateRaw = tallyText(v, 'DATE');
+    const date = tallyDateToIso(dateRaw);
+    const narration = tallyText(v, 'NARRATION');
+    const partyName = tallyText(v, 'PARTYLEDGERNAME') || tallyText(v, 'PARTYNAME');
+    const reference = tallyText(v, 'REFERENCE');
+    const placeOfSupply = tallyText(v, 'PLACEOFSUPPLY') || tallyText(v, 'STATENAME');
+
+    // Extract LEDGERENTRIES.LIST children — these are the actual debit/credit lines
+    const lines = [];
+    // Tally uses LEDGERENTRIES.LIST as the wrapper element name (note the dot)
+    // We can't query that with getElementsByTagName because of the dot, so
+    // walk children by tagName check
+    for (const child of v.children) {
+      const tag = child.tagName.toUpperCase();
+      if (tag === 'LEDGERENTRIES.LIST' || tag === 'ALLLEDGERENTRIES.LIST') {
+        const ledgerName = tallyText(child, 'LEDGERNAME');
+        const amount = tallyAmount(tallyText(child, 'AMOUNT'));
+        const isDeemedPositive = tallyText(child, 'ISDEEMEDPOSITIVE') === 'Yes';
+        // Tally amount sign convention: positive = debit when isDeemedPositive=Yes,
+        // credit when isDeemedPositive=No (and vice versa for negatives).
+        // We normalise to: positive amount means dr, negative means cr.
+        const signed = isDeemedPositive ? Math.abs(amount) : -Math.abs(amount);
+        lines.push({
+          ledgerName,
+          amount: Math.abs(amount),
+          isDr: signed >= 0,
+          rawAmount: amount,
+          // Inventory allocations (for sales/purchase line items) — extract if present
+          itemName: tallyText(child, 'STOCKITEMNAME') || '',
+          itemQty: tallyText(child, 'BILLEDQTY') || tallyText(child, 'ACTUALQTY') || '',
+          itemRate: tallyAmount(tallyText(child, 'RATE')),
+        });
+      }
+      if (tag === 'INVENTORYENTRIES.LIST' || tag === 'ALLINVENTORYENTRIES.LIST') {
+        const itemName = tallyText(child, 'STOCKITEMNAME');
+        const qtyRaw = tallyText(child, 'BILLEDQTY') || tallyText(child, 'ACTUALQTY');
+        const qtyMatch = qtyRaw.match(/^(-?[\d.]+)/);
+        const qty = qtyMatch ? Math.round(parseFloat(qtyMatch[1])) : 0;
+        const amount = tallyAmount(tallyText(child, 'AMOUNT'));
+        const rate = tallyAmount(tallyText(child, 'RATE'));
+        lines.push({
+          ledgerName: '__inventory__',
+          amount: Math.abs(amount),
+          isDr: false,
+          itemName,
+          itemQty: qty,
+          itemRate: rate,
+        });
+      }
+    }
+
+    // Cost-centre detection (we don't import them but we count them for the report)
+    const hasCostCentres = v.getElementsByTagName('COSTCENTREALLOCATIONS.LIST').length > 0
+      || v.getElementsByTagName('CATEGORYALLOCATIONS.LIST').length > 0;
+
+    // Multi-currency detection
+    const currencyName = tallyText(v, 'CURRENCYNAME');
+    const isMultiCurrency = currencyName && currencyName !== 'INR' && currencyName !== '₹' && currencyName !== '';
+
+    const voucher = {
+      vchType,
+      vchNo,
+      date,
+      narration,
+      partyName,
+      reference,
+      placeOfSupply,
+      lines,
+      voucherClass: classifyTallyVoucherType(vchType),
+      hasCostCentres,
+      isMultiCurrency,
+    };
+    result.vouchers.push(voucher);
+
+    // Update counters
+    result.voucherTypeCount[vchType] = (result.voucherTypeCount[vchType] || 0) + 1;
+    if (date) {
+      if (!result.dateMin || date < result.dateMin) result.dateMin = date;
+      if (!result.dateMax || date > result.dateMax) result.dateMax = date;
+    }
+  }
+
+  return result;
+}
+
+// Resolve a Tally group to a Bahi account name. Returns null if no auto-mapping.
+function resolveTallyGroup(tallyGroupName) {
+  if (!tallyGroupName) return null;
+  return TALLY_GROUP_MAP[tallyGroupName.toLowerCase().trim()] || null;
+}
+
+// Build the list of Tally groups that need user mapping (no auto-suggestion).
+// Returns [{ tallyName, tallyParent, suggested }] for the wizard's Step 3.
+function buildMappingSuggestions(parsed) {
+  const suggestions = [];
+  for (const g of parsed.groups) {
+    const auto = resolveTallyGroup(g.name) || resolveTallyGroup(g.parent);
+    suggestions.push({
+      tallyName: g.name,
+      tallyParent: g.parent,
+      suggested: auto,
+      needsMapping: !auto,
+    });
+  }
+  return suggestions;
+}
+
+// === Master importers ===
+
+// Import Tally customers (ledgers under "Sundry Debtors" or any user-mapped equivalent).
+// Returns { created, matched } counts. In merge mode, dedupes by GSTIN (or name if no GSTIN).
+async function importTallyCustomers(db, parsed, mapping, mode) {
+  const ctx = { created: 0, matched: 0, skipped: 0 };
+  // Find all Tally groups that map to "Sundry Debtors" (default + overrides)
+  const debtorGroupNames = new Set();
+  for (const m of mapping) {
+    if ((m.resolved || '').toLowerCase() === 'sundry debtors') {
+      debtorGroupNames.add(m.tallyName.toLowerCase());
+    }
+  }
+  // Also include the default 'sundry debtors' if it's in the file
+  for (const g of parsed.groups) {
+    if (resolveTallyGroup(g.name) === 'Sundry Debtors') debtorGroupNames.add(g.name.toLowerCase());
+  }
+
+  for (const l of parsed.ledgers) {
+    if (!debtorGroupNames.has((l.parent || '').toLowerCase())) continue;
+    // Dedupe in merge mode
+    if (mode === 'merge') {
+      let existing = null;
+      if (l.gstin) {
+        const r = db.exec('SELECT id FROM customers WHERE gstin = ? LIMIT 1', [l.gstin.toUpperCase()]);
+        if (r.length && r[0].values.length) existing = r[0].values[0][0];
+      }
+      if (!existing) {
+        const r = db.exec('SELECT id FROM customers WHERE LOWER(name) = LOWER(?) LIMIT 1', [l.name]);
+        if (r.length && r[0].values.length) existing = r[0].values[0][0];
+      }
+      if (existing) { ctx.matched++; continue; }
+    }
+    // Resolve state name → ISO code
+    let stateIso = null;
+    if (l.state) {
+      const row = STATE_LIST.find(s => s[2].toLowerCase() === l.state.toLowerCase());
+      if (row) stateIso = row[0];
+    }
+    const pan = (l.gstin && l.gstin.length >= 12) ? l.gstin.slice(2, 12) : null;
+    db.run(
+      'INSERT INTO customers (name, gstin, pan, state, address, opening_balance, created_at) VALUES (?,?,?,?,?,?,?)',
+      [l.name, l.gstin || null, pan, stateIso, l.address || null, l.openingBalance, nowIso()]
+    );
+    ctx.created++;
+  }
+  return ctx;
+}
+
+// Import Tally vendors. Same shape as customers but for "Sundry Creditors".
+async function importTallyVendors(db, parsed, mapping, mode) {
+  const ctx = { created: 0, matched: 0, skipped: 0 };
+  const creditorGroupNames = new Set();
+  for (const m of mapping) {
+    if ((m.resolved || '').toLowerCase() === 'sundry creditors') {
+      creditorGroupNames.add(m.tallyName.toLowerCase());
+    }
+  }
+  for (const g of parsed.groups) {
+    if (resolveTallyGroup(g.name) === 'Sundry Creditors') creditorGroupNames.add(g.name.toLowerCase());
+  }
+
+  for (const l of parsed.ledgers) {
+    if (!creditorGroupNames.has((l.parent || '').toLowerCase())) continue;
+    if (mode === 'merge') {
+      let existing = null;
+      if (l.gstin) {
+        const r = db.exec('SELECT id FROM vendors WHERE gstin = ? LIMIT 1', [l.gstin.toUpperCase()]);
+        if (r.length && r[0].values.length) existing = r[0].values[0][0];
+      }
+      if (!existing) {
+        const r = db.exec('SELECT id FROM vendors WHERE LOWER(name) = LOWER(?) LIMIT 1', [l.name]);
+        if (r.length && r[0].values.length) existing = r[0].values[0][0];
+      }
+      if (existing) { ctx.matched++; continue; }
+    }
+    let stateIso = null;
+    if (l.state) {
+      const row = STATE_LIST.find(s => s[2].toLowerCase() === l.state.toLowerCase());
+      if (row) stateIso = row[0];
+    }
+    const pan = (l.gstin && l.gstin.length >= 12) ? l.gstin.slice(2, 12) : null;
+    db.run(
+      'INSERT INTO vendors (name, gstin, pan, state, address, opening_balance, created_at) VALUES (?,?,?,?,?,?,?)',
+      [l.name, l.gstin || null, pan, stateIso, l.address || null, l.openingBalance, nowIso()]
+    );
+    ctx.created++;
+  }
+  return ctx;
+}
+
+// Import Tally stock items. Service-shaped items (zero opening, no HSN, name contains
+// service/consulting/advice/fee) get is_service=1 + enable_inventory=0.
+function importTallyItems(db, parsed, mode) {
+  const ctx = { created: 0, matched: 0, asService: 0 };
+  const SERVICE_HINT = /\b(service|consulting|advisory|advice|fee|charge)\b/i;
+  for (const item of parsed.stockItems) {
+    if (mode === 'merge') {
+      const r = db.exec('SELECT id FROM items WHERE LOWER(name) = LOWER(?) LIMIT 1', [item.name]);
+      if (r.length && r[0].values.length) { ctx.matched++; continue; }
+    }
+    const isService = (item.openingQty === 0 && !item.hsn && SERVICE_HINT.test(item.name)) ? 1 : 0;
+    const enableInventory = isService ? 0 : 1;
+    if (isService) ctx.asService++;
+    db.run(
+      'INSERT INTO items (name, hsn_sac, is_service, unit, default_rate, default_tax_rate, enable_inventory, valuation_method, track_batches, opening_stock_qty, opening_stock_value, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [item.name, item.hsn || null, isService, item.unit || null, item.openingRate || null, item.gstRate || 0, enableInventory, 'wac', 0, item.openingQty, item.openingValue, nowIso()]
+    );
+    const newId = lastInsertId(db);
+    // Post opening movement if applicable
+    if (enableInventory && item.openingQty > 0) {
+      const godownId = getDefaultGodownId(db);
+      const rate = item.openingQty > 0 ? Math.round(item.openingValue / item.openingQty) : 0;
+      try {
+        postStockIn(db, {
+          itemId: newId, godownId, qty: item.openingQty, rate,
+          voucherType: 'opening', voucherId: null, voucherRef: 'TALLY-OPENING',
+          postedAt: nowIso(),
+        });
+      } catch (e) { /* swallow — opening stock failures shouldn't break the import */ }
+    }
+    ctx.created++;
+  }
+  return ctx;
+}
+
+// Import Tally godowns (skipping the default "Main Location" since Bahi already has it).
+function importTallyGodowns(db, parsed, mode) {
+  const ctx = { created: 0, matched: 0 };
+  for (const g of parsed.godowns) {
+    if (g.name.toLowerCase() === 'main location' || g.name.toLowerCase() === 'main') {
+      ctx.matched++;
+      continue;
+    }
+    if (mode === 'merge') {
+      const r = db.exec('SELECT id FROM godowns WHERE LOWER(name) = LOWER(?) LIMIT 1', [g.name]);
+      if (r.length && r[0].values.length) { ctx.matched++; continue; }
+    }
+    db.run('INSERT INTO godowns (name, is_default, created_at) VALUES (?, 0, ?)', [g.name, nowIso()]);
+    ctx.created++;
+  }
+  return ctx;
+}
+
+// Look up or create a non-system account from a Tally ledger that doesn't fit the
+// customer/vendor/item buckets (e.g. "Office Rent" → expense account under Indirect Expenses).
+// Used by the voucher importer to resolve LEDGERNAME → Bahi account ID for journal-shaped postings.
+function getOrCreateImportedAccount(db, ledgerName, parsed, mapping) {
+  // First try direct match by name
+  const r = db.exec('SELECT id FROM accounts WHERE name = ? LIMIT 1', [ledgerName]);
+  if (r.length && r[0].values.length) return r[0].values[0][0];
+  // Find the Tally ledger to learn its parent group
+  const ledger = parsed.ledgers.find(l => l.name === ledgerName);
+  if (!ledger) {
+    // Unknown ledger — create as miscellaneous indirect expense as a safe default
+    db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, NULL, "expense", 0)', [ledgerName]);
+    return lastInsertId(db);
+  }
+  // Resolve parent group → Bahi account
+  let bahiParent = resolveTallyGroup(ledger.parent);
+  // Check user override mapping
+  for (const m of mapping) {
+    if (m.tallyName === ledger.parent && m.resolved) bahiParent = m.resolved;
+  }
+  if (!bahiParent) bahiParent = 'Indirect Expenses';
+  // Determine type from the parent
+  const parentRow = db.exec('SELECT id, type FROM accounts WHERE name = ? LIMIT 1', [bahiParent]);
+  let parentId = null, type = 'expense';
+  if (parentRow.length && parentRow[0].values.length) {
+    parentId = parentRow[0].values[0][0];
+    type = parentRow[0].values[0][1];
+  }
+  db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, ?, 0)', [ledgerName, parentId, type]);
+  return lastInsertId(db);
+}
+
+// Resolve a Tally LEDGERNAME to a Bahi account ID. For customer/vendor ledgers, returns
+// the corresponding Sundry Debtors / Sundry Creditors aggregate account (Tally posts
+// against the party ledger; Bahi posts against the aggregate). For everything else,
+// uses getOrCreateImportedAccount.
+function resolveTallyLedgerToAccount(db, ledgerName, parsed, mapping) {
+  if (!ledgerName) return null;
+  const ledger = parsed.ledgers.find(l => l.name === ledgerName);
+  if (ledger) {
+    const parent = (ledger.parent || '').toLowerCase();
+    if (parent === 'sundry debtors') return getAccountIdByName(db, 'Sundry Debtors');
+    if (parent === 'sundry creditors') return getAccountIdByName(db, 'Sundry Creditors');
+  }
+  return getOrCreateImportedAccount(db, ledgerName, parsed, mapping);
+}
+
+// Resolve Tally party name → Bahi customer ID (for invoices) or vendor ID (for purchases).
+function resolveTallyParty(db, partyName, kind) {
+  if (!partyName) return null;
+  const table = kind === 'customer' ? 'customers' : 'vendors';
+  const r = db.exec(`SELECT id FROM ${table} WHERE LOWER(name) = LOWER(?) LIMIT 1`, [partyName]);
+  if (r.length && r[0].values.length) return r[0].values[0][0];
+  return null;
+}
+
+// === Voucher importer ===
+
+// Build a unique voucher number for an imported voucher. In merge mode, prefix with
+// 'TALLY-' if the existing file already has a voucher with the same number.
+function uniqueVoucherNumber(db, baseNum, table, column, mode) {
+  if (!baseNum) return baseNum;
+  if (mode !== 'merge') return baseNum;
+  const r = db.exec(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`, [baseNum]);
+  if (r.length && r[0].values.length) return 'TALLY-' + baseNum;
+  return baseNum;
+}
+
+// Import a single Tally voucher. Branches on voucherClass.
+async function importTallyVoucher(db, voucher, parsed, mapping, mode, ctx) {
+  // Date range gate
+  if (ctx.dateFrom && voucher.date < ctx.dateFrom) return;
+  if (ctx.dateTo && voucher.date > ctx.dateTo) return;
+
+  // Edge case counters
+  if (voucher.hasCostCentres) ctx.warnings.costCentres++;
+  if (voucher.isMultiCurrency) ctx.warnings.multiCurrency++;
+
+  // Skip unsupported types up front
+  if (voucher.voucherClass === 'unsupported') {
+    ctx.unsupported[voucher.vchType] = (ctx.unsupported[voucher.vchType] || 0) + 1;
+    return;
+  }
+
+  // Validate balance for ledger-only vouchers (journals, contras, payments, receipts)
+  // Inventory-bearing vouchers (sales, purchase) are validated separately
+  const ledgerLines = voucher.lines.filter(l => l.ledgerName !== '__inventory__');
+  let totalDr = 0, totalCr = 0;
+  for (const ln of ledgerLines) {
+    if (ln.isDr) totalDr += ln.amount;
+    else totalCr += ln.amount;
+  }
+  if (Math.abs(totalDr - totalCr) > 1) {
+    ctx.skipped.push({ vchNo: voucher.vchNo, reason: `unbalanced (Dr ${totalDr} ≠ Cr ${totalCr})` });
+    return;
+  }
+
+  try {
+    switch (voucher.voucherClass) {
+      case 'invoice':
+        await importTallyInvoice(db, voucher, parsed, mapping, mode, ctx);
+        break;
+      case 'purchase':
+        await importTallyPurchase(db, voucher, parsed, mapping, mode, ctx);
+        break;
+      case 'credit-note':
+      case 'debit-note':
+      case 'journal':
+      case 'contra':
+      case 'payment-in':
+      case 'payment-out':
+        await importTallyJournalLike(db, voucher, parsed, mapping, mode, ctx);
+        break;
+      case 'delivery-out':
+      case 'delivery-in':
+        // Delivery challans need party + items; defer to ctx counter, skip for now
+        ctx.skipped.push({ vchNo: voucher.vchNo, reason: 'delivery challan import deferred' });
+        break;
+      default:
+        ctx.unsupported[voucher.vchType] = (ctx.unsupported[voucher.vchType] || 0) + 1;
+    }
+  } catch (e) {
+    ctx.skipped.push({ vchNo: voucher.vchNo, reason: e.message });
+  }
+}
+
+async function importTallyInvoice(db, voucher, parsed, mapping, mode, ctx) {
+  const customerId = resolveTallyParty(db, voucher.partyName, 'customer');
+  if (!customerId) {
+    ctx.skipped.push({ vchNo: voucher.vchNo, reason: `customer not found: ${voucher.partyName}` });
+    return;
+  }
+  // Build lines from inventory entries (Tally sales include INVENTORYENTRIES.LIST)
+  const invLines = voucher.lines.filter(l => l.ledgerName === '__inventory__' && l.itemName);
+  const computedLines = [];
+  let subtotal = 0;
+  for (const il of invLines) {
+    const itemRow = db.exec('SELECT id FROM items WHERE LOWER(name) = LOWER(?) LIMIT 1', [il.itemName]);
+    const itemId = (itemRow.length && itemRow[0].values.length) ? itemRow[0].values[0][0] : null;
+    const qty = il.itemQty || 1;
+    const rate = il.itemRate || 0;
+    const taxable = Math.round(qty * rate) || il.amount;
+    subtotal += taxable;
+    computedLines.push({
+      line_no: computedLines.length + 1,
+      item_id: itemId,
+      description: il.itemName,
+      hsn_sac: null,
+      quantity: qty,
+      rate,
+      taxable,
+      tax_rate: 0,
+      cgst: 0, sgst: 0, igst: 0,
+      total: taxable,
+    });
+  }
+  // Tax lines from ledger entries: anything in "Duties & Taxes" gets aggregated
+  let cgstTotal = 0, sgstTotal = 0, igstTotal = 0;
+  for (const ll of voucher.lines.filter(l => l.ledgerName !== '__inventory__')) {
+    const ledger = parsed.ledgers.find(l => l.name === ll.ledgerName);
+    if (!ledger) continue;
+    if ((ledger.parent || '').toLowerCase() !== 'duties & taxes') continue;
+    const lname = ll.ledgerName.toLowerCase();
+    const amt = Math.abs(ll.rawAmount);
+    if (lname.includes('cgst')) cgstTotal += amt;
+    else if (lname.includes('sgst')) sgstTotal += amt;
+    else if (lname.includes('igst')) igstTotal += amt;
+  }
+  const total = subtotal + cgstTotal + sgstTotal + igstTotal;
+
+  // If no inventory lines, fall back to a single ledger-only line
+  if (!computedLines.length && subtotal === 0) {
+    // Pick the largest credit ledger (should be the Sales account)
+    let salesAmt = 0;
+    for (const ll of voucher.lines) {
+      const ledger = parsed.ledgers.find(l => l.name === ll.ledgerName);
+      if (!ledger) continue;
+      if ((ledger.parent || '').toLowerCase().includes('sales') && !ll.isDr) salesAmt += ll.amount;
+    }
+    if (salesAmt === 0) {
+      ctx.skipped.push({ vchNo: voucher.vchNo, reason: 'no sales lines found' });
+      return;
+    }
+    computedLines.push({
+      line_no: 1, item_id: null, description: voucher.narration || 'Imported sale',
+      hsn_sac: null, quantity: 1, rate: salesAmt, taxable: salesAmt,
+      tax_rate: 0, cgst: 0, sgst: 0, igst: 0, total: salesAmt,
+    });
+  }
+
+  // Customer state for snapshot
+  const custR = db.exec('SELECT name, gstin, pan, state, address FROM customers WHERE id=?', [customerId]);
+  const cv = (custR.length && custR[0].values.length) ? custR[0].values[0] : ['', '', '', null, ''];
+  const customerSnapshot = JSON.stringify({
+    name: cv[0], gstin: cv[1], pan: cv[2], state: cv[3], address: cv[4],
+  });
+  const companySnapshot = JSON.stringify(STATE.manifest?.company || { name: ctx.tallyCompanyName });
+  const placeOfSupply = cv[3] || null;
+  const placeOfSupplyName = (placeOfSupply && STATE_BY_ISO.has(placeOfSupply)) ? STATE_BY_ISO.get(placeOfSupply)[2] : null;
+
+  const invoiceNumber = uniqueVoucherNumber(db, voucher.vchNo || `TALLY-${ctx.invoiceCounter++}`, 'invoices', 'invoice_number', mode);
+
+  db.run(
+    'INSERT INTO invoices (invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [invoiceNumber, 'Domestic', customerId, voucher.date, placeOfSupply, placeOfSupplyName, subtotal, cgstTotal, sgstTotal, igstTotal, total, voucher.narration || null, 'posted', companySnapshot, customerSnapshot, nowIso()]
+  );
+  const invoiceId = lastInsertId(db);
+  const lineStmt = db.prepare('INSERT INTO invoice_lines (invoice_id, line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  for (const ln of computedLines) {
+    lineStmt.run([invoiceId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.cgst, ln.sgst, ln.igst, ln.total]);
+  }
+  lineStmt.free();
+
+  // Post to ledger via the existing bridge
+  const customer = { id: customerId, name: cv[0] };
+  const entryId = await postInvoiceToLedger(db, {
+    invoice_number: invoiceNumber, invoice_date: voucher.date,
+    subtotal, cgst: cgstTotal, sgst: sgstTotal, igst: igstTotal, total,
+  }, customer, computedLines);
+  db.run('UPDATE invoices SET ledger_entry_id = ? WHERE id = ?', [entryId, invoiceId]);
+
+  // Stock effects
+  try {
+    await postInvoiceStockEffects(db, { id: invoiceId, invoice_number: invoiceNumber, invoice_date: voucher.date }, computedLines, customer);
+  } catch (_) { /* stock effects are best-effort during import */ }
+
+  ctx.invoices++;
+}
+
+async function importTallyPurchase(db, voucher, parsed, mapping, mode, ctx) {
+  const vendorId = resolveTallyParty(db, voucher.partyName, 'vendor');
+  if (!vendorId) {
+    ctx.skipped.push({ vchNo: voucher.vchNo, reason: `vendor not found: ${voucher.partyName}` });
+    return;
+  }
+  const invLines = voucher.lines.filter(l => l.ledgerName === '__inventory__' && l.itemName);
+  const computedLines = [];
+  let subtotal = 0;
+  for (const il of invLines) {
+    const itemRow = db.exec('SELECT id FROM items WHERE LOWER(name) = LOWER(?) LIMIT 1', [il.itemName]);
+    const itemId = (itemRow.length && itemRow[0].values.length) ? itemRow[0].values[0][0] : null;
+    const qty = il.itemQty || 1;
+    const rate = il.itemRate || 0;
+    const taxable = Math.round(qty * rate) || il.amount;
+    subtotal += taxable;
+    computedLines.push({
+      line_no: computedLines.length + 1,
+      item_id: itemId,
+      description: il.itemName,
+      hsn_sac: null,
+      quantity: qty,
+      rate,
+      taxable,
+      tax_rate: 0,
+      cgst: 0, sgst: 0, igst: 0,
+      total: taxable,
+    });
+  }
+  let cgstTotal = 0, sgstTotal = 0, igstTotal = 0;
+  for (const ll of voucher.lines.filter(l => l.ledgerName !== '__inventory__')) {
+    const ledger = parsed.ledgers.find(l => l.name === ll.ledgerName);
+    if (!ledger) continue;
+    if ((ledger.parent || '').toLowerCase() !== 'duties & taxes') continue;
+    const lname = ll.ledgerName.toLowerCase();
+    const amt = Math.abs(ll.rawAmount);
+    if (lname.includes('cgst')) cgstTotal += amt;
+    else if (lname.includes('sgst')) sgstTotal += amt;
+    else if (lname.includes('igst')) igstTotal += amt;
+  }
+  const total = subtotal + cgstTotal + sgstTotal + igstTotal;
+
+  if (!computedLines.length && subtotal === 0) {
+    let purchAmt = 0;
+    for (const ll of voucher.lines) {
+      const ledger = parsed.ledgers.find(l => l.name === ll.ledgerName);
+      if (!ledger) continue;
+      if ((ledger.parent || '').toLowerCase().includes('purchase') && ll.isDr) purchAmt += ll.amount;
+    }
+    if (purchAmt === 0) {
+      ctx.skipped.push({ vchNo: voucher.vchNo, reason: 'no purchase lines found' });
+      return;
+    }
+    computedLines.push({
+      line_no: 1, item_id: null, description: voucher.narration || 'Imported purchase',
+      hsn_sac: null, quantity: 1, rate: purchAmt, taxable: purchAmt,
+      tax_rate: 0, cgst: 0, sgst: 0, igst: 0, total: purchAmt,
+    });
+    subtotal = purchAmt;
+  }
+
+  const vendR = db.exec('SELECT name, gstin, pan, state, address FROM vendors WHERE id=?', [vendorId]);
+  const vv = (vendR.length && vendR[0].values.length) ? vendR[0].values[0] : ['', '', '', null, ''];
+  const vendorSnapshot = JSON.stringify({ name: vv[0], gstin: vv[1], pan: vv[2], state: vv[3], address: vv[4] });
+  const companySnapshot = JSON.stringify(STATE.manifest?.company || { name: ctx.tallyCompanyName });
+  const placeOfSupply = vv[3] || null;
+  const placeOfSupplyName = (placeOfSupply && STATE_BY_ISO.has(placeOfSupply)) ? STATE_BY_ISO.get(placeOfSupply)[2] : null;
+
+  const internalRef = uniqueVoucherNumber(db, voucher.vchNo || `TALLY-PUR-${ctx.purchaseCounter++}`, 'purchases', 'internal_ref', mode);
+
+  db.run(
+    'INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [voucher.reference || internalRef, internalRef, vendorId, voucher.date, placeOfSupply, placeOfSupplyName, 0, 1, subtotal, cgstTotal, sgstTotal, igstTotal, total, voucher.narration || null, 'posted', companySnapshot, vendorSnapshot, nowIso()]
+  );
+  const purchaseId = lastInsertId(db);
+  const lineStmt = db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, cgst, sgst, igst, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+  for (const ln of computedLines) {
+    lineStmt.run([purchaseId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.cgst, ln.sgst, ln.igst, 1, ln.total]);
+  }
+  lineStmt.free();
+
+  const vendor = { id: vendorId, name: vv[0] };
+  const entryId = await postPurchaseToLedger(db, {
+    internal_ref: internalRef, bill_number: voucher.reference || internalRef, bill_date: voucher.date,
+    subtotal, cgst: cgstTotal, sgst: sgstTotal, igst: igstTotal, total, reverse_charge: 0,
+  }, vendor, computedLines);
+  db.run('UPDATE purchases SET ledger_entry_id = ? WHERE id = ?', [entryId, purchaseId]);
+
+  try {
+    postPurchaseStockEffects(db, { id: purchaseId, internal_ref: internalRef, bill_date: voucher.date }, computedLines);
+  } catch (_) { /* best effort */ }
+
+  ctx.purchases++;
+}
+
+// Journal-like vouchers (journal, contra, receipt, payment, credit note, debit note)
+// all collapse to "post a balanced multi-line entry via postEntry". Credit/debit notes
+// optionally also create the document row but we keep it simple in v1 — they post as
+// journals with a clear narration.
+async function importTallyJournalLike(db, voucher, parsed, mapping, mode, ctx) {
+  const lines = [];
+  for (const ll of voucher.lines.filter(l => l.ledgerName !== '__inventory__')) {
+    const accId = resolveTallyLedgerToAccount(db, ll.ledgerName, parsed, mapping);
+    if (!accId) continue;
+    lines.push({
+      accountId: accId,
+      debit: ll.isDr ? ll.amount : 0,
+      credit: ll.isDr ? 0 : ll.amount,
+    });
+  }
+  if (lines.length < 2) {
+    ctx.skipped.push({ vchNo: voucher.vchNo, reason: 'fewer than 2 lines after resolution' });
+    return;
+  }
+  const voucherType = voucher.voucherClass === 'payment-in' ? 'receipt'
+    : voucher.voucherClass === 'payment-out' ? 'payment'
+    : voucher.voucherClass === 'credit-note' ? 'credit-note'
+    : voucher.voucherClass === 'debit-note' ? 'debit-note'
+    : 'journal';
+  const voucherRef = uniqueVoucherNumber(db, voucher.vchNo || `TALLY-JV-${ctx.journalCounter++}`, 'entries', 'voucher_ref', mode);
+  await postEntry(db, {
+    voucherType,
+    voucherRef,
+    narration: voucher.narration || `Imported ${voucher.vchType} ${voucher.vchNo}`.trim(),
+    postedAt: voucher.date,
+    actor: 'system',
+    lines,
+  });
+  if (voucherType === 'receipt' || voucherType === 'payment') ctx.payments++;
+  else if (voucherType === 'credit-note') ctx.creditNotes++;
+  else if (voucherType === 'debit-note') ctx.debitNotes++;
+  else ctx.journals++;
+}
+
+// === Orchestrator ===
+// Drives the entire import in a single SQL transaction. Returns the result context
+// the wizard's Step 6 displays.
+async function runTallyImport(db, parsed, mapping, opts) {
+  const ctx = {
+    dateFrom: opts.dateFrom || null,
+    dateTo: opts.dateTo || null,
+    tallyCompanyName: parsed.company.name || 'Imported',
+    customers: { created: 0, matched: 0 },
+    vendors: { created: 0, matched: 0 },
+    items: { created: 0, matched: 0, asService: 0 },
+    godowns: { created: 0, matched: 0 },
+    invoices: 0,
+    purchases: 0,
+    payments: 0,
+    journals: 0,
+    creditNotes: 0,
+    debitNotes: 0,
+    invoiceCounter: 1,
+    purchaseCounter: 1,
+    journalCounter: 1,
+    skipped: [],
+    unsupported: {},
+    warnings: { costCentres: 0, multiCurrency: 0 },
+  };
+
+  await appendAuditEntry(db, {
+    actor: 'owner',
+    action: 'tally.import.start',
+    ref: parsed.company.name || 'unknown',
+    payload: {
+      sourceCompany: parsed.company.name,
+      sourceGstin: parsed.company.gstin,
+      mode: opts.mode,
+      dateFrom: opts.dateFrom,
+      dateTo: opts.dateTo,
+      voucherCount: parsed.vouchers.length,
+    },
+  });
+
+  db.run('BEGIN');
+  try {
+    // Masters first
+    ctx.customers = await importTallyCustomers(db, parsed, mapping, opts.mode);
+    ctx.vendors = await importTallyVendors(db, parsed, mapping, opts.mode);
+    ctx.items = importTallyItems(db, parsed, opts.mode);
+    ctx.godowns = importTallyGodowns(db, parsed, opts.mode);
+
+    // Vouchers second
+    for (const voucher of parsed.vouchers) {
+      await importTallyVoucher(db, voucher, parsed, mapping, opts.mode, ctx);
+    }
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    await appendAuditEntry(db, {
+      actor: 'owner',
+      action: 'tally.import.failed',
+      ref: parsed.company.name || 'unknown',
+      payload: { error: e.message },
+    });
+    throw e;
+  }
+
+  await appendAuditEntry(db, {
+    actor: 'owner',
+    action: 'tally.import.commit',
+    ref: parsed.company.name || 'unknown',
+    payload: {
+      customers: ctx.customers,
+      vendors: ctx.vendors,
+      items: ctx.items,
+      godowns: ctx.godowns,
+      invoices: ctx.invoices,
+      purchases: ctx.purchases,
+      payments: ctx.payments,
+      journals: ctx.journals,
+      creditNotes: ctx.creditNotes,
+      debitNotes: ctx.debitNotes,
+      skippedCount: ctx.skipped.length,
+      unsupported: ctx.unsupported,
+      warnings: ctx.warnings,
+    },
+  });
+
+  return ctx;
+}
+
+//------------------------------------------------------------
 // === Phase 2B.4 — GSTR-1 export ===
 //------------------------------------------------------------
 //
@@ -6385,6 +7307,8 @@ function render() {
   else if (r === '#/stock-transfers')      renderStockTransfers(main);
   else if (r === '#/stock-transfer/out/new')  renderStockTransferOut(main);
   else if (r === '#/stock-transfer/in/import') renderStockTransferIn(main);
+  // Phase 5
+  else if (r === '#/import/tally') renderImportTally(main);
   else if (r === '#/debug')        renderDebug(main);
   else if (r === '#/settings')     renderSettings(main);
   else                             main.appendChild(h('div', { class: 'empty' }, ['Unknown route']));
@@ -6427,9 +7351,12 @@ async function renderWorkspace(main, tok) {
   btnOpen.onclick = handleOpenExisting;
   const btnRestore = h('button', {}, ['Restore from backup…']);
   btnRestore.onclick = restoreFromBackup;
+  const btnImport = h('button', {}, ['Import from Tally…']);
+  btnImport.onclick = handleImportFromTally;
   actions.appendChild(btnNew);
   actions.appendChild(btnOpen);
   actions.appendChild(btnRestore);
+  actions.appendChild(btnImport);
   main.appendChild(actions);
 
   main.appendChild(h('h2', {}, ['Companies known to this browser']));
@@ -12294,6 +13221,604 @@ function renderStockTransferIn(main) {
 }
 
 //------------------------------------------------------------
+// === Phase 5 — Tally importer wizard view ===
+//------------------------------------------------------------
+
+// Module-level state for the wizard. Cleared when the user navigates away.
+const TALLY_IMPORT = {
+  parsed: null,
+  mapping: null,            // [{ tallyName, suggested, resolved }]
+  step: 1,
+  filename: '',
+  dateFrom: null,
+  dateTo: null,
+  commitTarget: 'new',      // 'new' | 'merge'
+  resultCtx: null,
+};
+
+function resetTallyImport() {
+  TALLY_IMPORT.parsed = null;
+  TALLY_IMPORT.mapping = null;
+  TALLY_IMPORT.step = 1;
+  TALLY_IMPORT.filename = '';
+  TALLY_IMPORT.dateFrom = null;
+  TALLY_IMPORT.dateTo = null;
+  TALLY_IMPORT.commitTarget = 'new';
+  TALLY_IMPORT.resultCtx = null;
+}
+
+// Workspace button handler — opens the file picker, parses XML, navigates to wizard.
+async function handleImportFromTally() {
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      types: [{ description: 'Tally XML export', accept: { 'text/xml': ['.xml'] } }],
+    });
+    const file = await handle.getFile();
+    if (file.size > 50 * 1024 * 1024) {
+      toast('File is larger than 50 MB — Tally exports this size are unusual. Continue at your own risk.', 'err');
+    }
+    const text = await file.text();
+    const parsed = parseTallyXml(text);
+    if (parsed.errors.length) {
+      toast('Parse failed: ' + parsed.errors[0], 'err');
+      return;
+    }
+    if (!parsed.vouchers.length && !parsed.ledgers.length) {
+      toast('No vouchers or ledgers found in this file. Is it a valid Tally export?', 'err');
+      return;
+    }
+    resetTallyImport();
+    TALLY_IMPORT.parsed = parsed;
+    TALLY_IMPORT.filename = handle.name;
+    TALLY_IMPORT.dateFrom = parsed.dateMin;
+    TALLY_IMPORT.dateTo = parsed.dateMax;
+    TALLY_IMPORT.mapping = buildMappingSuggestions(parsed).map(m => ({
+      tallyName: m.tallyName,
+      suggested: m.suggested,
+      resolved: m.suggested,
+      needsMapping: m.needsMapping,
+    }));
+    nav('#/import/tally');
+  } catch (e) {
+    if (e.name !== 'AbortError') toast('Open failed: ' + e.message, 'err');
+  }
+}
+
+function renderImportTally(main) {
+  if (!TALLY_IMPORT.parsed) {
+    main.appendChild(h('h1', {}, ['Tally XML import']));
+    main.appendChild(h('div', { class: 'empty' }, ['No file loaded. Go to Workspace → Import from Tally to start.']));
+    const back = h('button', {}, ['Back to workspace']);
+    back.onclick = () => nav('#/workspace');
+    main.appendChild(back);
+    return;
+  }
+  const p = TALLY_IMPORT.parsed;
+  main.appendChild(h('h1', {}, [`Tally import — ${TALLY_IMPORT.filename}`]));
+
+  // Step indicator
+  const steps = ['File', 'Date range', 'Mapping', 'Commit target', 'Preview', 'Result'];
+  const ind = h('div', { class: 'row', style: 'margin-bottom:14px;font-size:11px;color:var(--ink-2)' });
+  for (let i = 0; i < steps.length; i++) {
+    const active = (i + 1) === TALLY_IMPORT.step;
+    const done = (i + 1) < TALLY_IMPORT.step;
+    const span = h('span', { style: `padding:4px 10px;border:1px solid ${active ? 'var(--saffron)' : 'var(--rule)'};border-radius:12px;background:${active ? 'var(--saffron-soft, var(--ash))' : (done ? 'var(--ash)' : 'var(--white)')};color:${active ? 'var(--saffron-deep)' : (done ? 'var(--green)' : 'var(--ink-2)')};font-weight:${active ? '700' : '400'}` }, [`${i + 1}. ${steps[i]}`]);
+    ind.appendChild(span);
+  }
+  main.appendChild(ind);
+
+  if (TALLY_IMPORT.step === 1) renderImportStep1(main);
+  else if (TALLY_IMPORT.step === 2) renderImportStep2(main);
+  else if (TALLY_IMPORT.step === 3) renderImportStep3(main);
+  else if (TALLY_IMPORT.step === 4) renderImportStep4(main);
+  else if (TALLY_IMPORT.step === 5) renderImportStep5(main);
+  else if (TALLY_IMPORT.step === 6) renderImportStep6(main);
+}
+
+function renderImportStep1(main) {
+  const p = TALLY_IMPORT.parsed;
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Step 1 — File summary']));
+  const body = h('div', { class: 'panel-b' });
+
+  const counts = [
+    ['Source company', p.company.name || '(not in file)'],
+    ['Source GSTIN', p.company.gstin || '(not in file)'],
+    ['Format', p.format],
+    ['Groups (chart of accounts)', p.groups.length],
+    ['Ledgers (individual accounts)', p.ledgers.length],
+    ['Stock items', p.stockItems.length],
+    ['Godowns', p.godowns.length],
+    ['Vouchers', p.vouchers.length],
+    ['Date range', p.dateMin && p.dateMax ? `${p.dateMin} → ${p.dateMax}` : '(no dated vouchers)'],
+  ];
+  const tbl = h('table', { class: 'dense' });
+  const tbody = h('tbody');
+  for (const [k, v] of counts) {
+    const tr = h('tr');
+    tr.innerHTML = `<td><b>${escapeHtml(k)}</b></td><td>${escapeHtml(String(v))}</td>`;
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  body.appendChild(tbl);
+
+  // Voucher type breakdown
+  body.appendChild(h('h3', { style: 'margin-top:14px;font-size:13px' }, ['Voucher type breakdown']));
+  const vtbl = h('table', { class: 'dense' });
+  const vtbody = h('tbody');
+  const sorted = Object.entries(p.voucherTypeCount).sort((a, b) => b[1] - a[1]);
+  for (const [vt, count] of sorted) {
+    const cls = classifyTallyVoucherType(vt);
+    const tr = h('tr');
+    const supported = cls !== 'unsupported';
+    tr.innerHTML = `<td>${escapeHtml(vt)}</td><td><span style="color:${supported ? 'var(--green)' : 'var(--alert)'};font-size:10px;text-transform:uppercase">${supported ? cls : 'unsupported'}</span></td><td class="num">${count}</td>`;
+    vtbody.appendChild(tr);
+  }
+  vtbl.appendChild(vtbody);
+  body.appendChild(vtbl);
+
+  panel.appendChild(body);
+  main.appendChild(panel);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const cancel = h('button', {}, ['Cancel']);
+  cancel.onclick = () => { resetTallyImport(); nav('#/workspace'); };
+  const next = h('button', { class: 'primary' }, ['Continue → Date range']);
+  next.onclick = () => { TALLY_IMPORT.step = 2; render(); };
+  ctrls.appendChild(cancel);
+  ctrls.appendChild(next);
+  main.appendChild(ctrls);
+}
+
+function renderImportStep2(main) {
+  const p = TALLY_IMPORT.parsed;
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Step 2 — Date range filter']));
+  const body = h('div', { class: 'panel-b' });
+  body.innerHTML = `
+    <p class="help">Defaults to the full range from the file. Vouchers outside this range will be silently skipped.</p>
+    <div class="field"><label>From</label><input id="ti-from" type="date" value="${TALLY_IMPORT.dateFrom || p.dateMin || ''}"></div>
+    <div class="field"><label>To</label><input id="ti-to" type="date" value="${TALLY_IMPORT.dateTo || p.dateMax || ''}"></div>
+    <div id="ti-count" style="margin-top:10px;font-size:13px"></div>
+  `;
+  panel.appendChild(body);
+  main.appendChild(panel);
+
+  function recount() {
+    const from = $('ti-from').value;
+    const to = $('ti-to').value;
+    let n = 0;
+    for (const v of p.vouchers) {
+      if (from && v.date < from) continue;
+      if (to && v.date > to) continue;
+      if (classifyTallyVoucherType(v.vchType) !== 'unsupported') n++;
+    }
+    $('ti-count').innerHTML = `<b>${n}</b> supported vouchers in range`;
+  }
+  setTimeout(() => {
+    $('ti-from').addEventListener('change', recount);
+    $('ti-to').addEventListener('change', recount);
+    recount();
+  }, 0);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const back = h('button', {}, ['← Back']);
+  back.onclick = () => { TALLY_IMPORT.step = 1; render(); };
+  const next = h('button', { class: 'primary' }, ['Continue → Mapping']);
+  next.onclick = () => {
+    TALLY_IMPORT.dateFrom = $('ti-from').value;
+    TALLY_IMPORT.dateTo = $('ti-to').value;
+    TALLY_IMPORT.step = 3;
+    render();
+  };
+  ctrls.appendChild(back);
+  ctrls.appendChild(next);
+  main.appendChild(ctrls);
+}
+
+function renderImportStep3(main) {
+  const mapping = TALLY_IMPORT.mapping;
+  // Get list of Bahi accounts for the dropdown
+  // (use system + non-archived parents only for clarity)
+  const accR = STATE.db
+    ? STATE.db.exec("SELECT name FROM accounts WHERE archived=0 ORDER BY name")
+    : null;
+  const accountNames = accR && accR.length
+    ? accR[0].values.map(v => v[0])
+    : ['Sundry Debtors', 'Sundry Creditors', 'Sales', 'Purchases', 'Cash', 'Bank Accounts',
+       'Direct Expenses', 'Indirect Expenses', 'Capital Account', 'Duties & Taxes',
+       'Stock-in-Hand', 'Fixed Assets', 'Current Assets', 'Current Liabilities'];
+
+  const needsMapping = mapping.filter(m => m.needsMapping && !m.resolved);
+  const autoMapped = mapping.filter(m => !m.needsMapping || m.resolved);
+
+  // Needs-mapping section (expanded)
+  if (needsMapping.length) {
+    const np = h('div', { class: 'panel' });
+    np.appendChild(h('div', { class: 'panel-h' }, [`Needs mapping — ${needsMapping.length}`]));
+    const nb = h('div', { class: 'panel-b' });
+    nb.appendChild(h('p', { class: 'help' }, ['These Tally groups have no automatic mapping. Pick a Bahi account for each.']));
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Tally group</th><th>Pick Bahi account</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const m of needsMapping) {
+      const tr = h('tr');
+      const tdName = h('td', {}, [h('b', {}, [m.tallyName])]);
+      tr.appendChild(tdName);
+      const sel = document.createElement('select');
+      sel.style.width = '100%';
+      sel.appendChild(h('option', { value: '' }, ['-- Pick --']));
+      for (const a of accountNames) {
+        const o = h('option', { value: a }, [a]);
+        if (m.resolved === a) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.onchange = (e) => { m.resolved = e.target.value || null; render(); };
+      tr.appendChild(h('td', {}, [sel]));
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    nb.appendChild(tbl);
+    np.appendChild(nb);
+    main.appendChild(np);
+  }
+
+  // Auto-mapped section (collapsed details)
+  const ap = h('div', { class: 'panel' });
+  const ah = h('div', { class: 'panel-h' });
+  ah.innerHTML = `<span>Auto-mapped — ${autoMapped.length} <span style="font-size:11px;color:var(--ink-2);font-weight:400">(click to ${TALLY_IMPORT._showAuto ? 'hide' : 'show'})</span></span>`;
+  ah.style.cursor = 'pointer';
+  ah.onclick = () => { TALLY_IMPORT._showAuto = !TALLY_IMPORT._showAuto; render(); };
+  ap.appendChild(ah);
+  if (TALLY_IMPORT._showAuto) {
+    const ab = h('div', { class: 'panel-b' });
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Tally group</th><th>Bahi account</th><th></th></tr></thead>';
+    const tbody = h('tbody');
+    for (const m of autoMapped) {
+      const tr = h('tr');
+      tr.innerHTML = `<td>${escapeHtml(m.tallyName)}</td><td><b>${escapeHtml(m.resolved || m.suggested || '')}</b></td><td></td>`;
+      const sel = document.createElement('select');
+      sel.style.width = '100%';
+      sel.appendChild(h('option', { value: '' }, ['(default)']));
+      for (const a of accountNames) {
+        const o = h('option', { value: a }, [a]);
+        if (m.resolved === a) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.onchange = (e) => { m.resolved = e.target.value || m.suggested; };
+      tr.children[2].appendChild(sel);
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    ab.appendChild(tbl);
+    ap.appendChild(ab);
+  }
+  main.appendChild(ap);
+
+  const stillNeeds = mapping.filter(m => m.needsMapping && !m.resolved).length;
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const back = h('button', {}, ['← Back']);
+  back.onclick = () => { TALLY_IMPORT.step = 2; render(); };
+  const next = h('button', { class: 'primary' }, [`Continue → Commit target${stillNeeds ? ` (${stillNeeds} unmapped)` : ''}`]);
+  next.disabled = stillNeeds > 0;
+  next.onclick = () => { TALLY_IMPORT.step = 4; render(); };
+  ctrls.appendChild(back);
+  ctrls.appendChild(next);
+  main.appendChild(ctrls);
+}
+
+function renderImportStep4(main) {
+  const p = TALLY_IMPORT.parsed;
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Step 4 — Commit target']));
+  const body = h('div', { class: 'panel-b' });
+
+  const fileOpen = !!STATE.fileHandle;
+  body.innerHTML = `
+    <p class="help">Where should the imported data land?</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+      <label style="border:2px solid ${TALLY_IMPORT.commitTarget === 'new' ? 'var(--saffron)' : 'var(--rule)'};border-radius:6px;padding:14px;cursor:pointer;display:block">
+        <input type="radio" name="ti-target" value="new"${TALLY_IMPORT.commitTarget === 'new' ? ' checked' : ''} style="margin-right:8px">
+        <b>Create new .khata file</b>
+        <div style="font-size:12px;color:var(--ink-2);margin-top:6px">Safer. The imported data lands in a fresh file. Recommended for first-time imports.</div>
+      </label>
+      <label style="border:2px solid ${TALLY_IMPORT.commitTarget === 'merge' ? 'var(--saffron)' : 'var(--rule)'};border-radius:6px;padding:14px;cursor:${fileOpen ? 'pointer' : 'not-allowed'};display:block;opacity:${fileOpen ? '1' : '0.5'}">
+        <input type="radio" name="ti-target" value="merge"${TALLY_IMPORT.commitTarget === 'merge' ? ' checked' : ''}${fileOpen ? '' : ' disabled'} style="margin-right:8px">
+        <b>Merge into currently-open file</b>
+        <div style="font-size:12px;color:var(--ink-2);margin-top:6px">${fileOpen ? `Adds the imported data to <b>${escapeHtml(STATE.manifest?.company?.name || 'the open file')}</b>. Customers and vendors will be deduped by GSTIN; voucher numbers will be prefixed <code>TALLY-</code> on collision.` : 'No file is currently open. Open one from Workspace first to enable merge.'}</div>
+      </label>
+    </div>
+  `;
+  panel.appendChild(body);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    document.querySelectorAll('input[name="ti-target"]').forEach(el => {
+      el.addEventListener('change', () => { TALLY_IMPORT.commitTarget = el.value; render(); });
+    });
+  }, 0);
+
+  // Merge-mode preview
+  if (TALLY_IMPORT.commitTarget === 'merge' && STATE.db) {
+    const mp = h('div', { class: 'panel', style: 'margin-top:14px' });
+    mp.appendChild(h('div', { class: 'panel-h' }, ['Merge preview']));
+    const mb = h('div', { class: 'panel-b' });
+
+    // Simulate dedupe counts
+    let custMatched = 0, custNew = 0;
+    const debtorGroups = new Set(p.groups.filter(g => resolveTallyGroup(g.name) === 'Sundry Debtors').map(g => g.name.toLowerCase()));
+    for (const l of p.ledgers) {
+      if (!debtorGroups.has((l.parent || '').toLowerCase())) continue;
+      let exists = false;
+      if (l.gstin) {
+        const r = STATE.db.exec('SELECT 1 FROM customers WHERE gstin = ? LIMIT 1', [l.gstin.toUpperCase()]);
+        exists = !!(r.length && r[0].values.length);
+      }
+      if (!exists) {
+        const r = STATE.db.exec('SELECT 1 FROM customers WHERE LOWER(name) = LOWER(?) LIMIT 1', [l.name]);
+        exists = !!(r.length && r[0].values.length);
+      }
+      if (exists) custMatched++; else custNew++;
+    }
+    let vendMatched = 0, vendNew = 0;
+    const creditorGroups = new Set(p.groups.filter(g => resolveTallyGroup(g.name) === 'Sundry Creditors').map(g => g.name.toLowerCase()));
+    for (const l of p.ledgers) {
+      if (!creditorGroups.has((l.parent || '').toLowerCase())) continue;
+      let exists = false;
+      if (l.gstin) {
+        const r = STATE.db.exec('SELECT 1 FROM vendors WHERE gstin = ? LIMIT 1', [l.gstin.toUpperCase()]);
+        exists = !!(r.length && r[0].values.length);
+      }
+      if (!exists) {
+        const r = STATE.db.exec('SELECT 1 FROM vendors WHERE LOWER(name) = LOWER(?) LIMIT 1', [l.name]);
+        exists = !!(r.length && r[0].values.length);
+      }
+      if (exists) vendMatched++; else vendNew++;
+    }
+
+    mb.innerHTML = `
+      <table class="dense">
+        <thead><tr><th>Category</th><th class="num">Will match</th><th class="num">Will create</th></tr></thead>
+        <tbody>
+          <tr><td>Customers</td><td class="num">${custMatched}</td><td class="num">${custNew}</td></tr>
+          <tr><td>Vendors</td><td class="num">${vendMatched}</td><td class="num">${vendNew}</td></tr>
+          <tr><td>Items</td><td class="num">—</td><td class="num">${p.stockItems.length}</td></tr>
+        </tbody>
+      </table>
+      <p class="help">Voucher number collisions will get a <code>TALLY-</code> prefix. The original Tally voucher numbers are preserved in the audit log payload.</p>
+    `;
+    mp.appendChild(mb);
+    main.appendChild(mp);
+  }
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const back = h('button', {}, ['← Back']);
+  back.onclick = () => { TALLY_IMPORT.step = 3; render(); };
+  const next = h('button', { class: 'primary' }, ['Continue → Preview']);
+  next.onclick = () => { TALLY_IMPORT.step = 5; render(); };
+  ctrls.appendChild(back);
+  ctrls.appendChild(next);
+  main.appendChild(ctrls);
+}
+
+function renderImportStep5(main) {
+  const p = TALLY_IMPORT.parsed;
+  let inRange = 0, unsupported = 0;
+  for (const v of p.vouchers) {
+    if (TALLY_IMPORT.dateFrom && v.date < TALLY_IMPORT.dateFrom) continue;
+    if (TALLY_IMPORT.dateTo && v.date > TALLY_IMPORT.dateTo) continue;
+    if (classifyTallyVoucherType(v.vchType) === 'unsupported') unsupported++;
+    else inRange++;
+  }
+  const debtorGroups = new Set(p.groups.filter(g => resolveTallyGroup(g.name) === 'Sundry Debtors').map(g => g.name.toLowerCase()));
+  const creditorGroups = new Set(p.groups.filter(g => resolveTallyGroup(g.name) === 'Sundry Creditors').map(g => g.name.toLowerCase()));
+  const customerCount = p.ledgers.filter(l => debtorGroups.has((l.parent || '').toLowerCase())).length;
+  const vendorCount = p.ledgers.filter(l => creditorGroups.has((l.parent || '').toLowerCase())).length;
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Step 5 — Dry run preview']));
+  const body = h('div', { class: 'panel-b' });
+  body.innerHTML = `
+    <p class="help">This is what will be imported. Review carefully — the commit cannot be undone except by restoring from a snapshot.</p>
+    <table class="dense" style="margin-top:10px">
+      <thead><tr><th>Category</th><th class="num">Count</th></tr></thead>
+      <tbody>
+        <tr><td><b>Customers</b></td><td class="num">${customerCount}</td></tr>
+        <tr><td><b>Vendors</b></td><td class="num">${vendorCount}</td></tr>
+        <tr><td><b>Items</b></td><td class="num">${p.stockItems.length}</td></tr>
+        <tr><td><b>Godowns</b></td><td class="num">${p.godowns.length}</td></tr>
+        <tr><td><b>Vouchers (in range, supported)</b></td><td class="num">${inRange}</td></tr>
+        <tr><td><b>Vouchers (in range, unsupported — will be skipped)</b></td><td class="num">${unsupported}</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:10px;font-size:11px;color:var(--ink-2)">Date range: <b>${escapeHtml(TALLY_IMPORT.dateFrom || '')}</b> → <b>${escapeHtml(TALLY_IMPORT.dateTo || '')}</b></p>
+    <p style="font-size:11px;color:var(--ink-2)">Commit target: <b>${TALLY_IMPORT.commitTarget === 'new' ? 'Create new .khata file' : 'Merge into ' + escapeHtml(STATE.manifest?.company?.name || 'open file')}</b></p>
+  `;
+  panel.appendChild(body);
+  main.appendChild(panel);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const back = h('button', {}, ['← Back']);
+  back.onclick = () => { TALLY_IMPORT.step = 4; render(); };
+  const commit = h('button', { class: 'primary', style: 'background:var(--alert);border-color:var(--alert)' }, ['Commit import']);
+  commit.onclick = doCommitTallyImport;
+  ctrls.appendChild(back);
+  ctrls.appendChild(commit);
+  main.appendChild(ctrls);
+}
+
+async function doCommitTallyImport() {
+  const p = TALLY_IMPORT.parsed;
+  try {
+    if (TALLY_IMPORT.commitTarget === 'new') {
+      // Create a new .khata file with the imported company info
+      const companyName = p.company.name || 'Imported from Tally';
+      const gstin = p.company.gstin || '';
+      let stateIso = null;
+      if (p.company.state) {
+        const row = STATE_LIST.find(s => s[2].toLowerCase() === p.company.state.toLowerCase());
+        if (row) stateIso = row[0];
+      }
+      // Use the existing file-create flow to get a fresh DB + handle
+      const wsId = await createNewKhataFile({
+        companyName, gstin, stateIso,
+        stateName: p.company.state || null,
+        gstinStateCode: stateIso ? STATE_BY_ISO.get(stateIso)[1] : null,
+        trade_name: '', company_type: 'proprietorship', tan: '',
+        address: p.company.address || '',
+        fy_start: nowIso().slice(0, 4) + '-04-01',
+        ui_tier: 'goods',
+        composition: { enabled: false, type: '', rate: 0 },
+      });
+      if (!wsId) { toast('Import cancelled — file not created', 'err'); return; }
+      // Open the new file (this sets STATE.db, STATE.fileHandle, STATE.manifest)
+      const w = (await listWorkspace()).find(x => x.id === wsId);
+      if (!w) { toast('Workspace entry missing — please reopen Bahi', 'err'); return; }
+      await openHandle(w.handle, wsId);
+      // Now run the import against the freshly-opened DB
+      TALLY_IMPORT.resultCtx = await runTallyImport(STATE.db, p, TALLY_IMPORT.mapping, {
+        mode: 'new',
+        dateFrom: TALLY_IMPORT.dateFrom,
+        dateTo: TALLY_IMPORT.dateTo,
+      });
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { toast('Saved with errors — please review', 'err'); }
+    } else {
+      // Merge into the currently-open file
+      if (!STATE.db) { toast('No file open', 'err'); return; }
+      TALLY_IMPORT.resultCtx = await runTallyImport(STATE.db, p, TALLY_IMPORT.mapping, {
+        mode: 'merge',
+        dateFrom: TALLY_IMPORT.dateFrom,
+        dateTo: TALLY_IMPORT.dateTo,
+      });
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { toast('Saved with errors — please review', 'err'); }
+    }
+    TALLY_IMPORT.step = 6;
+    render();
+  } catch (e) {
+    console.error(e);
+    toast('Import failed: ' + e.message, 'err');
+  }
+}
+
+function renderImportStep6(main) {
+  const ctx = TALLY_IMPORT.resultCtx;
+  if (!ctx) {
+    main.appendChild(h('div', { class: 'empty' }, ['No result yet — commit failed.']));
+    return;
+  }
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Step 6 — Import complete ✓']));
+  const body = h('div', { class: 'panel-b' });
+
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Category</th><th class="num">Created</th><th class="num">Matched / merged</th></tr></thead>';
+  const tbody = h('tbody');
+  function row(label, created, matched) {
+    const tr = h('tr');
+    tr.innerHTML = `<td>${escapeHtml(label)}</td><td class="num"><b>${created}</b></td><td class="num">${matched != null ? matched : '—'}</td>`;
+    tbody.appendChild(tr);
+  }
+  row('Customers', ctx.customers.created, ctx.customers.matched);
+  row('Vendors', ctx.vendors.created, ctx.vendors.matched);
+  row('Items', ctx.items.created, ctx.items.matched);
+  row('  ↳ auto-cleaned to services', ctx.items.asService, null);
+  row('Godowns', ctx.godowns.created, ctx.godowns.matched);
+  row('Invoices', ctx.invoices, null);
+  row('Purchases', ctx.purchases, null);
+  row('Payments / receipts', ctx.payments, null);
+  row('Journal vouchers', ctx.journals, null);
+  row('Credit notes', ctx.creditNotes, null);
+  row('Debit notes', ctx.debitNotes, null);
+  tbl.appendChild(tbody);
+  body.appendChild(tbl);
+
+  // Warnings
+  if (ctx.warnings.costCentres > 0) {
+    body.appendChild(h('p', { style: 'margin-top:10px;color:var(--saffron-deep);font-size:12px' }, [
+      `⚠ ${ctx.warnings.costCentres} voucher(s) had cost-centre allocations — these were ignored per spec.`,
+    ]));
+  }
+  if (ctx.warnings.multiCurrency > 0) {
+    body.appendChild(h('p', { style: 'color:var(--saffron-deep);font-size:12px' }, [
+      `⚠ ${ctx.warnings.multiCurrency} voucher(s) had non-INR currency tags — values were taken at face from the INR column.`,
+    ]));
+  }
+
+  // Skipped
+  if (ctx.skipped.length) {
+    body.appendChild(h('h3', { style: 'margin-top:14px;font-size:13px;color:var(--alert)' }, [`Skipped vouchers (${ctx.skipped.length})`]));
+    const stbl = h('table', { class: 'dense' });
+    stbl.innerHTML = '<thead><tr><th>Voucher #</th><th>Reason</th></tr></thead>';
+    const stbody = h('tbody');
+    for (const s of ctx.skipped.slice(0, 50)) {
+      const tr = h('tr');
+      tr.innerHTML = `<td><code>${escapeHtml(s.vchNo || '(no number)')}</code></td><td>${escapeHtml(s.reason)}</td>`;
+      stbody.appendChild(tr);
+    }
+    if (ctx.skipped.length > 50) {
+      const tr = h('tr');
+      tr.innerHTML = `<td colspan="2"><i>… and ${ctx.skipped.length - 50} more (download report for full list)</i></td>`;
+      stbody.appendChild(tr);
+    }
+    stbl.appendChild(stbody);
+    body.appendChild(stbl);
+  }
+
+  // Unsupported voucher types
+  if (Object.keys(ctx.unsupported).length) {
+    body.appendChild(h('h3', { style: 'margin-top:14px;font-size:13px' }, ['Unsupported voucher types']));
+    const utbl = h('table', { class: 'dense' });
+    utbl.innerHTML = '<thead><tr><th>Type</th><th class="num">Count</th></tr></thead>';
+    const utbody = h('tbody');
+    for (const [t, c] of Object.entries(ctx.unsupported)) {
+      const tr = h('tr');
+      tr.innerHTML = `<td>${escapeHtml(t)}</td><td class="num">${c}</td>`;
+      utbody.appendChild(tr);
+    }
+    utbl.appendChild(utbody);
+    body.appendChild(utbl);
+  }
+
+  panel.appendChild(body);
+  main.appendChild(panel);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const dl = h('button', {}, ['Download import report']);
+  dl.onclick = async () => {
+    try {
+      const report = {
+        source: TALLY_IMPORT.filename,
+        sourceCompany: TALLY_IMPORT.parsed.company.name,
+        sourceGstin: TALLY_IMPORT.parsed.company.gstin,
+        importedAt: nowIso(),
+        mode: TALLY_IMPORT.commitTarget,
+        dateFrom: TALLY_IMPORT.dateFrom,
+        dateTo: TALLY_IMPORT.dateTo,
+        result: ctx,
+      };
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `tally-import-report-${nowIso().replace(/[:.]/g, '-').slice(0, 19)}.json`,
+        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+      });
+      const w = await handle.createWritable(); await w.write(blob); await w.close();
+      toast(`Saved ${handle.name}`, 'ok');
+    } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+  };
+  const goDash = h('button', { class: 'primary' }, ['Go to dashboard →']);
+  goDash.onclick = () => { resetTallyImport(); nav('#/dashboard'); };
+  ctrls.appendChild(dl);
+  ctrls.appendChild(goDash);
+  main.appendChild(ctrls);
+}
+
+//------------------------------------------------------------
 // === View: Debug Console (the acceptance gate) ===
 //------------------------------------------------------------
 
@@ -13009,7 +14534,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">Phase 4 · goods SMB tier (inventory engine, WAC + FIFO + batches, godowns, delivery challans, e-way bills, inter-GSTIN stock transfers)</div>
+      <div class="k">Bahi version</div><div class="v">Phase 5 · Tally XML importer (Tally Prime + ERP 9 parser, 6-step wizard, both create-new and merge-into-existing commit targets)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>
@@ -13203,7 +14728,8 @@ function renderSettings(main) {
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 2B coming next:</b> dashboard (receivables aging, cashflow, recent activity), GSTR-1 JSON export, advance receipts with GST on advance, multiple invoice series (domestic / export / SEZ / bill of supply), composition scheme handling, first-run onboarding screen, PAN-aware multi-GSTIN copy-from-existing wizard, Devanagari font lazy-load for PDF (Phase 2B.3).</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 3 — Service SMB tier (this build).</b> <b>Vendor master</b> mirrors customers, with RCM-applicable + default TDS section flags. <b>Purchases</b> with internal ref (PUR/{FY}/{NNNN}), vendor's bill number, place-of-supply state routing, RCM toggle (auto-routes to GST RCM Input/Output sub-accounts), ITC eligible flag (motor vehicles, club fees, etc. blocked-credit support), per-rate sub-account auto-create. <b>Credit notes</b> (against invoices) and <b>debit notes</b> (against purchases) with full-reversal or partial-amount modes; both inherit company + customer/vendor snapshots from the parent so reprints stay historically correct. <b>Journal voucher</b> form for free-form double-entry adjustments. <b>Reports</b>: Trial Balance, Balance Sheet (with tie check + period-profit rollup), Day Book, Account Ledger (per-account with running balance), Sales Register, Purchase Register. <b>GSTR-3B</b> summary view (Section 3.1 outward + 3.1d RCM + Section 4 ITC + net liability) with JSON + CSV download. <b>FY rollover wizard</b>: preview net profit/loss, post system-generated closing entries that zero out income/expense accounts → P&amp;L Summary → Capital Account, recorded in <code>fy_closings</code>. <b>Period locks</b> for marking GSTR-1 / GSTR-3B / CMP-08 / 26Q / 27EQ as filed. <b>Tax payment challans</b> templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, and a custom builder.</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 4 — Goods SMB tier (this build).</b> <b>Schema v7</b>: items get inventory columns (enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor, opening_stock_qty/value); 8 new tables (godowns, batches, stock_movements, delivery_challans + lines, eway_bills, stock_transfers). <b>Stock movement engine</b> with both Weighted Average Cost AND First-In-First-Out (selectable per item), plus opt-in named-batch tracking for pharma/electronics/perishables. Posting hooks on invoice / purchase / credit note / debit note auto-decrement and increment stock when items have inventory enabled; service-only items see zero behaviour change. Each invoice posts a separate Dr Cost of Goods Sold / Cr Stock-in-Hand journal at the computed COGS rate. <b>Single auto-seeded "Main" godown</b> with multi-godown UI accessible via sidebar. <b>Reports</b>: Inventory dashboard (KPIs + reorder + aging summary), Stock on hand, Stock movements, Stock register (per-item movement walkthrough with running qty), Batches list, Valuation summary, Reorder alerts, Stock aging (0–30/31–60/61–90/90+ buckets). Stock-in-Hand and Cost of Goods Sold flow into the existing Balance Sheet and P&amp;L automatically. <b>Delivery challans</b> (outward job-work / sample / return + inward return) with stock movement but no GL posting. <b>E-way bills</b> with NIC bulk-upload JSON export + printable PDF (with QR placeholder for the EWB number); generated from any invoice or delivery challan; "mark as generated" workflow lets you re-export the PDF with the real EWB number after portal submission. <b>Inter-GSTIN stock transfers</b> (same legal entity, different GSTINs) with cross-file JSON export from the sender side and import on the receiver side.</p>
-    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 5+:</b> Tally import (XML parser + mapping UI) → CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass + dark mode + undo stack + landing page → launch.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 5 — Tally XML importer (this build).</b> Permissive parser handles both Tally Prime and Tally ERP 9 (browser-native DOMParser, no CDN deps). Walks Masters (Groups, Ledgers, Stock Items, Units, Godowns) and Vouchers (Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note + their variants). 6-step wizard: <b>(1) File summary</b> with format detection, voucher type breakdown and supported/unsupported flags; <b>(2) Date range</b> filter with live in-range counter; <b>(3) Mapping review</b> — auto-suggests for 25+ standard Tally groups, hard-blocks Continue until every user-created group is resolved; <b>(4) Commit target</b> — Create new .khata file OR Merge into currently-open file (radio cards, merge mode shows live customer/vendor dedupe preview by GSTIN+name); <b>(5) Dry run preview</b> with category counts; <b>(6) Result</b> with full breakdown including auto-cleaned-as-services, cost-centre warnings, multi-currency warnings, skipped vouchers with reasons, and unsupported voucher types. Single SQL transaction wraps the entire import — any failure rolls back cleanly. <code>tally.import.start</code> / <code>tally.import.commit</code> / <code>tally.import.failed</code> audit log entries make every import forensically discoverable. The importer never bypasses the existing posting bridges — every imported invoice goes through <code>postInvoiceToLedger</code>, every purchase through <code>postPurchaseToLedger</code>, every journal through <code>postEntry</code>, so the snapshot pattern and stock effects fire automatically. Voucher number collisions in merge mode get a <code>TALLY-</code> prefix.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 6+:</b> CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → keyboard shortcuts pass + dark mode + undo stack + landing page → launch.</p>
   `;
   notes.appendChild(nb);
   main.appendChild(notes);

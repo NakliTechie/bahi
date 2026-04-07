@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
-<title>Bahi — Browser-native accounting · Phase 8A</title>
+<title>Bahi — Browser-native accounting · Phase 8A.2</title>
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -128,6 +128,16 @@ textarea{font-family:'SF Mono',Monaco,'Cascadia Code',Consolas,monospace;font-si
   text-transform:uppercase;letter-spacing:0.8px;
   color:var(--ink-2);font-weight:700;
 }
+/* Phase 8A.2 — sidebar search (BOFH pattern) */
+.sidebar-search{padding:10px 12px;border-bottom:1px solid var(--ash-2);background:var(--white)}
+.sidebar-search input{
+  width:100%;padding:6px 10px;font-size:12px;
+  background:var(--ash);border:1px solid var(--rule);border-radius:4px;
+  color:var(--ink);outline:none;
+}
+.sidebar-search input:focus{border-color:var(--saffron)}
+.sidebar a.hidden,.sidebar h4.hidden{display:none}
+.sidebar a mark{background:var(--saffron);color:var(--white);padding:0 2px;border-radius:2px}
 /* Phase 6: CA-mode-only sidebar items. Hidden in owner mode via body class. */
 body:not(.ca-mode) .sidebar .ca-only { display:none; }
 body.ca-mode .sidebar h4.ca-only { color:var(--saffron-deep); }
@@ -275,7 +285,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 <div id="app">
 
   <header class="topbar">
-    <div class="brand">Bahi <span class="sub">Phase 8A · CA-handoff feature complete</span></div>
+    <div class="brand">Bahi <span class="sub">Phase 8A.2 · CA-handoff polish + sidebar search</span></div>
     <span id="mode-badge" class="mode-badge owner" title="Click to switch mode">OWNER</span>
     <div id="company-switcher" style="display:none;position:relative">
       <button id="company-switcher-btn" class="small" style="display:flex;align-items:center;gap:6px"></button>
@@ -294,6 +304,9 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
   <div class="body-grid">
 
     <nav class="sidebar">
+      <div class="sidebar-search">
+        <input id="bahi-search" type="search" placeholder="Search menu &amp; actions…" autocomplete="off" spellcheck="false">
+      </div>
       <h4>Workspace</h4>
       <a href="#/workspace" data-route="#/workspace">Workspace</a>
       <a href="#/file" data-route="#/file">Current file</a>
@@ -334,6 +347,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/payments" data-route="#/payments">Payments</a>
       <a href="#/payment/new" data-route="#/payment/new">+ Record receipt</a>
       <a href="#/vendor-payment/new" data-route="#/vendor-payment/new">+ Pay vendor (TDS)</a>
+      <a href="#/tcs-collection/new" data-route="#/tcs-collection/new">+ Record TCS collection</a>
       <a href="#/advances" data-route="#/advances">Advances</a>
       <a href="#/advance/new" data-route="#/advance/new">+ Advance receipt</a>
       <a href="#/journal/new" data-route="#/journal/new">+ Journal voucher</a>
@@ -1469,18 +1483,47 @@ function getRateById(rateId) {
   return REF.gstRates.data.find(r => r.rateId === rateId) || null;
 }
 
+// Normalise an HSN dataset entry to a uniform shape regardless of source.
+// The bundled HSN_SEED uses [code, description, history[]] (array of arrays).
+// The khata-standard CBIC scrape uses {hsn, description, rateId, rateAsOf} (array of objects).
+// Returns { code, description, rateId, history } where history is always an array (may be empty).
+function normaliseHsnEntry(entry) {
+  if (!entry) return null;
+  if (Array.isArray(entry)) {
+    return { code: entry[0], description: entry[1], rateId: null, history: entry[2] || [] };
+  }
+  if (typeof entry === 'object') {
+    return {
+      code: entry.hsn || entry.sac || entry.code,
+      description: entry.description || entry.desc || '',
+      rateId: entry.rateId || null,
+      history: entry.history || (entry.rateId ? [{ rateId: entry.rateId, validFrom: entry.rateAsOf || '2017-07-01', validTo: null }] : []),
+    };
+  }
+  return null;
+}
+
+function findHsnEntry(hsnSac) {
+  if (!hsnSac) return null;
+  const all = (REF.hsnCommon.data || []).concat(REF.sacCommon.data || []);
+  for (const e of all) {
+    const norm = normaliseHsnEntry(e);
+    if (norm && norm.code === hsnSac) return norm;
+  }
+  return null;
+}
+
 // Resolve the active rate for an HSN/SAC code on a given date. Walks the per-HSN
 // rate history. Returns null if the code isn't in the bundled seed (which is fine —
 // the user may type any HSN; only known codes get auto-suggested rates).
 function getActiveHsnRate(hsnSac, date) {
   if (!hsnSac) return null;
   const d = (date || nowIso()).slice(0, 10);
-  const all = REF.hsnCommon.data.concat(REF.sacCommon.data);
-  const found = all.find(([code]) => code === hsnSac);
+  const found = findHsnEntry(hsnSac);
   if (!found) return null;
-  const history = found[2] || [];
+  const history = found.history || [];
   for (const h of history) {
-    if (h.validFrom <= d && (h.validTo === null || h.validTo === undefined || h.validTo >= d)) {
+    if ((h.validFrom || '2017-07-01') <= d && (h.validTo === null || h.validTo === undefined || h.validTo >= d)) {
       const rec = getRateById(h.rateId);
       if (rec) return { rateId: h.rateId, rate: rec.rate, decimalRate: rec.rate / 100, description: rec.description };
     }
@@ -1491,9 +1534,8 @@ function getActiveHsnRate(hsnSac, date) {
 // Look up an HSN/SAC description (for backfill or programmatic uses).
 function getHsnDescription(hsnSac) {
   if (!hsnSac) return null;
-  const all = REF.hsnCommon.data.concat(REF.sacCommon.data);
-  const found = all.find(([code]) => code === hsnSac);
-  return found ? found[1] : null;
+  const found = findHsnEntry(hsnSac);
+  return found ? found.description : null;
 }
 
 // Match a literal decimal tax rate (e.g., 0.18) back to its forensic rateId for the
@@ -2253,6 +2295,139 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
 // Honors Tally's well-known keys where the browser doesn't hijack them. Where Tally
 // uses a key the browser owns (F11=fullscreen, F12=DevTools), we map Alt+F11/Alt+F12
 // per spec §11. Bahi-specific shortcuts use the Ctrl+Shift+X namespace.
+// === Phase 8A.2 — Sidebar search (BOFH pattern, action-aware) ===
+//
+// Each route entry has a label, group, optional keywords, and an `actions` array
+// listing the things the user can DO when they click into that route. The search
+// matches across all four. Result: typing "send invoice" finds the invoice form,
+// typing "tds" finds Form 26Q, typing "rent" finds the journal voucher form, etc.
+//
+// This is augmentative — the static sidebar HTML stays where it is; we just attach
+// data-haystack to each <a> at boot time and let the search filter via class toggles.
+const ROUTE_INDEX = {
+  '#/workspace':              { name: 'Workspace', group: 'Workspace', keywords: ['list','companies','clients','open','create'], actions: ['create new khata','open existing khata','restore from backup','import from tally'] },
+  '#/file':                   { name: 'Current file', group: 'Workspace', keywords: ['file','manifest','company','close'], actions: ['view manifest','edit company details','close file','file info','last saved'] },
+  '#/dashboard':              { name: 'Dashboard', group: 'Workspace', keywords: ['home','kpi','overview'], actions: ['cashflow','receivables aging','gst liability','top customers','recent activity','backup nudge','crash recovery banner'] },
+  '#/customers':              { name: 'Customers', group: 'Masters', keywords: ['debtors','party','client','buyer'], actions: ['add customer','edit customer','customer outstanding','gstin','pan','state','opening balance'] },
+  '#/vendors':                { name: 'Vendors', group: 'Masters', keywords: ['creditors','supplier','party'], actions: ['add vendor','edit vendor','rcm flag','tds section','opening balance','vendor outstanding'] },
+  '#/items':                  { name: 'Items / services', group: 'Masters', keywords: ['products','goods','service','sku','hsn','sac','rate'], actions: ['add item','edit item','goods or service','hsn sac','enable inventory','wac fifo valuation','batch tracking','reorder level','preferred vendor','opening stock'] },
+  '#/series':                 { name: 'Invoice series', group: 'Masters', keywords: ['series','prefix','numbering','domestic','export','sez'], actions: ['add invoice series','edit prefix','reset on fy','default for'] },
+  '#/invoices':               { name: 'Invoices', group: 'Sales', keywords: ['sales','tax invoice','bills','b2b','b2c'], actions: ['list invoices','print pdf','view lines','status badges','filter by date'] },
+  '#/invoice/new':            { name: '+ New invoice', group: 'Sales', keywords: ['create invoice','sale','tax invoice','bill of supply','b2b','b2c','export','sez'], actions: ['raise sales invoice','pick customer','add line item','apply gst','intra state cgst sgst','inter state igst','place of supply','apply advance','composition mode','print pdf'] },
+  '#/credit-notes':           { name: 'Credit notes', group: 'Sales', keywords: ['sales return','reversal','adjustment'], actions: ['list credit notes','filter','status'] },
+  '#/credit-note/new':        { name: '+ New credit note', group: 'Sales', keywords: ['sales return','refund','reversal','adjust'], actions: ['create credit note','full reversal','partial reversal','reason','sales return','rate difference','discount','deficiency','inherit invoice snapshot'] },
+  '#/purchases':              { name: 'Purchases', group: 'Purchases', keywords: ['vendor bills','expenses','itc'], actions: ['list purchases','filter','rcm flag','itc eligibility'] },
+  '#/purchase/new':           { name: '+ New purchase', group: 'Purchases', keywords: ['vendor bill','expense','rcm','itc','reverse charge'], actions: ['record purchase','pick vendor','vendor bill number','reverse charge mechanism','itc eligible','blocked credit','place of supply','add line item'] },
+  '#/debit-notes':            { name: 'Debit notes', group: 'Purchases', keywords: ['purchase return','reversal','adjustment'], actions: ['list debit notes','filter','status'] },
+  '#/debit-note/new':         { name: '+ New debit note', group: 'Purchases', keywords: ['purchase return','reversal','adjust'], actions: ['create debit note','full reversal','partial reversal','reason','quality issue','rate difference'] },
+  '#/inventory':              { name: 'Inventory dashboard', group: 'Inventory', keywords: ['stock','warehouse'], actions: ['stock value','reorder alerts','expired batches','aged stock','top movers'] },
+  '#/stock-on-hand':          { name: 'Stock on hand', group: 'Inventory', keywords: ['current stock','quantity','closing stock'], actions: ['per item per godown stock','closing balance','quantity'] },
+  '#/stock-movements':        { name: 'Stock movements', group: 'Inventory', keywords: ['stock log','movement history','in out'], actions: ['view movement log','filter by item','filter by date','inward outward'] },
+  '#/stock-register':         { name: 'Stock register', group: 'Inventory', keywords: ['per item walkthrough','running balance'], actions: ['per item movement walkthrough','running quantity','running value','date range filter'] },
+  '#/batches':                { name: 'Batches', group: 'Inventory', keywords: ['lot','expiry','mfg date','batch tracking'], actions: ['list open batches','expiry warning','batch number','mfg date','wac vs fifo'] },
+  '#/valuation-summary':      { name: 'Valuation summary', group: 'Inventory', keywords: ['stock value','wac','fifo','closing'], actions: ['per item closing valuation','wac vs fifo','total stock value','feeds balance sheet'] },
+  '#/reorder-alerts':         { name: 'Reorder alerts', group: 'Inventory', keywords: ['low stock','reorder','restock'], actions: ['items below reorder level','create purchase from preferred vendor','short by'] },
+  '#/stock-aging':            { name: 'Stock aging', group: 'Inventory', keywords: ['old stock','dead stock','obsolete'], actions: ['aging buckets','0-30','31-60','61-90','90 plus','fifo batch only'] },
+  '#/godowns':                { name: 'Godowns', group: 'Inventory', keywords: ['warehouse','location','depot'], actions: ['add godown','edit godown','set default','multi godown'] },
+  '#/delivery-challans':      { name: 'Delivery challans', group: 'Inventory', keywords: ['dc','stock movement','sample','job work','return'], actions: ['list challans','status filter','convert to invoice'] },
+  '#/delivery-challan/new':   { name: '+ New delivery challan', group: 'Inventory', keywords: ['dc','stock out','sample','job work','return','vehicle','transporter'], actions: ['create delivery challan','outward job work','outward sample','outward return','inward return','vehicle number','transporter','returnable','expected return date'] },
+  '#/eway-bills':             { name: 'E-way bills', group: 'Inventory', keywords: ['ewb','eway','transport','goods movement'], actions: ['list eway bills','filter','status draft generated','jump to detail'] },
+  '#/eway-bill/new':          { name: '+ New e-way bill', group: 'Inventory', keywords: ['ewb','eway','nic','transport','vehicle','distance'], actions: ['generate eway bill','from invoice','from delivery challan','transporter id','vehicle no','distance km','mode road rail air ship','reason code','nic json','printable pdf','mark as generated'] },
+  '#/stock-transfers':        { name: 'Stock transfers', group: 'Inventory', keywords: ['inter gstin','branch','multi gstin','same legal entity'], actions: ['list stock transfers','direction in out','filter'] },
+  '#/stock-transfer/out/new': { name: '+ Transfer (out)', group: 'Inventory', keywords: ['inter gstin out','sender','branch transfer'], actions: ['outbound stock transfer','receiver gstin','receiver state','igst','raise tax invoice','export json'] },
+  '#/stock-transfer/in/import': { name: 'Transfer (in / import)', group: 'Inventory', keywords: ['inter gstin in','receiver','branch transfer','import json'], actions: ['import inbound stock transfer','json file','convert to purchase'] },
+  '#/payments':               { name: 'Payments', group: 'Money', keywords: ['receipt','payment','collection','cash'], actions: ['list payments','allocations','filter','direction in out'] },
+  '#/payment/new':            { name: '+ Record receipt', group: 'Money', keywords: ['receipt','collection','customer payment','allocation','fifo','bank','cheque','utr','upi','neft'], actions: ['record customer receipt','allocate to invoices','fifo allocation','quick add bank','mode neft rtgs imps upi cheque cash','reference utr','outstanding'] },
+  '#/vendor-payment/new':     { name: '+ Pay vendor (TDS)', group: 'Money', keywords: ['vendor payment','pay supplier','tds','withholding','194c','194j','194i','194h'], actions: ['pay vendor','tds auto deduct','tds section','tds rate','net to vendor','sundry creditors','bank','tds payable','194c','194j','contractor','professional','rent'] },
+  '#/tcs-collection/new':     { name: '+ Record TCS collection', group: 'Money', keywords: ['tcs','206c','collection','sale of goods','threshold','withholding'], actions: ['record tcs collection','section 206c','sale of goods','206c(1h)','rate','customer pan','linked invoice','manual entry','feeds 27eq'] },
+  '#/advances':               { name: 'Advances', group: 'Money', keywords: ['advance receipt','prepayment','customer advance'], actions: ['list advances','status open partial fully adjusted refunded','filter'] },
+  '#/advance/new':            { name: '+ Advance receipt', group: 'Money', keywords: ['advance','prepayment','at table 11a','gst on advance'], actions: ['record advance receipt','gst routing','back calculate taxable','intra state inter state','customer advances received'] },
+  '#/journal/new':            { name: '+ Journal voucher', group: 'Money', keywords: ['journal','jv','adjustment','contra','manual entry','depreciation','prepaid','accrual'] , actions: ['post journal voucher','double entry','dr cr','free form','adjustment','depreciation','prepaid','outstanding','accrual','contra','bank to cash','bank to bank']},
+  '#/bank-reconcile':         { name: 'Bank reconciliation', group: 'Money', keywords: ['bank','reconcile','statement','match','clear','tally check'], actions: ['manual bank reconciliation','match statement','cleared checkboxes','closing balance','book balance','statement balance','difference','uncleared','save reconciliation'] },
+  '#/day-book':               { name: 'Day book', group: 'Reports', keywords: ['daily','vouchers','chronological','transactions list'], actions: ['view daily voucher list','date range','total','filter'] },
+  '#/account-ledger':         { name: 'Account ledger', group: 'Reports', keywords: ['ledger','t account','running balance','per account'], actions: ['account ledger view','per account walkthrough','running balance','date range','filter'] },
+  '#/trial-balance':          { name: 'Trial balance', group: 'Reports', keywords: ['tb','accounts','dr cr','tie check','balanced'], actions: ['trial balance','as of date','tie check','total dr cr','out of balance warning'] },
+  '#/balance-sheet':          { name: 'Balance sheet', group: 'Reports', keywords: ['bs','assets','liabilities','equity','financial position'], actions: ['balance sheet','assets','liabilities','equity','tie check','as of date','current period profit','stock in hand'] },
+  '#/pnl':                    { name: 'P&L summary', group: 'Reports', keywords: ['profit and loss','income expense','net profit','net loss'], actions: ['profit and loss summary','total income','total expense','net profit','income breakdown','expense breakdown','cost of goods sold'] },
+  '#/sales-register':         { name: 'Sales register', group: 'Reports', keywords: ['sales report','invoice register','b2b b2c'], actions: ['sales register','date range','customer','place of supply','taxable cgst sgst igst total'] },
+  '#/purchase-register':      { name: 'Purchase register', group: 'Reports', keywords: ['purchase report','vendor bills','itc'], actions: ['purchase register','date range','vendor','rcm flag','taxable cgst sgst igst total'] },
+  '#/gstr1':                  { name: 'GSTR-1', group: 'Compliance', keywords: ['gstr1','outward supplies','b2b','b2cl','b2cs','hsn','at','txp','json upload','gstn portal'], actions: ['gstr-1 monthly outward supplies','b2b b2cl b2cs','hsn summary','at advance received','txp adjustment','json portal upload','csv summary','validation errors','period picker'] },
+  '#/gstr3b':                 { name: 'GSTR-3B', group: 'Compliance', keywords: ['gstr3b','monthly summary','rcm','itc','net liability'], actions: ['gstr-3b monthly summary','section 3.1 outward','section 3.1d rcm inward','section 4 itc','net liability','json export','csv summary'] },
+  '#/cmp08':                  { name: 'CMP-08', group: 'Compliance', keywords: ['composition','quarterly','section 10','aggregate turnover'], actions: ['cmp-08 quarterly composition return','quarter picker','aggregate turnover','tax payable','composition rate','json csv download'] },
+  '#/form-26q':               { name: 'Form 26Q (TDS)', group: 'Compliance', keywords: ['tds','26q','quarterly tds return','nsdl','tin fuf','withholding','194c','194j'], actions: ['form 26q quarterly tds return','section breakdown','validation errors','nsdl csv export','quarter picker','total tds','total taxable'] },
+  '#/form-27eq':              { name: 'Form 27EQ (TCS)', group: 'Compliance', keywords: ['tcs','27eq','quarterly tcs return','nsdl','206c'], actions: ['form 27eq quarterly tcs return','section 206c','total tcs','nsdl csv export','quarter picker'] },
+  '#/form-27d':               { name: 'Form 27D certificates', group: 'Compliance', keywords: ['tds certificate','27d','deductee','vendor certificate'], actions: ['form 27d tds certificate','per vendor pdf','quarter picker','deductee block','deductor letterhead','deduction table'] },
+  '#/tax-challans':           { name: 'Tax challans', group: 'Compliance', keywords: ['pmt-06','drc-03','itns','280','281','282','283','ecr','esi','ptrc','ptec','lwf','tax payment'], actions: ['tax payment challans','pmt-06 gst monthly','drc-03 voluntary','itns 280 advance','itns 281 tds','itns 282','itns 283','ecr epf','esi','ptrc maharashtra professional tax','lwf labour welfare fund','custom challan','json export'] },
+  '#/period-locks':           { name: 'Period locks', group: 'Compliance', keywords: ['lock','filed','amendment','return filed'], actions: ['lock period after return filed','gstr1 gstr3b cmp08 gstr4 26q 27eq','mark as filed','amendment tracking'] },
+  '#/fy-rollover':            { name: 'FY rollover', group: 'Compliance', keywords: ['year end','closing','financial year','net profit transfer'], actions: ['financial year rollover wizard','preview net profit loss','year end closing entries','zero out income expense','transfer to capital account','closed years history'] },
+  '#/ca/review':              { name: 'Client review', group: 'CA mode', keywords: ['ca','review','unreviewed','sign off','client'], actions: ['ca review interface','unreviewed entries by voucher type','bulk mark reviewed','per row reviewed','inline annotation widget','client'] },
+  '#/ca/adjustment/new':      { name: '+ Adjustment voucher', group: 'CA mode', keywords: ['ca','adjustment','year end','depreciation','prepaid','outstanding','accrual'], actions: ['ca adjustment journal voucher','adjustment type picker','year end depreciation prepaid outstanding accrual','actor ca','ca.adjustment audit'] },
+  '#/annotations':            { name: 'Annotations', group: 'CA mode', keywords: ['notes','todo','flag','missing bill','confirm','reclassified','review notes'], actions: ['ca annotations','filter open resolved','add note','resolve note','target type','ca name firm membership snapshot'] },
+  '#/ca/report':              { name: 'Review report', group: 'CA mode', keywords: ['ca review report','pdf','letterhead','trial balance','pnl','balance sheet','observations'], actions: ['ca review report pdf','firm letterhead','trial balance','pnl','balance sheet','adjustments','observations','generate pdf'] },
+  '#/reconcile':              { name: 'Reconciliation', group: 'CA mode', keywords: ['merge','divergent','ancestry','side by side','parent hashes'], actions: ['reconciliation view','side by side checkbox merging','divergent branches','common ancestor','build merged file','parent hashes audit log replay'] },
+  '#/debug':                  { name: 'Debug console', group: 'Dev', keywords: ['debug','sql','audit','round trip','engine','low level'], actions: ['debug console','post entry','ledger view','snapshot panel','integrity checks','audit log viewer','manifest viewer','raw sql','round trip test'] },
+  '#/ref-data-update':        { name: 'Reference data updates', group: 'Dev', keywords: ['ref data','cdn','khata standard','update','hsn','gst rates','tds sections'], actions: ['reference data updates','fetch from khata standard cdn','sha-256 verification','update hsn','update gst rates','update tds sections','update sac','update states','persist per file'] },
+  '#/settings':               { name: 'Settings', group: 'Dev', keywords: ['settings','preferences','config','theme','mode','ca profile','safety','phase scope','crash recovery'], actions: ['theme picker','mode switcher','ca profile','safety failure modes','phase scope','crash recovery','last backup','undo stack','manifest viewer','reference data updates'] },
+};
+
+function buildSearchHaystack(routeMeta) {
+  const parts = [
+    routeMeta.name || '',
+    routeMeta.group || '',
+    (routeMeta.keywords || []).join(' '),
+    (routeMeta.actions || []).join(' '),
+  ];
+  return parts.join(' ').toLowerCase();
+}
+
+// Attach data-haystack attributes to every sidebar <a> at boot. Idempotent.
+function annotateSidebar() {
+  const links = document.querySelectorAll('.sidebar a[data-route]');
+  for (const a of links) {
+    const route = a.getAttribute('data-route');
+    const meta = ROUTE_INDEX[route];
+    if (!meta) continue;
+    a.setAttribute('data-haystack', buildSearchHaystack(meta));
+    a.setAttribute('data-name', meta.name || a.textContent);
+  }
+}
+
+// BOFH-style filter. Toggles .hidden on items + group headings.
+// Highlights matches in the visible label via <mark>.
+function filterSidebar(q) {
+  q = (q || '').trim().toLowerCase();
+  const links = document.querySelectorAll('.sidebar a[data-route]');
+  for (const a of links) {
+    const haystack = a.getAttribute('data-haystack') || '';
+    const name = a.getAttribute('data-name') || '';
+    const match = !q || haystack.includes(q);
+    a.classList.toggle('hidden', !match);
+    if (!q) { a.textContent = name; continue; }
+    const idx = name.toLowerCase().indexOf(q);
+    if (idx >= 0) {
+      a.innerHTML = '';
+      a.appendChild(document.createTextNode(name.slice(0, idx)));
+      const m2 = document.createElement('mark');
+      m2.textContent = name.slice(idx, idx + q.length);
+      a.appendChild(m2);
+      a.appendChild(document.createTextNode(name.slice(idx + q.length)));
+    } else {
+      a.textContent = name;
+    }
+  }
+  // Hide group headings whose group has zero visible items
+  const headings = document.querySelectorAll('.sidebar h4');
+  for (const h of headings) {
+    let n = h.nextElementSibling;
+    let visible = 0;
+    while (n && n.tagName === 'A') {
+      if (!n.classList.contains('hidden')) visible++;
+      n = n.nextElementSibling;
+    }
+    h.classList.toggle('hidden', visible === 0);
+  }
+}
+
 const SHORTCUTS = [
   // Vouchers (Tally function keys)
   { key: 'F4',  mod: '',    label: 'F4',          action: 'Contra (journal voucher)',     route: '#/journal/new',     group: 'Vouchers' },
@@ -7982,6 +8157,35 @@ async function openHandle(handle, existingWsId) {
   // This is what the optimistic-concurrency check on save will compare against.
   STATE.diskAuditHead = manifest.integrity?.auditHead || (db.exec('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1')[0]?.values[0]?.[0]) || null;
 
+  // === Phase 8A.2 — restore lazy-fetched reference data versions from meta ===
+  // Phase 8A wrote `refDataVersion.{datasetName}` rows in the meta table when the
+  // user lazy-fetched updates from khata-standard. On reopen we re-fetch those
+  // versions and apply them to REF, so the file remembers its preferred data set
+  // across sessions. Best-effort: if the CDN is unreachable or the version is gone,
+  // we silently fall back to the bundled REF.
+  try {
+    const refRows = db.exec("SELECT k, v FROM meta WHERE k LIKE 'refDataVersion.%'");
+    if (refRows.length && refRows[0].values.length) {
+      const wantedVersions = {};
+      for (const [k, v] of refRows[0].values) {
+        const datasetName = k.replace(/^refDataVersion\./, '');
+        wantedVersions[datasetName] = v;
+      }
+      // Async — don't block file open on this. The user gets bundled REF immediately,
+      // updated REF as soon as the fetch lands.
+      (async () => {
+        for (const [name, version] of Object.entries(wantedVersions)) {
+          try {
+            const { manifest: dsMeta, data: dsJson } = await fetchDataset(name);
+            if (dsMeta.version === version) {
+              await applyDatasetUpdate(name, dsMeta, dsJson);
+            }
+          } catch (_) { /* silent fallback */ }
+        }
+      })();
+    }
+  } catch (_) { /* meta table missing on a v1 file is ok */ }
+
   // === Phase 6 — Layer 3 ancestry check ===
   // If the workspace already has an entry for this file (existingWsId), compare the
   // audit chain against the lastKnownHead we recorded last time. Four outcomes:
@@ -9089,6 +9293,7 @@ function render() {
   else if (r === '#/reconcile')       renderReconcile(main);
   // Phase 8A (CA-handoff feature complete)
   else if (r === '#/vendor-payment/new') renderVendorPaymentForm(main);
+  else if (r === '#/tcs-collection/new') renderTcsCollectionForm(main);
   else if (r === '#/form-26q')        renderForm26Q(main);
   else if (r === '#/form-27eq')       renderForm27EQ(main);
   else if (r === '#/form-27d')        renderForm27D(main);
@@ -9569,9 +9774,18 @@ function openItemModal(itemId) {
   m.appendChild(h('div', { class: 'modal-h' }, [isEdit ? 'Edit item' : 'New item / service']));
   const body = h('div', { class: 'modal-b' });
 
-  // Build HSN + SAC datalist from bundled REF data so users get suggestions
-  const hsnList = REF.hsnCommon.data.map(([code, desc]) => `<option value="${code}">${escapeHtml(desc)}</option>`).join('');
-  const sacList = REF.sacCommon.data.map(([code, desc]) => `<option value="${code}">${escapeHtml(desc)}</option>`).join('');
+  // Build HSN + SAC datalist from REF data so users get suggestions. Handles both
+  // the bundled array shape and the khata-standard CDN object shape via normaliseHsnEntry.
+  // Cap at 500 entries each to keep the datalist responsive in browsers.
+  function buildDatalistOptions(arr) {
+    return (arr || []).slice(0, 500).map(e => {
+      const n = normaliseHsnEntry(e);
+      if (!n || !n.code) return '';
+      return `<option value="${escapeHtml(n.code)}">${escapeHtml((n.description || '').slice(0, 80))}</option>`;
+    }).join('');
+  }
+  const hsnList = buildDatalistOptions(REF.hsnCommon.data);
+  const sacList = buildDatalistOptions(REF.sacCommon.data);
 
   // Build the tax-rate dropdown DYNAMICALLY from the active rate table for today.
   // No hardcoded enums. New rate bands appear automatically when REF.gstRates is updated.
@@ -11735,6 +11949,9 @@ function renderGSTR1(main) {
     const jsonBtn = h('button', { class: 'primary' }, ['Download GSTR-1 JSON']);
     jsonBtn.disabled = data._validation.errors.length > 0;
     jsonBtn.onclick = async () => {
+      // Phase 8A.2 — Layer 4 export-time identity check
+      const layer4Err = await verifyExportIdentity();
+      if (layer4Err) { toast(`GSTR-1 export blocked: ${layer4Err}`, 'err'); return; }
       try {
         const stripped = stripGSTR1Internals(data);
         const blob = new Blob([JSON.stringify(stripped, null, 2)], { type: 'application/json' });
@@ -11892,6 +12109,9 @@ function renderCmp08(main) {
     const row = h('div', { class: 'row', style: 'margin-top:10px' });
     const j = h('button', { class: 'primary' }, ['Download JSON']);
     j.onclick = async () => {
+      // Phase 8A.2 — Layer 4 export-time identity check
+      const layer4Err = await verifyExportIdentity();
+      if (layer4Err) { toast(`CMP-08 export blocked: ${layer4Err}`, 'err'); return; }
       try {
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
         const handle = await window.showSaveFilePicker({
@@ -12874,6 +13094,9 @@ function renderGSTR3B(main) {
     const row = h('div', { class: 'row' });
     const j = h('button', { class: 'primary' }, ['Download JSON']);
     j.onclick = async () => {
+      // Phase 8A.2 — Layer 4 export-time identity check
+      const layer4Err = await verifyExportIdentity();
+      if (layer4Err) { toast(`GSTR-3B export blocked: ${layer4Err}`, 'err'); return; }
       try {
         const blob = new Blob([JSON.stringify(sum, null, 2)], { type: 'application/json' });
         const handle = await window.showSaveFilePicker({
@@ -12939,7 +13162,7 @@ function renderCreditNotes(main) {
     return;
   }
   const tbl = h('table', { class: 'dense' });
-  tbl.innerHTML = '<thead><tr><th>CN #</th><th>Date</th><th>Against</th><th>Customer</th><th>Reason</th><th class="num">Taxable</th><th class="num">GST</th><th class="num">Total</th></tr></thead>';
+  tbl.innerHTML = '<thead><tr><th>CN #</th><th>Date</th><th>Against</th><th>Customer</th><th>Reason</th><th class="num">Taxable</th><th class="num">GST</th><th class="num">Total</th><th></th></tr></thead>';
   const tbody = h('tbody');
   for (const [id, num, date, origNum, cust, reason, sub, c, s, i, total] of r[0].values) {
     const tr = h('tr');
@@ -12952,7 +13175,11 @@ function renderCreditNotes(main) {
       <td class="num">${fmtINR(sub)}</td>
       <td class="num">${fmtINR((c||0)+(s||0)+(i||0))}</td>
       <td class="num"><b>${fmtINR(total)}</b></td>
+      <td></td>
     `;
+    const pdfBtn = h('button', { class: 'small' }, ['PDF']);
+    pdfBtn.onclick = () => exportNotePdf(STATE.db, 'credit', id);
+    tr.children[8].appendChild(pdfBtn);
     tbody.appendChild(tr);
   }
   tbl.appendChild(tbody);
@@ -13161,7 +13388,7 @@ function renderDebitNotes(main) {
     return;
   }
   const tbl = h('table', { class: 'dense' });
-  tbl.innerHTML = '<thead><tr><th>DN #</th><th>Date</th><th>Against bill</th><th>Vendor</th><th>Reason</th><th class="num">Taxable</th><th class="num">GST</th><th class="num">Total</th></tr></thead>';
+  tbl.innerHTML = '<thead><tr><th>DN #</th><th>Date</th><th>Against bill</th><th>Vendor</th><th>Reason</th><th class="num">Taxable</th><th class="num">GST</th><th class="num">Total</th><th></th></tr></thead>';
   const tbody = h('tbody');
   for (const [id, num, date, origBill, vend, reason, sub, c, s, i, total] of r[0].values) {
     const tr = h('tr');
@@ -13174,7 +13401,11 @@ function renderDebitNotes(main) {
       <td class="num">${fmtINR(sub)}</td>
       <td class="num">${fmtINR((c||0)+(s||0)+(i||0))}</td>
       <td class="num"><b>${fmtINR(total)}</b></td>
+      <td></td>
     `;
+    const pdfBtn = h('button', { class: 'small' }, ['PDF']);
+    pdfBtn.onclick = () => exportNotePdf(STATE.db, 'debit', id);
+    tr.children[8].appendChild(pdfBtn);
     tbody.appendChild(tr);
   }
   tbl.appendChild(tbody);
@@ -14445,6 +14676,9 @@ function openEwayBillDetail(ewbId) {
   cancel.onclick = () => closeModal();
   const dlJson = h('button', {}, ['Download JSON']);
   dlJson.onclick = async () => {
+    // Phase 8A.2 — Layer 4 export-time identity check
+    const layer4Err = await verifyExportIdentity();
+    if (layer4Err) { toast(`E-way bill JSON blocked: ${layer4Err}`, 'err'); return; }
     try {
       const json = buildEwayBillJson(STATE.db, ewbId);
       const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
@@ -14458,6 +14692,9 @@ function openEwayBillDetail(ewbId) {
   };
   const dlPdf = h('button', {}, ['Download PDF']);
   dlPdf.onclick = async () => {
+    // Phase 8A.2 — Layer 4 export-time identity check
+    const layer4Err = await verifyExportIdentity();
+    if (layer4Err) { toast(`E-way bill PDF blocked: ${layer4Err}`, 'err'); return; }
     try {
       await exportEwayBillPdf(STATE.db, ewbId);
     } catch (e) { toast('PDF export failed: ' + e.message, 'err'); }
@@ -14560,6 +14797,177 @@ async function exportEwayBillPdf(db, ewbId) {
   doc.text('(after EWB gen)', 165, y + 19, { align: 'center' });
 
   const filename = `ewb-${slugify(STATE.manifest.company?.name || 'co')}-${(ewb.source_ref || 'draft').replace(/[^a-z0-9]/gi, '-')}.pdf`;
+  try {
+    const blob = doc.output('blob');
+    const handle = await window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{ description: 'PDF', accept: { 'application/pdf': ['.pdf'] } }],
+    });
+    const w = await handle.createWritable(); await w.write(blob); await w.close();
+    toast(`Saved ${handle.name}`, 'ok');
+  } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+}
+
+// === Credit / Debit note PDF (unified exporter) ===
+// Builds a GST-compliant note PDF that mirrors the invoice template. `type` is
+// 'credit' or 'debit'. Reads from frozen snapshots only — historical integrity
+// invariants apply (Phase 2A.1).
+async function exportNotePdf(db, type, noteId) {
+  const layer4Err = await verifyExportIdentity();
+  if (layer4Err) { toast(`Note PDF blocked: ${layer4Err}`, 'err'); return; }
+
+  const jsPDFCtor = await loadJsPDF();
+  const isDebit = type === 'debit';
+  const tableName = isDebit ? 'debit_notes' : 'credit_notes';
+  const lineTable = isDebit ? 'debit_note_lines' : 'credit_note_lines';
+  const partyCol = isDebit ? 'vendor_id' : 'customer_id';
+  const partyTable = isDebit ? 'vendors' : 'customers';
+  const partySnapCol = isDebit ? 'vendor_snapshot' : 'customer_snapshot';
+  const refField = isDebit ? 'dn_number' : 'cn_number';
+  const dateField = isDebit ? 'dn_date' : 'cn_date';
+  const origRefField = isDebit ? 'original_bill_number' : 'original_invoice_number';
+
+  // Fetch the note
+  const r = db.exec(
+    `SELECT id, ${refField}, ${dateField}, ${partyCol}, ${origRefField}, reason,
+      place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total,
+      notes, company_snapshot, ${partySnapCol}
+     FROM ${tableName} WHERE id = ?`, [noteId]);
+  if (!r.length || !r[0].values.length) { toast('Note not found', 'err'); return; }
+  const v = r[0].values[0];
+  const note = {
+    id: v[0], number: v[1], date: v[2], partyId: v[3], origRef: v[4], reason: v[5],
+    pos: v[6], posName: v[7], subtotal: v[8], cgst: v[9], sgst: v[10], igst: v[11], total: v[12],
+    notes: v[13],
+    companySnap: v[14] ? JSON.parse(v[14]) : (STATE.manifest?.company || {}),
+    partySnap: v[15] ? JSON.parse(v[15]) : {},
+  };
+
+  // Fetch lines
+  const lR = db.exec(`SELECT line_no, description, hsn_sac, quantity, rate, taxable, tax_rate, cgst, sgst, igst, total FROM ${lineTable} WHERE ${isDebit ? 'dn_id' : 'cn_id'} = ? ORDER BY line_no`, [noteId]);
+  const lines = (lR.length && lR[0].values.length) ? lR[0].values.map(v => ({
+    line_no: v[0], description: v[1], hsn_sac: v[2], quantity: v[3], rate: v[4],
+    taxable: v[5], tax_rate: v[6], cgst: v[7], sgst: v[8], igst: v[9], total: v[10],
+  })) : [];
+
+  const doc = new jsPDFCtor({ unit: 'mm', format: 'a4' });
+  const PAGE_W = 210, MARGIN = 15;
+  let y = 18;
+
+  // Title
+  doc.setFont('helvetica', 'bold').setFontSize(16);
+  doc.text(isDebit ? 'DEBIT NOTE' : 'CREDIT NOTE', PAGE_W / 2, y, { align: 'center' });
+  y += 6;
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(`Against ${isDebit ? 'purchase' : 'invoice'}: ${note.origRef || '—'}`, PAGE_W / 2, y, { align: 'center' });
+  y += 6;
+  doc.setLineWidth(0.3); doc.line(MARGIN, y, PAGE_W - MARGIN, y); y += 5;
+
+  // Two-column header: company on left, note meta on right
+  const company = note.companySnap;
+  doc.setFont('helvetica', 'bold').setFontSize(11);
+  doc.text(company.name || '(unnamed)', MARGIN, y);
+  doc.setFont('helvetica', 'normal').setFontSize(8);
+  if (company.gstin) doc.text('GSTIN: ' + company.gstin, MARGIN, y + 4);
+  if (company.address) {
+    const addrLines = doc.splitTextToSize(company.address, 80);
+    doc.text(addrLines, MARGIN, y + 8);
+  }
+  // Right side: note number + date + reason
+  doc.setFont('helvetica', 'bold').setFontSize(9);
+  doc.text(`${isDebit ? 'DN' : 'CN'} #: ${note.number}`, PAGE_W - MARGIN, y, { align: 'right' });
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Date: ${note.date}`, PAGE_W - MARGIN, y + 4, { align: 'right' });
+  if (note.reason) doc.text(`Reason: ${note.reason}`, PAGE_W - MARGIN, y + 8, { align: 'right' });
+  y += 22;
+
+  doc.line(MARGIN, y, PAGE_W - MARGIN, y); y += 5;
+
+  // Bill-to / from block
+  const party = note.partySnap;
+  doc.setFont('helvetica', 'bold').setFontSize(9);
+  doc.text(isDebit ? 'Vendor' : 'Customer', MARGIN, y);
+  y += 4;
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(party.name || '', MARGIN, y); y += 4;
+  if (party.gstin) { doc.text('GSTIN: ' + party.gstin, MARGIN, y); y += 4; }
+  if (party.stateName) { doc.text('State: ' + party.stateName, MARGIN, y); y += 4; }
+  if (party.address) {
+    const addrLines = doc.splitTextToSize(party.address, 100);
+    doc.text(addrLines, MARGIN, y); y += addrLines.length * 4;
+  }
+  if (note.posName) {
+    y += 2;
+    doc.setFont('helvetica', 'bold').setFontSize(8);
+    doc.text('Place of supply: ', MARGIN, y);
+    doc.setFont('helvetica', 'normal');
+    doc.text(note.posName + (note.pos ? ' (' + note.pos + ')' : ''), MARGIN + 30, y);
+    y += 4;
+  }
+  y += 4;
+  doc.line(MARGIN, y, PAGE_W - MARGIN, y); y += 5;
+
+  // Lines table
+  doc.setFont('helvetica', 'bold').setFontSize(8);
+  doc.text('#', MARGIN, y);
+  doc.text('Description', MARGIN + 8, y);
+  doc.text('HSN/SAC', 95, y);
+  doc.text('Qty', 120, y, { align: 'right' });
+  doc.text('Rate', 145, y, { align: 'right' });
+  doc.text('Tax%', 165, y, { align: 'right' });
+  doc.text('Amount', 195, y, { align: 'right' });
+  y += 3; doc.line(MARGIN, y, PAGE_W - MARGIN, y); y += 4;
+  doc.setFont('helvetica', 'normal');
+  for (const ln of lines) {
+    if (y > 240) { doc.addPage(); y = 20; }
+    doc.text(String(ln.line_no), MARGIN, y);
+    const descLines = doc.splitTextToSize(String(ln.description || ''), 80);
+    doc.text(descLines, MARGIN + 8, y);
+    doc.text(String(ln.hsn_sac || '—'), 95, y);
+    doc.text(String(ln.quantity), 120, y, { align: 'right' });
+    doc.text(((ln.rate || 0) / 100).toFixed(2), 145, y, { align: 'right' });
+    doc.text(((ln.tax_rate || 0) * 100).toFixed(0) + '%', 165, y, { align: 'right' });
+    doc.text(((ln.taxable || 0) / 100).toFixed(2), 195, y, { align: 'right' });
+    y += Math.max(4, descLines.length * 4);
+  }
+
+  doc.line(MARGIN, y, PAGE_W - MARGIN, y); y += 5;
+
+  // Totals block
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  const totalsX = 130;
+  doc.text('Subtotal:', totalsX, y); doc.text((note.subtotal / 100).toFixed(2), 195, y, { align: 'right' }); y += 4;
+  if (note.cgst) { doc.text('CGST:', totalsX, y); doc.text((note.cgst / 100).toFixed(2), 195, y, { align: 'right' }); y += 4; }
+  if (note.sgst) { doc.text('SGST:', totalsX, y); doc.text((note.sgst / 100).toFixed(2), 195, y, { align: 'right' }); y += 4; }
+  if (note.igst) { doc.text('IGST:', totalsX, y); doc.text((note.igst / 100).toFixed(2), 195, y, { align: 'right' }); y += 4; }
+  doc.setFont('helvetica', 'bold').setFontSize(11);
+  doc.text(isDebit ? 'Debit total:' : 'Credit total:', totalsX, y);
+  doc.text('Rs. ' + (note.total / 100).toFixed(2), 195, y, { align: 'right' });
+  y += 6;
+  doc.setFont('helvetica', 'normal').setFontSize(8);
+  doc.text(`Amount in words: ${amountInWords(note.total)}`, MARGIN, y);
+  y += 8;
+
+  if (note.notes) {
+    doc.setFont('helvetica', 'bold').setFontSize(8);
+    doc.text('Notes:', MARGIN, y); y += 4;
+    doc.setFont('helvetica', 'normal');
+    const noteLines = doc.splitTextToSize(note.notes, PAGE_W - 2 * MARGIN);
+    doc.text(noteLines, MARGIN, y); y += noteLines.length * 4;
+  }
+
+  // Signature
+  doc.setLineWidth(0.3);
+  doc.line(140, 260, 195, 260);
+  doc.setFontSize(8);
+  doc.text('Authorised signatory', 140, 265);
+  doc.text(company.name || '', 140, 270);
+
+  // Footer
+  doc.setFontSize(7);
+  doc.text('Generated by Bahi · github.com/NakliTechie/bahi', PAGE_W / 2, 290, { align: 'center' });
+
+  const filename = `${isDebit ? 'DN' : 'CN'}-${slugify(party.name || 'party')}-${note.number.replace(/[^a-z0-9]/gi, '-')}.pdf`;
   try {
     const blob = doc.output('blob');
     const handle = await window.showSaveFilePicker({
@@ -16647,6 +17055,145 @@ function renderForm26Q(main) {
 
 // === Form 27EQ view (TCS) ===
 
+// === TCS recording form ===
+// CAs / owners record a TCS collection against an existing invoice (or standalone).
+// Fills the tcs_collections table that Form 27EQ reads from.
+function renderTcsCollectionForm(main) {
+  if (!requireFileOrPrompt(main, 'Record TCS collection')) return;
+  main.appendChild(h('h1', {}, ['Record TCS collection']));
+  main.appendChild(h('p', { class: 'help' }, ['Record a TCS collection against a customer. This is a manual entry — the collection is added to the audit log + tcs_collections table and surfaces in Form 27EQ for the matching quarter. Use this when (a) you crossed the section 206C(1H) threshold of ₹50 lakh on a customer and need to start collecting TCS, or (b) any other section 206C scenario where you need to manually record the collection.']));
+
+  const cR = STATE.db.exec('SELECT id, name, gstin, pan FROM customers WHERE archived=0 ORDER BY name');
+  const customers = cR.length ? cR[0].values.map(v => ({ id: v[0], name: v[1], gstin: v[2], pan: v[3] })) : [];
+  if (!customers.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [
+      h('h3', {}, ['No customers']),
+      h('p', {}, ['Add a customer before recording a TCS collection.']),
+    ]));
+    return;
+  }
+
+  // Optional invoice picker — TCS is normally tied to a specific invoice
+  const invR = STATE.db.exec("SELECT id, invoice_number, invoice_date, customer_id, total FROM invoices WHERE status='posted' ORDER BY invoice_date DESC, id DESC LIMIT 200");
+  const invoices = invR.length ? invR[0].values.map(v => ({ id: v[0], number: v[1], date: v[2], customerId: v[3], total: v[4] })) : [];
+
+  const form = {
+    customerId: customers[0].id,
+    invoiceId: '',
+    section: '206C(1H)',
+    rate: 0.001,        // 0.1% default for 206C(1H)
+    taxableAmount: '',
+    invoiceDate: nowIso().slice(0, 10),
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['TCS collection details']));
+  const body = h('div', { class: 'panel-b' });
+  const customerOptions = customers.map(c => `<option value="${c.id}">${escapeHtml(c.name)}${c.gstin ? ' · ' + escapeHtml(c.gstin) : ''}${c.pan ? ' · PAN ' + escapeHtml(c.pan) : ' · NO PAN'}</option>`).join('');
+  // Section options from REF
+  const tcsSecOptions = (REF.tcsSections.data || []).map(r => {
+    const sec = r.section || r[0];
+    const rate = r.rate != null ? r.rate : (r[1] || 0);
+    const desc = r.description || r[2] || '';
+    return `<option value="${sec}" data-rate="${rate}">${sec} — ${escapeHtml(desc)} (${(rate * 100).toFixed(3)}%)</option>`;
+  }).join('') || `<option value="206C(1H)" data-rate="0.001">206C(1H) — Sale of goods > 50L (0.100%)</option>`;
+
+  body.innerHTML = `
+    <div class="field"><label>Customer</label><select id="tcs-cust">${customerOptions}</select></div>
+    <div class="field"><label>Linked invoice (optional)</label>
+      <select id="tcs-inv"><option value="">— None / standalone —</option>${invoices.map(i => `<option value="${i.id}" data-cust="${i.customerId}" data-total="${i.total}" data-date="${i.date}">${escapeHtml(i.number)} · ${i.date} · ${fmtINR(i.total)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Section</label><select id="tcs-sec">${tcsSecOptions}</select></div>
+    <div class="field"><label>Rate (%)</label><input id="tcs-rate" value="${(form.rate * 100).toFixed(3)}" style="text-align:right"></div>
+    <div class="field"><label>Date</label><input id="tcs-date" type="date" value="${form.invoiceDate}"></div>
+    <div class="field"><label>Taxable amount (₹)</label><input id="tcs-amt" placeholder="0.00" style="text-align:right"></div>
+    <div id="tcs-summary" style="margin-top:10px;padding:10px;background:var(--ash);border:1px solid var(--rule);border-radius:4px;font-size:13px;line-height:1.8"></div>
+  `;
+  panel.appendChild(body);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const postBtn = h('button', { class: 'primary' }, ['Record TCS collection']);
+  postBtn.onclick = doPost;
+  ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    $('tcs-cust').addEventListener('change', () => { form.customerId = parseInt($('tcs-cust').value, 10); });
+    $('tcs-inv').addEventListener('change', () => {
+      const opt = $('tcs-inv').options[$('tcs-inv').selectedIndex];
+      if (opt && opt.value) {
+        form.invoiceId = parseInt(opt.value, 10);
+        const cust = parseInt(opt.getAttribute('data-cust') || '0', 10);
+        const total = parseInt(opt.getAttribute('data-total') || '0', 10);
+        const date = opt.getAttribute('data-date');
+        if (cust) { $('tcs-cust').value = cust; form.customerId = cust; }
+        if (total) { $('tcs-amt').value = (total / 100).toFixed(2); form.taxableAmount = String(total / 100); }
+        if (date) { $('tcs-date').value = date; form.invoiceDate = date; }
+      } else {
+        form.invoiceId = '';
+      }
+      recompute();
+    });
+    $('tcs-sec').addEventListener('change', () => {
+      form.section = $('tcs-sec').value;
+      const rate = parseFloat($('tcs-sec').options[$('tcs-sec').selectedIndex].getAttribute('data-rate') || '0');
+      form.rate = rate;
+      $('tcs-rate').value = (rate * 100).toFixed(3);
+      recompute();
+    });
+    $('tcs-rate').addEventListener('input', () => { form.rate = (parseFloat($('tcs-rate').value) || 0) / 100; recompute(); });
+    $('tcs-amt').addEventListener('input', () => { form.taxableAmount = $('tcs-amt').value; recompute(); });
+    recompute();
+  }, 0);
+
+  function recompute() {
+    const taxable = parseRupees($('tcs-amt').value);
+    const tcs = Math.round(taxable * form.rate);
+    const customer = customers.find(c => c.id === form.customerId);
+    const out = $('tcs-summary');
+    if (taxable > 0 && form.section) {
+      out.innerHTML = `
+        <div>Customer: <b>${escapeHtml(customer?.name || '')}</b>${customer?.pan ? ' · PAN ' + escapeHtml(customer.pan) : ' · <span style="color:var(--alert)">⚠ no PAN</span>'}</div>
+        <div>Section: <b>${escapeHtml(form.section)}</b> @ <b>${(form.rate * 100).toFixed(3)}%</b></div>
+        <div>Taxable: <b>${fmtINR(taxable)}</b></div>
+        <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:14px">TCS to collect: ${fmtINR(tcs)}</b></div>
+      `;
+    } else {
+      out.innerHTML = '';
+    }
+    postBtn.disabled = taxable <= 0;
+  }
+
+  async function doPost() {
+    try {
+      const customer = customers.find(c => c.id === form.customerId);
+      if (!customer) { toast('Pick a customer', 'err'); return; }
+      const taxable = parseRupees($('tcs-amt').value);
+      if (taxable <= 0) { toast('Taxable amount must be positive', 'err'); return; }
+      const section = $('tcs-sec').value;
+      const rate = form.rate;
+      const tcsAmount = Math.round(taxable * rate);
+      const invoiceDate = $('tcs-date').value;
+      const invoiceId = form.invoiceId || null;
+
+      // Use the existing helper which writes the row + posts the journal
+      await recordTcsCollection(STATE.db, {
+        invoiceId, customerId: customer.id,
+        section, rate, taxableAmount: taxable, tcsAmount, invoiceDate,
+      });
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`TCS collection recorded (${section}, ${fmtINR(tcsAmount)})`, 'ok');
+      nav('#/form-27eq');
+    } catch (e) {
+      console.error(e);
+      toast('Post failed: ' + e.message, 'err');
+    }
+  }
+}
+
 function renderForm27EQ(main) {
   if (!requireFileOrPrompt(main, 'Form 27EQ')) return;
   main.appendChild(h('h1', {}, ['Form 27EQ — Quarterly TCS return']));
@@ -17734,7 +18281,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">Phase 8A · CA-handoff feature complete (TDS deduction recording with auto-deduct on vendor payment, Form 26Q + 27EQ exports in NSDL CSV format, Form 27D TDS certificate PDF per vendor, manual bank reconciliation with statement matching, Layer 4 export-time identity check, reference data lazy-fetch from khata-standard CDN, audit-log replay restoration)</div>
+      <div class="k">Bahi version</div><div class="v">Phase 8A.2 · CA-handoff polish (TDS + TCS recording, Form 26Q / 27EQ / 27D, manual bank reconciliation, Layer 4 wired into all 5 main exports, reference data lazy-fetch with cross-session persistence, HSN normaliser handling both bundled + CDN shapes, credit/debit note PDF, BOFH-style sidebar search with action-aware ROUTE_INDEX)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>
@@ -18296,6 +18843,21 @@ async function boot() {
   if (!location.hash) location.hash = '#/workspace';
   STATE.route = location.hash;
   render();
+
+  // Phase 8A.2 — sidebar search (BOFH pattern, action-aware)
+  annotateSidebar();
+  const searchInput = $('bahi-search');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => filterSidebar(searchInput.value));
+    // Cmd/Ctrl+K to focus the search box
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      }
+    });
+  }
 
   // First-run intro modal — shown once per machine, after the initial render so it
   // overlays the workspace screen rather than appearing in front of a blank page.

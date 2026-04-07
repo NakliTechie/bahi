@@ -8,9 +8,9 @@ The app is **Bahi** (बही — the traditional bound ledger of Indian mercha
 
 ---
 
-## Status — Phase 2C (freelancer tier complete + polish)
+## Status — Phase 3 (service SMB tier)
 
-The Freelancer tier is live end-to-end. You can create a company file (full wizard with FY, type, composition flag, multi-GSTIN copy from existing entries), add customers and items, raise invoices across multiple series (Domestic / Export / SEZ-WP / SEZ-WOP / Bill of Supply), record advance receipts and apply them against later invoices, record regular payments, see the dashboard roll up cashflow / receivables aging / GST liability / top customers / recent activity, export GST-compliant PDFs (with Devanagari for Hindi/Marathi customer names + the proper ₹ glyph), file GSTR-1 (with B2B / B2CL / B2CS / HSN / AT / TXP) for regular dealers or CMP-08 quarterly for composition dealers, and switch between companies via the topbar dropdown — all from the browser, all stored on your own disk, never leaving your device.
+Phase 3 turns Bahi from a freelancer-grade billing tool into a service-business accounting tool. On top of everything Phase 2C shipped, Phase 3 adds: **vendor master**, **purchases** (with RCM, ITC eligibility, blocked-credit support, per-rate GST input sub-account auto-create), **credit notes** (against invoices) and **debit notes** (against purchases) with full-reversal or partial-amount modes that inherit company + party snapshots from the parent, **journal voucher** form for free-form double-entry adjustments, real **reports** (Trial Balance, Balance Sheet with tie check + period-profit rollup, Day Book, Account Ledger with running balance, Sales Register, Purchase Register), **GSTR-3B** monthly summary view with JSON + CSV export, **financial year rollover wizard** that previews net profit/loss and posts system-generated closing entries to zero out income/expense → P&L Summary → Capital Account, **period locks** for marking returns as filed, and a **tax payment challans** module with templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, and a custom builder.
 
 ### What's shipped
 
@@ -124,6 +124,19 @@ The Freelancer tier is live end-to-end. You can create a company file (full wiza
 - **OPFS atomic-write staging**: every blob is mirrored to `OPFS:bahi-staging/{workspaceId}.khata` BEFORE the disk write, then cleared on success — if a save is interrupted (browser crash, OS crash, power loss, USB yank), the next file open detects the orphan staging copy with a newer audit head and surfaces a Settings → Crash recovery panel offering Recover or Discard
 - **First-run welcome modal**: per-machine localStorage flag (`bahi.introSeen`), three-card explainer (Create / Open / Restore), explicit "Got it" + "Read README" buttons
 
+**Service SMB tier** (Phase 3)
+- **Schema v6**: 11 new tables (vendors, purchases, purchase_lines, credit_notes, credit_note_lines, debit_notes, debit_note_lines, tds_deductions, tcs_collections, period_locks, fy_closings) with full snapshot columns following the historical integrity invariants
+- **Vendor master** mirrors customers; adds RCM-applicable flag, default TDS section, payable opening balance
+- **Purchases** with internal ref (`PUR/{FY}/{NNNN}`), vendor's bill number, place-of-supply state routing, RCM toggle that auto-routes posting to GST RCM Input/Output sub-accounts, ITC eligibility flag (motor vehicles, club fees, etc. for blocked credits), per-rate GST Input sub-account auto-create, full company + vendor snapshot capture
+- **Credit notes** (against invoices) and **debit notes** (against purchases) with full-reversal or partial-amount modes; both inherit the parent's company + party snapshots so reprints stay historically correct, lines proportionally allocated for partials
+- **Journal voucher** form for free-form double-entry adjustments — picks any account, balance check before post
+- **Reports**: Trial Balance (with debit/credit tie check), Balance Sheet (assets / liabilities / equity sections + tie check + current-period unclosed profit rollup), Day Book (chronological), Account Ledger (per-account with running balance), Sales Register, Purchase Register — all date-filterable
+- **GSTR-3B** monthly summary view: Section 3.1(a) outward + 3.1(d) RCM inward + Section 4 ITC + net liability after credit, with JSON + CSV export
+- **FY rollover wizard**: preview income / expense / net profit/loss for any FY, then post the year-end closing entries (zero out income/expense to P&L Summary, transfer P&L Summary to Capital Account), recorded in `fy_closings`
+- **Period locks**: mark a return type (GSTR-1 / GSTR-3B / CMP-08 / GSTR-4 / 26Q / 27EQ) as filed for a date range so postings dated within get flagged as amendments
+- **Tax payment challans** module: templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, plus a custom challan builder
+- **Sidebar restructured** into Workspace / Masters / Sales / Purchases / Money / Reports / Compliance / Dev groups (37 routes total)
+
 ---
 
 ## Running
@@ -186,9 +199,7 @@ For low-level testing (raw posting, audit chain inspection, integrity checks, sn
 - One-time backfill flow for legacy v1 invoices
 - Devanagari / Tamil / other Indian script fonts in PDF (currently Helvetica only — uses `Rs.` instead of `₹`; Phase 2B.2 lazy-loads Noto Sans Devanagari)
 
-**Phase 2B coming next:** payment / receipt entry with multi-invoice allocation, dashboard (receivables aging, cashflow, recent activity), GSTR-1 JSON export, advance receipts with GST on advance, multiple invoice series, composition scheme handling, first-run onboarding screen, PAN-aware multi-GSTIN copy-from-existing wizard.
-
-**Phase 3+:** Service SMB tier (vendors, purchases, credit/debit notes, journal vouchers, full reports, TDS, RCM, TCS, CMP-08, financial year rollover) → Goods SMB tier (inventory, stock, e-way bills) → Tally import → CA mode → polish & launch.
+**Phase 4+:** Goods SMB tier (inventory, stock, e-way bills, multi-warehouse) → Tally import → CA mode (multi-company login) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → polish & launch.
 
 ---
 

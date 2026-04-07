@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
-<title>Bahi — Browser-native accounting · Phase 2C</title>
+<title>Bahi — Browser-native accounting · Phase 3</title>
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -265,7 +265,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 <div id="app">
 
   <header class="topbar">
-    <div class="brand">Bahi <span class="sub">Phase 2C · freelancer + polish</span></div>
+    <div class="brand">Bahi <span class="sub">Phase 3 · service SMB tier</span></div>
     <div id="company-switcher" style="display:none;position:relative">
       <button id="company-switcher-btn" class="small" style="display:flex;align-items:center;gap:6px"></button>
       <div id="company-switcher-menu" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--white);border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.12);z-index:100;min-width:280px;max-height:60vh;overflow-y:auto"></div>
@@ -283,23 +283,46 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
   <div class="body-grid">
 
     <nav class="sidebar">
-      <h4>Bahi</h4>
+      <h4>Workspace</h4>
       <a href="#/workspace" data-route="#/workspace">Workspace</a>
       <a href="#/file" data-route="#/file">Current file</a>
-      <h4>Books</h4>
       <a href="#/dashboard" data-route="#/dashboard">Dashboard</a>
+      <h4>Masters</h4>
       <a href="#/customers" data-route="#/customers">Customers</a>
+      <a href="#/vendors" data-route="#/vendors">Vendors</a>
       <a href="#/items" data-route="#/items">Items / services</a>
+      <a href="#/series" data-route="#/series">Invoice series</a>
+      <h4>Sales</h4>
       <a href="#/invoices" data-route="#/invoices">Invoices</a>
       <a href="#/invoice/new" data-route="#/invoice/new">+ New invoice</a>
+      <a href="#/credit-notes" data-route="#/credit-notes">Credit notes</a>
+      <a href="#/credit-note/new" data-route="#/credit-note/new">+ New credit note</a>
+      <h4>Purchases</h4>
+      <a href="#/purchases" data-route="#/purchases">Purchases</a>
+      <a href="#/purchase/new" data-route="#/purchase/new">+ New purchase</a>
+      <a href="#/debit-notes" data-route="#/debit-notes">Debit notes</a>
+      <a href="#/debit-note/new" data-route="#/debit-note/new">+ New debit note</a>
+      <h4>Money</h4>
       <a href="#/payments" data-route="#/payments">Payments</a>
       <a href="#/payment/new" data-route="#/payment/new">+ Record payment</a>
       <a href="#/advances" data-route="#/advances">Advances</a>
       <a href="#/advance/new" data-route="#/advance/new">+ Advance receipt</a>
-      <a href="#/series" data-route="#/series">Invoice series</a>
+      <a href="#/journal/new" data-route="#/journal/new">+ Journal voucher</a>
+      <h4>Reports</h4>
+      <a href="#/day-book" data-route="#/day-book">Day book</a>
+      <a href="#/account-ledger" data-route="#/account-ledger">Account ledger</a>
+      <a href="#/trial-balance" data-route="#/trial-balance">Trial balance</a>
+      <a href="#/balance-sheet" data-route="#/balance-sheet">Balance sheet</a>
       <a href="#/pnl" data-route="#/pnl">P&amp;L summary</a>
-      <a href="#/gstr1" data-route="#/gstr1">GSTR-1 export</a>
-      <a href="#/cmp08" data-route="#/cmp08">CMP-08 (composition)</a>
+      <a href="#/sales-register" data-route="#/sales-register">Sales register</a>
+      <a href="#/purchase-register" data-route="#/purchase-register">Purchase register</a>
+      <h4>Compliance</h4>
+      <a href="#/gstr1" data-route="#/gstr1">GSTR-1</a>
+      <a href="#/gstr3b" data-route="#/gstr3b">GSTR-3B</a>
+      <a href="#/cmp08" data-route="#/cmp08">CMP-08</a>
+      <a href="#/tax-challans" data-route="#/tax-challans">Tax challans</a>
+      <a href="#/period-locks" data-route="#/period-locks">Period locks</a>
+      <a href="#/fy-rollover" data-route="#/fy-rollover">FY rollover</a>
       <h4>Dev</h4>
       <a href="#/debug" data-route="#/debug">Debug console</a>
       <a href="#/settings" data-route="#/settings">Settings</a>
@@ -332,8 +355,9 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 
 <script>
 //============================================================
-// Bahi — Phase 2B.1
-// Browser-native accounting · Freelancer tier + PDF export
+// Bahi — Phase 3
+// Browser-native accounting · Service SMB tier (vendors, purchases, credit/debit notes,
+// journal vouchers, reports, GSTR-3B, FY rollover, tax challans)
 // See Settings → Phase scope for the full feature inventory.
 //============================================================
 
@@ -347,8 +371,11 @@ const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Fil
 //   v3 → Phase 2A.2 rate_id column on invoice_lines (BAHI-AGENT-MSG-TAX-RATE-LIFECYCLE.md)
 //   v4 → Phase 2B.2 payments + payment_allocations tables (closes the invoice→cash loop)
 //   v5 → Phase 2B.6 + 2B.7: advances, advance_adjustments, invoice_series tables
+//   v6 → Phase 3: Service SMB tier — vendors, purchases, purchase_lines,
+//        credit_notes, credit_note_lines, debit_notes, debit_note_lines,
+//        tds_deductions, tcs_collections, period_locks, fy_closings
 // The runner is in runSchemaMigrations() below.
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 // Snapshot retention policy (spec §9.3):
 //   - Last N saves: keep the most recent N auto snapshots regardless of date
@@ -702,6 +729,235 @@ CREATE TABLE IF NOT EXISTS invoice_series (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_invoice_series_default ON invoice_series(default_for);
+
+-- === Phase 3 — Service SMB tier ===
+
+-- Vendors are the mirror of customers — same fields plus a few purchase-specific ones.
+CREATE TABLE IF NOT EXISTS vendors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  gstin TEXT,
+  pan TEXT,
+  state TEXT,                       -- ISO 3166-2:IN
+  email TEXT,
+  phone TEXT,
+  address TEXT,
+  rcm_applicable INTEGER DEFAULT 0, -- 1 = supplies are notified RCM categories
+  tds_section TEXT,                 -- Default TDS section to apply (e.g. '194C', '194J')
+  opening_balance INTEGER DEFAULT 0,-- paise; +ve = we owe vendor
+  archived INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vendors_name ON vendors(name);
+CREATE INDEX IF NOT EXISTS idx_vendors_gstin ON vendors(gstin);
+
+-- Purchases are the mirror of invoices with reversed posting:
+--   Dr Purchases (taxable) + Dr GST Input (per rate) + Cr Sundry Creditors (total)
+-- For RCM purchases:
+--   Dr Purchases (taxable) + Dr GST RCM Input + Cr GST RCM Output + Cr Sundry Creditors (taxable)
+CREATE TABLE IF NOT EXISTS purchases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bill_number TEXT NOT NULL,        -- vendor's bill number, NOT auto-generated
+  internal_ref TEXT NOT NULL UNIQUE,-- Bahi's internal reference (PUR/{FY}/{NNNN})
+  vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+  bill_date TEXT NOT NULL,
+  due_date TEXT,
+  place_of_supply TEXT,             -- ISO state code
+  place_of_supply_name TEXT,        -- frozen
+  is_import INTEGER DEFAULT 0,
+  reverse_charge INTEGER DEFAULT 0, -- 1 = RCM
+  itc_eligible INTEGER DEFAULT 1,   -- 0 = blocked credits (motor vehicles, etc.)
+  subtotal INTEGER NOT NULL DEFAULT 0,
+  cgst INTEGER NOT NULL DEFAULT 0,
+  sgst INTEGER NOT NULL DEFAULT 0,
+  igst INTEGER NOT NULL DEFAULT 0,
+  cess INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  status TEXT NOT NULL DEFAULT 'posted',
+  ledger_entry_id INTEGER REFERENCES entries(id),
+  -- FROZEN snapshots at posting time (Invariants 1, 6)
+  company_snapshot TEXT,
+  vendor_snapshot TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(bill_date);
+CREATE INDEX IF NOT EXISTS idx_purchases_vendor ON purchases(vendor_id);
+
+CREATE TABLE IF NOT EXISTS purchase_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_id INTEGER NOT NULL REFERENCES purchases(id),
+  line_no INTEGER NOT NULL,
+  item_id INTEGER REFERENCES items(id),
+  description TEXT NOT NULL,
+  hsn_sac TEXT,
+  hsn_description TEXT,             -- FROZEN
+  quantity REAL NOT NULL DEFAULT 1,
+  unit TEXT,
+  rate INTEGER NOT NULL,            -- paise per unit
+  discount INTEGER DEFAULT 0,
+  taxable INTEGER NOT NULL,
+  tax_rate REAL NOT NULL,
+  rate_id TEXT,
+  cgst INTEGER NOT NULL DEFAULT 0,
+  sgst INTEGER NOT NULL DEFAULT 0,
+  igst INTEGER NOT NULL DEFAULT 0,
+  itc_eligible INTEGER DEFAULT 1,
+  total INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_purchase_lines_purchase ON purchase_lines(purchase_id);
+
+-- Credit notes are downward adjustments against existing invoices.
+-- They INHERIT the original invoice's snapshot (Invariant 5 — reversals don't re-lookup).
+CREATE TABLE IF NOT EXISTS credit_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cn_number TEXT NOT NULL UNIQUE,
+  cn_date TEXT NOT NULL,
+  original_invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+  original_invoice_number TEXT NOT NULL, -- FROZEN
+  customer_id INTEGER NOT NULL REFERENCES customers(id),
+  reason TEXT,                      -- 'sales-return' | 'rate-difference' | 'discount' | 'deficiency' | 'other'
+  place_of_supply TEXT,
+  place_of_supply_name TEXT,
+  subtotal INTEGER NOT NULL DEFAULT 0,
+  cgst INTEGER NOT NULL DEFAULT 0,
+  sgst INTEGER NOT NULL DEFAULT 0,
+  igst INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  status TEXT NOT NULL DEFAULT 'posted',
+  ledger_entry_id INTEGER REFERENCES entries(id),
+  -- Inherited snapshots from the original invoice
+  company_snapshot TEXT,
+  customer_snapshot TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cn_date ON credit_notes(cn_date);
+CREATE INDEX IF NOT EXISTS idx_cn_invoice ON credit_notes(original_invoice_id);
+
+CREATE TABLE IF NOT EXISTS credit_note_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cn_id INTEGER NOT NULL REFERENCES credit_notes(id),
+  line_no INTEGER NOT NULL,
+  description TEXT NOT NULL,
+  hsn_sac TEXT,
+  hsn_description TEXT,             -- inherited
+  quantity REAL NOT NULL DEFAULT 1,
+  rate INTEGER NOT NULL,
+  taxable INTEGER NOT NULL,
+  tax_rate REAL NOT NULL,           -- inherited from original invoice line
+  rate_id TEXT,
+  cgst INTEGER NOT NULL DEFAULT 0,
+  sgst INTEGER NOT NULL DEFAULT 0,
+  igst INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL
+);
+
+-- Debit notes are upward adjustments against existing purchases.
+CREATE TABLE IF NOT EXISTS debit_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dn_number TEXT NOT NULL UNIQUE,
+  dn_date TEXT NOT NULL,
+  original_purchase_id INTEGER NOT NULL REFERENCES purchases(id),
+  original_bill_number TEXT NOT NULL,
+  vendor_id INTEGER NOT NULL REFERENCES vendors(id),
+  reason TEXT,
+  place_of_supply TEXT,
+  place_of_supply_name TEXT,
+  subtotal INTEGER NOT NULL DEFAULT 0,
+  cgst INTEGER NOT NULL DEFAULT 0,
+  sgst INTEGER NOT NULL DEFAULT 0,
+  igst INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  status TEXT NOT NULL DEFAULT 'posted',
+  ledger_entry_id INTEGER REFERENCES entries(id),
+  company_snapshot TEXT,
+  vendor_snapshot TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dn_date ON debit_notes(dn_date);
+CREATE INDEX IF NOT EXISTS idx_dn_purchase ON debit_notes(original_purchase_id);
+
+CREATE TABLE IF NOT EXISTS debit_note_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dn_id INTEGER NOT NULL REFERENCES debit_notes(id),
+  line_no INTEGER NOT NULL,
+  description TEXT NOT NULL,
+  hsn_sac TEXT,
+  hsn_description TEXT,
+  quantity REAL NOT NULL DEFAULT 1,
+  rate INTEGER NOT NULL,
+  taxable INTEGER NOT NULL,
+  tax_rate REAL NOT NULL,
+  rate_id TEXT,
+  cgst INTEGER NOT NULL DEFAULT 0,
+  sgst INTEGER NOT NULL DEFAULT 0,
+  igst INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL
+);
+
+-- TDS deductions are recorded per payment-out (vendor payment) when applicable.
+CREATE TABLE IF NOT EXISTS tds_deductions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  payment_id INTEGER REFERENCES payments(id), -- parent payment row (vendor payments use payments table too)
+  vendor_id INTEGER REFERENCES vendors(id),
+  section TEXT NOT NULL,            -- '194C', '194J', etc.
+  rate REAL NOT NULL,               -- 0.10 = 10%
+  taxable_amount INTEGER NOT NULL,  -- the amount on which TDS was computed
+  tds_amount INTEGER NOT NULL,      -- the actual TDS withheld
+  payment_date TEXT NOT NULL,
+  vendor_pan TEXT,                  -- frozen
+  vendor_name_snapshot TEXT,        -- frozen
+  ledger_entry_id INTEGER REFERENCES entries(id),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tds_vendor ON tds_deductions(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_tds_section ON tds_deductions(section);
+
+-- TCS collections are recorded per invoice line where Section 206C(1H) threshold has been crossed.
+CREATE TABLE IF NOT EXISTS tcs_collections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER REFERENCES invoices(id),
+  customer_id INTEGER REFERENCES customers(id),
+  section TEXT NOT NULL,            -- '206C(1H)' typically
+  rate REAL NOT NULL,               -- 0.001 = 0.1%
+  taxable_amount INTEGER NOT NULL,
+  tcs_amount INTEGER NOT NULL,
+  invoice_date TEXT NOT NULL,
+  customer_pan TEXT,
+  customer_name_snapshot TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tcs_customer ON tcs_collections(customer_id);
+
+-- Period locks. Once a return is marked filed for a period, edits to entries dated in that
+-- period are flagged as amendments (is_amendment column already exists on entries).
+CREATE TABLE IF NOT EXISTS period_locks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  return_type TEXT NOT NULL,        -- 'gstr1' | 'gstr3b' | 'cmp08' | 'gstr4' | '26q' | '27eq'
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  filed_at TEXT NOT NULL,
+  filed_by TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_period_locks_type ON period_locks(return_type);
+
+-- FY closings track which financial years have been closed via the rollover wizard.
+CREATE TABLE IF NOT EXISTS fy_closings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fy_start TEXT NOT NULL,           -- e.g. '2024-04-01'
+  fy_end TEXT NOT NULL,             -- e.g. '2025-03-31'
+  closed_at TEXT NOT NULL,
+  closing_entry_id INTEGER REFERENCES entries(id),
+  net_profit INTEGER NOT NULL DEFAULT 0,  -- paise
+  carried_forward INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fy_closings ON fy_closings(fy_start);
 `;
 
 // === Reference Data subsystem ===
@@ -1466,6 +1722,14 @@ function runSchemaMigrations(db) {
   if (currentVersion < 5) {
     seedInvoiceSeries(db);
     db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '5')");
+  }
+
+  // === Migration 5 → 6: Phase 3 Service SMB tier tables ===
+  // vendors, purchases, purchase_lines, credit_notes, credit_note_lines,
+  // debit_notes, debit_note_lines, tds_deductions, tcs_collections,
+  // period_locks, fy_closings — all new tables, handled by DDL.
+  if (currentVersion < 6) {
+    db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '6')");
   }
 
   // Future migrations land here as `if (currentVersion < N) { ... }` blocks.
@@ -2445,6 +2709,448 @@ function getTopCustomersByOutstanding(db, n) {
   `, [n]);
   if (!r.length || !r[0].values.length) return [];
   return r[0].values.map(([id, name, outstanding, invoice_count]) => ({ id, name, outstanding, invoice_count }));
+}
+
+//------------------------------------------------------------
+// === Phase 3 — Service SMB tier helpers ===
+//------------------------------------------------------------
+
+// Auto-generate the next purchase internal ref. Format: PUR/{FY}/{NNNN}.
+// Note: vendor's bill_number is the vendor's own identifier and is NOT auto-generated.
+function nextPurchaseRef(db) {
+  const r = db.exec('SELECT internal_ref FROM purchases ORDER BY id DESC LIMIT 1');
+  const now = new Date();
+  const y = now.getMonth() < 3 ? now.getFullYear() - 1 : now.getFullYear();
+  const fy = String(y).slice(-2) + '-' + String(y + 1).slice(-2);
+  if (!r.length || !r[0].values.length) return `PUR/${fy}/0001`;
+  const last = r[0].values[0][0];
+  const m = last.match(/\/(\d{2}-\d{2})\/(\d+)$/);
+  if (m && m[1] === fy) return `PUR/${fy}/${String(parseInt(m[2], 10) + 1).padStart(4, '0')}`;
+  return `PUR/${fy}/0001`;
+}
+
+// Auto-generate the next credit note number. Format: CN/{FY}/{NNNN}.
+function nextCreditNoteNumber(db) {
+  const r = db.exec('SELECT cn_number FROM credit_notes ORDER BY id DESC LIMIT 1');
+  const now = new Date();
+  const y = now.getMonth() < 3 ? now.getFullYear() - 1 : now.getFullYear();
+  const fy = String(y).slice(-2) + '-' + String(y + 1).slice(-2);
+  if (!r.length || !r[0].values.length) return `CN/${fy}/0001`;
+  const last = r[0].values[0][0];
+  const m = last.match(/\/(\d{2}-\d{2})\/(\d+)$/);
+  if (m && m[1] === fy) return `CN/${fy}/${String(parseInt(m[2], 10) + 1).padStart(4, '0')}`;
+  return `CN/${fy}/0001`;
+}
+
+// Auto-generate the next debit note number. Format: DN/{FY}/{NNNN}.
+function nextDebitNoteNumber(db) {
+  const r = db.exec('SELECT dn_number FROM debit_notes ORDER BY id DESC LIMIT 1');
+  const now = new Date();
+  const y = now.getMonth() < 3 ? now.getFullYear() - 1 : now.getFullYear();
+  const fy = String(y).slice(-2) + '-' + String(y + 1).slice(-2);
+  if (!r.length || !r[0].values.length) return `DN/${fy}/0001`;
+  const last = r[0].values[0][0];
+  const m = last.match(/\/(\d{2}-\d{2})\/(\d+)$/);
+  if (m && m[1] === fy) return `DN/${fy}/${String(parseInt(m[2], 10) + 1).padStart(4, '0')}`;
+  return `DN/${fy}/0001`;
+}
+
+// Per-vendor outstanding payable balance (mirror of getOutstandingByCustomer).
+function getOutstandingByVendor(db) {
+  // For each vendor: SUM(purchase total) - SUM(payment_allocation amount where payment is to vendor)
+  // For Phase 3 simplification: payments is shared between customer + vendor flows; we
+  // distinguish via the customer_id vs vendor_id on the payment row (vendor payments use
+  // a separate flag — see postVendorPayment below). For now compute purchases.total -
+  // already-paid via a join on payments where customer_id IS NULL (vendor payments).
+  const r = db.exec(`
+    SELECT vendor_id, COALESCE(SUM(total), 0) AS total_billed
+    FROM purchases WHERE status = 'posted'
+    GROUP BY vendor_id
+  `);
+  const out = new Map();
+  if (r.length) for (const [vid, billed] of r[0].values) out.set(vid, billed);
+  return out;
+}
+
+// Post a purchase to the ledger. Two flow variants:
+//   Regular:  Dr Purchases (taxable) + Dr GST Input @ rate (tax) / Cr Sundry Creditors (total)
+//   RCM:      Dr Purchases (taxable) + Dr GST RCM Input @ rate (tax) / Cr Sundry Creditors (taxable)
+//                                                                    + Cr GST RCM Output @ rate (tax)
+async function postPurchaseToLedger(db, purchase, vendor, computedLines) {
+  const lines = [];
+  lines.push({ accountId: getAccountIdByName(db, 'Purchases'), debit: purchase.subtotal, credit: 0 });
+
+  // Group by tax rate for per-rate sub-account routing
+  const byRate = new Map();
+  for (const ln of (computedLines || [])) {
+    const r = ln.tax_rate || 0;
+    if (!byRate.has(r)) byRate.set(r, { cgst: 0, sgst: 0, igst: 0 });
+    const g = byRate.get(r);
+    g.cgst += ln.cgst || 0;
+    g.sgst += ln.sgst || 0;
+    g.igst += ln.igst || 0;
+  }
+
+  if (purchase.reverse_charge) {
+    // RCM flow: Dr GST RCM Input + Cr GST RCM Output (both at the same rate for the same amount).
+    // Net liability = 0 immediately, but the input credit becomes claimable once paid (per rules).
+    for (const [rate, g] of byRate) {
+      const ratePct = rate * 100;
+      const totalTaxAtRate = (g.cgst || 0) + (g.sgst || 0) + (g.igst || 0);
+      if (totalTaxAtRate > 0) {
+        lines.push({ accountId: getOrCreateRateAccount(db, 'GST RCM Input', ratePct), debit: totalTaxAtRate, credit: 0 });
+        lines.push({ accountId: getOrCreateRateAccount(db, 'GST RCM Output', ratePct), debit: 0, credit: totalTaxAtRate });
+      }
+    }
+    // Cr Sundry Creditors only the taxable amount (the supplier didn't charge GST under RCM)
+    lines.push({ accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: 0, credit: purchase.subtotal });
+  } else {
+    // Regular flow: Dr GST Input per rate, Cr Sundry Creditors the full total
+    for (const [rate, g] of byRate) {
+      const ratePct = rate * 100;
+      if (g.cgst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'CGST Input', ratePct / 2), debit: g.cgst, credit: 0 });
+      if (g.sgst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'SGST Input', ratePct / 2), debit: g.sgst, credit: 0 });
+      if (g.igst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'IGST Input', ratePct), debit: g.igst, credit: 0 });
+    }
+    lines.push({ accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: 0, credit: purchase.total });
+  }
+
+  const result = await postEntry(db, {
+    voucherType: 'purchase',
+    voucherRef: purchase.internal_ref,
+    narration: `Purchase ${purchase.internal_ref} (vendor bill ${purchase.bill_number}) from ${vendor.name}` + (purchase.reverse_charge ? ' [RCM]' : ''),
+    postedAt: purchase.bill_date,
+    actor: 'owner',
+    lines,
+  });
+  return result.entryId;
+}
+
+// Post a credit note to the ledger.
+// Reverses a sale: Dr Sales (taxable) + Dr GST Output @ rate (tax) / Cr Sundry Debtors (total)
+async function postCreditNoteToLedger(db, cn, customer, computedLines) {
+  const lines = [];
+  lines.push({ accountId: getAccountIdByName(db, 'Sales'), debit: cn.subtotal, credit: 0 });
+  const byRate = new Map();
+  for (const ln of (computedLines || [])) {
+    const r = ln.tax_rate || 0;
+    if (!byRate.has(r)) byRate.set(r, { cgst: 0, sgst: 0, igst: 0 });
+    const g = byRate.get(r);
+    g.cgst += ln.cgst || 0;
+    g.sgst += ln.sgst || 0;
+    g.igst += ln.igst || 0;
+  }
+  for (const [rate, g] of byRate) {
+    const ratePct = rate * 100;
+    if (g.cgst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'CGST Output', ratePct / 2), debit: g.cgst, credit: 0 });
+    if (g.sgst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'SGST Output', ratePct / 2), debit: g.sgst, credit: 0 });
+    if (g.igst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'IGST Output', ratePct), debit: g.igst, credit: 0 });
+  }
+  lines.push({ accountId: getAccountIdByName(db, 'Sundry Debtors'), debit: 0, credit: cn.total });
+
+  const result = await postEntry(db, {
+    voucherType: 'credit-note',
+    voucherRef: cn.cn_number,
+    narration: `Credit note ${cn.cn_number} against ${cn.original_invoice_number} for ${customer.name}`,
+    postedAt: cn.cn_date,
+    actor: 'owner',
+    lines,
+  });
+  return result.entryId;
+}
+
+// Post a debit note to the ledger.
+// Reverses a purchase: Dr Sundry Creditors (total) / Cr Purchases (taxable) + Cr GST Input @ rate (tax)
+async function postDebitNoteToLedger(db, dn, vendor, computedLines) {
+  const lines = [];
+  lines.push({ accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: dn.total, credit: 0 });
+  lines.push({ accountId: getAccountIdByName(db, 'Purchases'), debit: 0, credit: dn.subtotal });
+  const byRate = new Map();
+  for (const ln of (computedLines || [])) {
+    const r = ln.tax_rate || 0;
+    if (!byRate.has(r)) byRate.set(r, { cgst: 0, sgst: 0, igst: 0 });
+    const g = byRate.get(r);
+    g.cgst += ln.cgst || 0;
+    g.sgst += ln.sgst || 0;
+    g.igst += ln.igst || 0;
+  }
+  for (const [rate, g] of byRate) {
+    const ratePct = rate * 100;
+    if (g.cgst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'CGST Input', ratePct / 2), debit: 0, credit: g.cgst });
+    if (g.sgst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'SGST Input', ratePct / 2), debit: 0, credit: g.sgst });
+    if (g.igst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'IGST Input', ratePct), debit: 0, credit: g.igst });
+  }
+  const result = await postEntry(db, {
+    voucherType: 'debit-note',
+    voucherRef: dn.dn_number,
+    narration: `Debit note ${dn.dn_number} against ${dn.original_bill_number} for ${vendor.name}`,
+    postedAt: dn.dn_date,
+    actor: 'owner',
+    lines,
+  });
+  return result.entryId;
+}
+
+// Period lock check — returns the lock row covering the given date, or null if not locked.
+function getPeriodLockForDate(db, returnType, dateIso) {
+  const r = db.exec(
+    'SELECT id, return_type, period_start, period_end, filed_at FROM period_locks WHERE return_type = ? AND period_start <= ? AND period_end >= ? LIMIT 1',
+    [returnType, dateIso, dateIso]
+  );
+  if (!r.length || !r[0].values.length) return null;
+  const v = r[0].values[0];
+  return { id: v[0], return_type: v[1], period_start: v[2], period_end: v[3], filed_at: v[4] };
+}
+
+// Compute net profit for a financial year (used by FY rollover wizard).
+function computeFYNetProfit(db, fyStart, fyEnd) {
+  const r = db.exec(`
+    SELECT a.type, COALESCE(SUM(l.credit), 0) - COALESCE(SUM(l.debit), 0) AS bal
+    FROM entries e
+    JOIN entry_lines l ON l.entry_id = e.id
+    JOIN accounts a ON a.id = l.account_id
+    WHERE e.posted_at BETWEEN ? AND ? AND a.type IN ('income', 'expense')
+    GROUP BY a.type
+  `, [fyStart, fyEnd]);
+  let income = 0, expense = 0;
+  if (r.length) {
+    for (const [type, bal] of r[0].values) {
+      if (type === 'income') income = bal;
+      else if (type === 'expense') expense = -bal; // expense increases on debit so flip
+    }
+  }
+  return { income, expense, netProfit: income - expense };
+}
+
+// Post the FY closing entry: zero out income and expense accounts to P&L Summary,
+// then move P&L Summary balance to Capital Account.
+async function postFYClosingEntry(db, fyStart, fyEnd) {
+  // Per-account balances for income and expense
+  const r = db.exec(`
+    SELECT a.id, a.name, a.type,
+      COALESCE(SUM(l.debit), 0) AS dr,
+      COALESCE(SUM(l.credit), 0) AS cr
+    FROM entries e
+    JOIN entry_lines l ON l.entry_id = e.id
+    JOIN accounts a ON a.id = l.account_id
+    WHERE e.posted_at BETWEEN ? AND ? AND a.type IN ('income', 'expense')
+    GROUP BY a.id, a.name, a.type
+    HAVING dr > 0 OR cr > 0
+  `, [fyStart, fyEnd]);
+
+  if (!r.length || !r[0].values.length) {
+    return { entryId: null, netProfit: 0, lineCount: 0 };
+  }
+
+  const lines = [];
+  const pnlSummaryId = getAccountIdByName(db, 'P&L Summary');
+  let netProfit = 0;
+
+  for (const [id, name, type, dr, cr] of r[0].values) {
+    if (type === 'income') {
+      // Income accounts have credit balance — debit them to zero out, credit P&L Summary
+      const bal = (cr || 0) - (dr || 0);
+      if (bal > 0) {
+        lines.push({ accountId: id, debit: bal, credit: 0 });
+        netProfit += bal;
+      }
+    } else if (type === 'expense') {
+      // Expense accounts have debit balance — credit them to zero out, debit P&L Summary
+      const bal = (dr || 0) - (cr || 0);
+      if (bal > 0) {
+        lines.push({ accountId: id, debit: 0, credit: bal });
+        netProfit -= bal;
+      }
+    }
+  }
+
+  // P&L Summary takes the net (Cr if profit, Dr if loss)
+  if (netProfit > 0) {
+    lines.push({ accountId: pnlSummaryId, debit: 0, credit: netProfit });
+  } else if (netProfit < 0) {
+    lines.push({ accountId: pnlSummaryId, debit: -netProfit, credit: 0 });
+  }
+
+  if (!lines.length) return { entryId: null, netProfit: 0, lineCount: 0 };
+
+  const result = await postEntry(db, {
+    voucherType: 'journal',
+    voucherRef: `FY-CLOSE-${fyStart.slice(0, 4)}`,
+    narration: `Year-end closing entries for FY ${fyStart} to ${fyEnd}`,
+    postedAt: fyEnd,
+    actor: 'system',
+    lines,
+  });
+
+  // Then move P&L Summary balance to Capital Account
+  if (netProfit !== 0) {
+    const capitalLines = netProfit > 0
+      ? [
+          { accountId: pnlSummaryId, debit: netProfit, credit: 0 },
+          { accountId: getAccountIdByName(db, 'Capital Account'), debit: 0, credit: netProfit },
+        ]
+      : [
+          { accountId: getAccountIdByName(db, 'Capital Account'), debit: -netProfit, credit: 0 },
+          { accountId: pnlSummaryId, debit: 0, credit: -netProfit },
+        ];
+    await postEntry(db, {
+      voucherType: 'journal',
+      voucherRef: `FY-CLOSE-${fyStart.slice(0, 4)}-CAP`,
+      narration: `Transfer net ${netProfit > 0 ? 'profit' : 'loss'} to Capital Account for FY ${fyStart} to ${fyEnd}`,
+      postedAt: fyEnd,
+      actor: 'system',
+      lines: capitalLines,
+    });
+  }
+
+  return { entryId: result.entryId, netProfit, lineCount: lines.length };
+}
+
+// === Reports — pure SQL aggregation ===
+
+// Trial Balance: every account with its closing balance.
+function getTrialBalance(db, asOfDate) {
+  const params = asOfDate ? [asOfDate] : [];
+  const dateClause = asOfDate ? 'WHERE e.posted_at <= ?' : '';
+  const r = db.exec(`
+    SELECT
+      a.id, a.name, a.type,
+      COALESCE(SUM(l.debit), 0) AS total_dr,
+      COALESCE(SUM(l.credit), 0) AS total_cr
+    FROM accounts a
+    LEFT JOIN entry_lines l ON l.account_id = a.id
+    LEFT JOIN entries e ON e.id = l.entry_id ${dateClause}
+    WHERE a.archived = 0
+    GROUP BY a.id, a.name, a.type
+    HAVING total_dr > 0 OR total_cr > 0
+    ORDER BY a.type, a.name
+  `, params);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([id, name, type, dr, cr]) => ({
+    id, name, type,
+    debit: dr,
+    credit: cr,
+    balance: dr - cr, // positive = debit, negative = credit
+  }));
+}
+
+// Day Book: every entry on a given date or in a date range.
+function getDayBook(db, fromDate, toDate) {
+  const r = db.exec(`
+    SELECT e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
+      (SELECT COALESCE(SUM(debit), 0) FROM entry_lines WHERE entry_id = e.id) AS total
+    FROM entries e
+    WHERE e.posted_at BETWEEN ? AND ?
+    ORDER BY e.posted_at, e.id
+  `, [fromDate, toDate]);
+  if (!r.length || !r[0].values.length) return [];
+  return r[0].values.map(([id, ts, vt, vref, narr, total]) => ({
+    id, posted_at: ts, voucher_type: vt, voucher_ref: vref, narration: narr, total,
+  }));
+}
+
+// Account ledger view: every line posted to a specific account, with running balance.
+function getAccountLedger(db, accountId, fromDate, toDate) {
+  const r = db.exec(`
+    SELECT l.id, e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
+      l.debit, l.credit, COALESCE(l.account_name, a.name) AS account_name
+    FROM entry_lines l
+    JOIN entries e ON e.id = l.entry_id
+    LEFT JOIN accounts a ON a.id = l.account_id
+    WHERE l.account_id = ? AND e.posted_at BETWEEN ? AND ?
+    ORDER BY e.posted_at, e.id, l.id
+  `, [accountId, fromDate, toDate]);
+  if (!r.length || !r[0].values.length) return [];
+  let running = 0;
+  return r[0].values.map(([lid, eid, ts, vt, vref, narr, dr, cr, name]) => {
+    running += (dr || 0) - (cr || 0);
+    return {
+      line_id: lid, entry_id: eid, posted_at: ts, voucher_type: vt,
+      voucher_ref: vref, narration: narr, debit: dr, credit: cr,
+      running_balance: running, account_name: name,
+    };
+  });
+}
+
+// Balance Sheet: assets / liabilities / equity rollup.
+function getBalanceSheet(db, asOfDate) {
+  const tb = getTrialBalance(db, asOfDate);
+  const result = {
+    assets: [], liabilities: [], equity: [],
+    totalAssets: 0, totalLiabilities: 0, totalEquity: 0,
+    asOfDate,
+  };
+  for (const row of tb) {
+    if (row.type === 'asset') {
+      result.assets.push({ name: row.name, balance: row.balance });
+      result.totalAssets += row.balance;
+    } else if (row.type === 'liability') {
+      const bal = -row.balance; // liabilities are credit-balance
+      result.liabilities.push({ name: row.name, balance: bal });
+      result.totalLiabilities += bal;
+    } else if (row.type === 'equity') {
+      const bal = -row.balance;
+      result.equity.push({ name: row.name, balance: bal });
+      result.totalEquity += bal;
+    }
+  }
+  // For unclosed FYs, current period income - expense should appear under equity as
+  // "Profit for the period". Add it.
+  let income = 0, expense = 0;
+  for (const row of tb) {
+    if (row.type === 'income') income += -row.balance;
+    else if (row.type === 'expense') expense += row.balance;
+  }
+  const periodProfit = income - expense;
+  if (periodProfit !== 0) {
+    result.equity.push({ name: 'Profit for the period (unclosed)', balance: periodProfit });
+    result.totalEquity += periodProfit;
+  }
+  return result;
+}
+
+// === GSTR-3B summary ===
+// Section 3.1: Tax on outward and reverse-charge inward supplies
+//   (a) Outward taxable (other than zero rated, nil rated and exempted)
+//   (b) Outward taxable (zero rated)
+//   (c) Other outward supplies (nil rated, exempted)
+//   (d) Inward supplies (liable to reverse charge)
+//   (e) Non-GST outward supplies
+// Section 4: Eligible ITC
+function buildGSTR3BSummary(db, periodStart, periodEnd) {
+  // Outward — sum from invoices
+  const invR = db.exec(`
+    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COUNT(*)
+    FROM invoices WHERE status='posted' AND invoice_date BETWEEN ? AND ?
+  `, [periodStart, periodEnd]);
+  const [outTaxable, outCgst, outSgst, outIgst, invoiceCount] = invR[0].values[0];
+
+  // ITC from purchases (non-RCM)
+  const purR = db.exec(`
+    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COUNT(*)
+    FROM purchases WHERE status='posted' AND reverse_charge=0 AND itc_eligible=1 AND bill_date BETWEEN ? AND ?
+  `, [periodStart, periodEnd]);
+  const [itcTaxable, itcCgst, itcSgst, itcIgst, purchaseCount] = purR[0].values[0];
+
+  // RCM purchases (Section 3.1d)
+  const rcmR = db.exec(`
+    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COUNT(*)
+    FROM purchases WHERE status='posted' AND reverse_charge=1 AND bill_date BETWEEN ? AND ?
+  `, [periodStart, periodEnd]);
+  const [rcmTaxable, rcmCgst, rcmSgst, rcmIgst, rcmCount] = rcmR[0].values[0];
+
+  return {
+    period_start: periodStart,
+    period_end: periodEnd,
+    outward: { taxable: outTaxable, cgst: outCgst, sgst: outSgst, igst: outIgst, count: invoiceCount },
+    itc: { taxable: itcTaxable, cgst: itcCgst, sgst: itcSgst, igst: itcIgst, count: purchaseCount },
+    rcm: { taxable: rcmTaxable, cgst: rcmCgst, sgst: rcmSgst, igst: rcmIgst, count: rcmCount },
+    netLiability: {
+      cgst: (outCgst + rcmCgst) - itcCgst,
+      sgst: (outSgst + rcmSgst) - itcSgst,
+      igst: (outIgst + rcmIgst) - itcIgst,
+    },
+  };
 }
 
 //------------------------------------------------------------
@@ -4864,7 +5570,26 @@ function render() {
   else if (r === '#/series')       renderInvoiceSeries(main);
   else if (r === '#/pnl')          renderPnL(main);
   else if (r === '#/gstr1')        renderGSTR1(main);
+  else if (r === '#/gstr3b')       renderGSTR3B(main);
   else if (r === '#/cmp08')        renderCmp08(main);
+  // Phase 3 routes
+  else if (r === '#/vendors')      renderVendors(main);
+  else if (r === '#/purchases')    renderPurchases(main);
+  else if (r === '#/purchase/new') renderPurchaseForm(main);
+  else if (r === '#/credit-notes') renderCreditNotes(main);
+  else if (r === '#/credit-note/new') renderCreditNoteForm(main);
+  else if (r === '#/debit-notes')  renderDebitNotes(main);
+  else if (r === '#/debit-note/new') renderDebitNoteForm(main);
+  else if (r === '#/journal/new')  renderJournalVoucherForm(main);
+  else if (r === '#/trial-balance') renderTrialBalance(main);
+  else if (r === '#/balance-sheet') renderBalanceSheet(main);
+  else if (r === '#/day-book')     renderDayBook(main);
+  else if (r === '#/account-ledger') renderAccountLedger(main);
+  else if (r === '#/sales-register') renderSalesRegister(main);
+  else if (r === '#/purchase-register') renderPurchaseRegister(main);
+  else if (r === '#/period-locks') renderPeriodLocks(main);
+  else if (r === '#/fy-rollover')  renderFYRollover(main);
+  else if (r === '#/tax-challans') renderTaxChallans(main);
   else if (r === '#/debug')        renderDebug(main);
   else if (r === '#/settings')     renderSettings(main);
   else                             main.appendChild(h('div', { class: 'empty' }, ['Unknown route']));
@@ -7586,6 +8311,1704 @@ function renderCmp08(main) {
 }
 
 //------------------------------------------------------------
+// === Phase 3 — Service SMB tier views ===
+//------------------------------------------------------------
+
+// --- Vendors --------------------------------------------------------------
+
+function renderVendors(main) {
+  if (!requireFileOrPrompt(main, 'Vendors')) return;
+  main.appendChild(h('h1', {}, ['Vendors']));
+
+  const actions = h('div', { class: 'row' });
+  const addBtn = h('button', { class: 'primary' }, ['+ Add vendor']);
+  addBtn.onclick = () => openVendorModal(null);
+  actions.appendChild(addBtn);
+  main.appendChild(actions);
+
+  const r = STATE.db.exec('SELECT id, name, gstin, state, email, phone, opening_balance, rcm_applicable, tds_section FROM vendors WHERE archived=0 ORDER BY name');
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No vendors yet. Click "+ Add vendor" to add your first.']));
+    return;
+  }
+  const outstandingMap = getOutstandingByVendor(STATE.db);
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Name</th><th>GSTIN</th><th>State</th><th>RCM</th><th>TDS</th><th class="num">Opening</th><th class="num">Outstanding</th><th></th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, name, gstin, state, email, phone, opening, rcm, tdsSec] of r[0].values) {
+    const tr = h('tr');
+    const sRow = state ? STATE_BY_ISO.get(state) : null;
+    const sLabel = sRow ? `${escapeHtml(sRow[2])} <code>${escapeHtml(state)}</code>` : escapeHtml(state || '—');
+    const outstanding = outstandingMap.get(id) || 0;
+    const outCell = outstanding > 0
+      ? `<b style="color:var(--alert)">${fmtINR(outstanding)}</b>`
+      : `<span style="color:var(--ink-2)">—</span>`;
+    tr.innerHTML = `
+      <td><b>${escapeHtml(name)}</b></td>
+      <td><code>${escapeHtml(gstin || '—')}</code></td>
+      <td>${sLabel}</td>
+      <td>${rcm ? '<b style="color:var(--saffron-deep)">RCM</b>' : '—'}</td>
+      <td>${tdsSec ? escapeHtml(tdsSec) : '—'}</td>
+      <td class="num">${fmtINR(opening || 0)}</td>
+      <td class="num">${outCell}</td>
+    `;
+    const td = h('td');
+    const editBtn = h('button', { class: 'small' }, ['Edit']);
+    editBtn.onclick = () => openVendorModal(id);
+    td.appendChild(editBtn);
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function openVendorModal(vendorId) {
+  const isEdit = !!vendorId;
+  let existing = null;
+  if (isEdit) {
+    const r = STATE.db.exec('SELECT id, name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section, opening_balance FROM vendors WHERE id = ?', [vendorId]);
+    if (r.length && r[0].values.length) {
+      const v = r[0].values[0];
+      existing = { id: v[0], name: v[1], gstin: v[2], pan: v[3], state: v[4], email: v[5], phone: v[6], address: v[7], rcm: v[8], tds: v[9], opening_balance: v[10] };
+    }
+  }
+  const wrap = $('modal');
+  wrap.innerHTML = '';
+  const m = h('div', { class: 'modal' });
+  m.appendChild(h('div', { class: 'modal-h' }, [isEdit ? 'Edit vendor' : 'New vendor']));
+  const body = h('div', { class: 'modal-b' });
+  const existingStateLabel = existing && existing.state && STATE_BY_ISO.has(existing.state)
+    ? stateLabel(STATE_BY_ISO.get(existing.state)) : '';
+  body.innerHTML = `
+    <div class="field"><label>Name</label><input id="vm-name" value="${escapeHtml(existing?.name || '')}" autocomplete="off"></div>
+    <div class="field"><label>GSTIN</label><input id="vm-gstin" value="${escapeHtml(existing?.gstin || '')}" placeholder="(optional)" maxlength="15" style="text-transform:uppercase" autocomplete="off"></div>
+    <div class="field"><label>State</label><input id="vm-state" list="bahi-states" value="${escapeHtml(existingStateLabel)}" placeholder="Type state name, ISO code, or GST code" autocomplete="off"></div>
+    <div class="field"><label>Email</label><input id="vm-email" value="${escapeHtml(existing?.email || '')}" type="email" autocomplete="off"></div>
+    <div class="field"><label>Phone</label><input id="vm-phone" value="${escapeHtml(existing?.phone || '')}" autocomplete="off"></div>
+    <div class="field"><label>Address</label><textarea id="vm-address" rows="2">${escapeHtml(existing?.address || '')}</textarea></div>
+    <div class="field"><label>RCM applicable</label>
+      <select id="vm-rcm">
+        <option value="0"${!existing?.rcm ? ' selected' : ''}>No (regular GST)</option>
+        <option value="1"${existing?.rcm ? ' selected' : ''}>Yes — supplies are notified RCM categories</option>
+      </select>
+    </div>
+    <div class="field"><label>Default TDS section</label>
+      <select id="vm-tds">
+        <option value="">— None —</option>
+        <option value="194C"${existing?.tds === '194C' ? ' selected' : ''}>194C — Contractors</option>
+        <option value="194J"${existing?.tds === '194J' ? ' selected' : ''}>194J — Professional / technical</option>
+        <option value="194I"${existing?.tds === '194I' ? ' selected' : ''}>194I — Rent</option>
+        <option value="194H"${existing?.tds === '194H' ? ' selected' : ''}>194H — Commission / brokerage</option>
+        <option value="194Q"${existing?.tds === '194Q' ? ' selected' : ''}>194Q — Goods purchase &gt; ₹50L</option>
+      </select>
+    </div>
+    <div class="field"><label>Opening balance (₹) — payable</label><input id="vm-opening" value="${existing ? (existing.opening_balance / 100).toFixed(2) : ''}" placeholder="0.00" style="text-align:right"></div>
+    <p class="help">RCM (Reverse Charge Mechanism): you pay GST to the government instead of the vendor. Common for legal services, GTA, etc.</p>
+  `;
+  m.appendChild(body);
+  const cancel = h('button', {}, ['Cancel']);
+  cancel.onclick = () => closeModal();
+  const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add vendor']);
+  save.onclick = async () => {
+    const name = $('vm-name').value.trim();
+    if (!name) { toast('Name is required', 'err'); return; }
+    let gstin = $('vm-gstin').value.trim().toUpperCase();
+    if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
+      toast('GSTIN format invalid', 'err'); return;
+    }
+    const stateRow = parseStateInput($('vm-state').value);
+    const stateIso = stateRow ? stateRow[0] : null;
+    if ($('vm-state').value.trim() && !stateRow) {
+      toast(`State "${$('vm-state').value}" is not recognised.`, 'err'); return;
+    }
+    if (gstin && stateRow && gstin.slice(0, 2) !== stateRow[1]) {
+      toast(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'err');
+      return;
+    }
+    const pan = (gstin && gstin.length >= 12) ? gstin.slice(2, 12) : null;
+    const opening = parseRupees($('vm-opening').value);
+    const rcm = parseInt($('vm-rcm').value, 10) || 0;
+    const tds = $('vm-tds').value || null;
+    try {
+      if (isEdit) {
+        STATE.db.run(
+          'UPDATE vendors SET name=?, gstin=?, pan=?, state=?, email=?, phone=?, address=?, rcm_applicable=?, tds_section=?, opening_balance=? WHERE id=?',
+          [name, gstin || null, pan, stateIso || null, $('vm-email').value.trim() || null, $('vm-phone').value.trim() || null, $('vm-address').value.trim() || null, rcm, tds, opening, vendorId]
+        );
+      } else {
+        STATE.db.run(
+          'INSERT INTO vendors (name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+          [name, gstin || null, pan, stateIso || null, $('vm-email').value.trim() || null, $('vm-phone').value.trim() || null, $('vm-address').value.trim() || null, rcm, tds, opening, nowIso()]
+        );
+        await appendAuditEntry(STATE.db, { actor: 'owner', action: 'vendor.create', ref: name, payload: { name, gstin, stateIso, rcm, tds } });
+      }
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(isEdit ? 'Vendor updated' : 'Vendor added', 'ok');
+      closeModal();
+      render();
+    } catch (e) {
+      console.error(e);
+      toast('Save failed: ' + e.message, 'err');
+    }
+  };
+  m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
+  wrap.appendChild(m);
+  wrap.classList.remove('hidden');
+  setTimeout(() => {
+    const gstinEl = $('vm-gstin');
+    const stateEl = $('vm-state');
+    gstinEl.addEventListener('input', () => {
+      const v = gstinEl.value.trim().toUpperCase();
+      if (v.length >= 2) {
+        const s = STATE_BY_GSTIN.get(v.slice(0, 2));
+        if (s) {
+          const want = stateLabel(s);
+          if (stateEl.value !== want) stateEl.value = want;
+        }
+      }
+    });
+    stateEl.addEventListener('change', () => {
+      const s = parseStateInput(stateEl.value);
+      if (!s) return;
+      const want = stateLabel(s);
+      if (stateEl.value !== want) stateEl.value = want;
+      const v = gstinEl.value.trim().toUpperCase();
+      if (v.length >= 2 && /^[0-9]{2}/.test(v) && v.slice(0, 2) !== s[1]) {
+        gstinEl.value = s[1] + v.slice(2);
+      }
+    });
+    $('vm-name').focus();
+  }, 30);
+}
+
+// --- Purchases ------------------------------------------------------------
+
+function renderPurchases(main) {
+  if (!requireFileOrPrompt(main, 'Purchases')) return;
+  main.appendChild(h('h1', {}, ['Purchases']));
+  const actions = h('div', { class: 'row' });
+  const newBtn = h('button', { class: 'primary' }, ['+ New purchase']);
+  newBtn.onclick = () => nav('#/purchase/new');
+  actions.appendChild(newBtn);
+  main.appendChild(actions);
+
+  const r = STATE.db.exec(`
+    SELECT p.id, p.internal_ref, p.bill_number, p.bill_date, v.name, p.subtotal, p.cgst, p.sgst, p.igst, p.total, p.reverse_charge, p.itc_eligible
+    FROM purchases p JOIN vendors v ON v.id = p.vendor_id
+    WHERE p.status='posted' ORDER BY p.bill_date DESC, p.id DESC LIMIT 500
+  `);
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No purchases posted yet.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>Internal ref</th><th>Bill #</th><th>Date</th><th>Vendor</th><th class="num">Taxable</th><th class="num">GST</th><th class="num">Total</th><th>Flags</th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, ref, bill, date, vname, sub, cgst, sgst, igst, total, rcm, itc] of r[0].values) {
+    const tr = h('tr');
+    const flags = [];
+    if (rcm) flags.push('<b style="color:var(--saffron-deep)">RCM</b>');
+    if (!itc) flags.push('<span style="color:var(--alert)">ITC blocked</span>');
+    tr.innerHTML = `
+      <td><code>${escapeHtml(ref)}</code></td>
+      <td>${escapeHtml(bill)}</td>
+      <td>${escapeHtml(date)}</td>
+      <td>${escapeHtml(vname)}</td>
+      <td class="num">${fmtINR(sub)}</td>
+      <td class="num">${fmtINR((cgst||0)+(sgst||0)+(igst||0))}</td>
+      <td class="num"><b>${fmtINR(total)}</b></td>
+      <td>${flags.join(' · ') || '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function renderPurchaseForm(main) {
+  if (!requireFileOrPrompt(main, 'New purchase')) return;
+  main.appendChild(h('h1', {}, ['New purchase']));
+  const vR = STATE.db.exec('SELECT id, name, gstin, state, rcm_applicable FROM vendors WHERE archived=0 ORDER BY name');
+  const vendors = vR.length ? vR[0].values.map(v => ({ id: v[0], name: v[1], gstin: v[2], state: v[3], rcm: v[4] })) : [];
+  if (!vendors.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [
+      h('h3', {}, ['No vendors yet']),
+      h('p', {}, ['Add at least one vendor before posting a purchase.']),
+    ]));
+    return;
+  }
+
+  const companyState = STATE.manifest.company?.state || null;
+  const form = {
+    vendorId: vendors[0].id,
+    billNumber: '',
+    billDate: nowIso().slice(0, 10),
+    placeOfSupply: vendors[0].state || companyState || '',
+    reverseCharge: !!vendors[0].rcm,
+    itcEligible: true,
+    notes: '',
+    lines: [{ description: '', hsnSac: '', quantity: '1', rate: '', tax_rate: 0.18 }],
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Purchase details']));
+  const body = h('div', { class: 'panel-b' });
+  const vendorOptions = vendors.map(v => `<option value="${v.id}">${escapeHtml(v.name)}${v.gstin ? ' · ' + escapeHtml(v.gstin) : ''}</option>`).join('');
+  const initialPosLabel = vendors[0].state && STATE_BY_ISO.has(vendors[0].state) ? stateLabel(STATE_BY_ISO.get(vendors[0].state)) : '';
+  const internalRef = nextPurchaseRef(STATE.db);
+  const header = h('div');
+  header.innerHTML = `
+    <div class="field"><label>Vendor</label><select id="pu-vendor">${vendorOptions}</select></div>
+    <div class="field"><label>Internal ref (auto)</label><input id="pu-ref" value="${escapeHtml(internalRef)}" readonly style="background:var(--ash)"></div>
+    <div class="field"><label>Vendor's bill number</label><input id="pu-bill" placeholder="As printed on the vendor's bill" autocomplete="off"></div>
+    <div class="field"><label>Bill date</label><input id="pu-date" type="date" value="${form.billDate}"></div>
+    <div class="field"><label>Place of supply</label><input id="pu-pos" list="bahi-states" value="${escapeHtml(initialPosLabel)}"></div>
+    <div class="field"><label>Reverse charge (RCM)</label>
+      <select id="pu-rcm">
+        <option value="0"${!form.reverseCharge ? ' selected' : ''}>No</option>
+        <option value="1"${form.reverseCharge ? ' selected' : ''}>Yes — RCM applies</option>
+      </select>
+    </div>
+    <div class="field"><label>ITC eligible</label>
+      <select id="pu-itc">
+        <option value="1" selected>Yes — claim ITC</option>
+        <option value="0">No — blocked credit (motor vehicles, club fees, etc.)</option>
+      </select>
+    </div>
+    <div class="field"><label>Notes</label><textarea id="pu-notes" rows="2"></textarea></div>
+  `;
+  body.appendChild(header);
+
+  const linesTbl = h('table', { class: 'dense', style: 'margin-top:14px' });
+  linesTbl.innerHTML = `
+    <thead><tr>
+      <th style="width:35%">Description</th>
+      <th>HSN/SAC</th>
+      <th class="num" style="width:8%">Qty</th>
+      <th class="num" style="width:14%">Rate</th>
+      <th class="num" style="width:9%">Tax</th>
+      <th class="num" style="width:14%">Amount</th>
+      <th></th>
+    </tr></thead><tbody></tbody>
+  `;
+  body.appendChild(linesTbl);
+  const totalsBox = h('div', { id: 'pu-totals', style: 'margin-top:14px;font-size:13px;text-align:right;line-height:1.8' });
+  body.appendChild(totalsBox);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const addLineBtn = h('button', {}, ['+ Add line']);
+  addLineBtn.onclick = () => { form.lines.push({ description: '', hsnSac: '', quantity: '1', rate: '', tax_rate: 0.18 }); rerenderLines(); };
+  const postBtn = h('button', { class: 'primary' }, ['Post purchase & save']);
+  postBtn.onclick = doPostPurchase;
+  ctrls.appendChild(addLineBtn);
+  ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+
+  panel.appendChild(body);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    $('pu-vendor').addEventListener('change', () => {
+      form.vendorId = parseInt($('pu-vendor').value, 10);
+      const v = vendors.find(x => x.id === form.vendorId);
+      if (v) {
+        if (v.state && STATE_BY_ISO.has(v.state)) {
+          $('pu-pos').value = stateLabel(STATE_BY_ISO.get(v.state));
+          form.placeOfSupply = v.state;
+        }
+        $('pu-rcm').value = v.rcm ? '1' : '0';
+        form.reverseCharge = !!v.rcm;
+      }
+      recomputeTotals();
+    });
+    $('pu-bill').addEventListener('input', () => { form.billNumber = $('pu-bill').value; });
+    $('pu-date').addEventListener('change', () => { form.billDate = $('pu-date').value; });
+    $('pu-pos').addEventListener('change', () => {
+      const row = parseStateInput($('pu-pos').value);
+      if (row) { $('pu-pos').value = stateLabel(row); form.placeOfSupply = row[0]; }
+      else form.placeOfSupply = '';
+      recomputeTotals();
+    });
+    $('pu-rcm').addEventListener('change', () => { form.reverseCharge = $('pu-rcm').value === '1'; recomputeTotals(); });
+    $('pu-itc').addEventListener('change', () => { form.itcEligible = $('pu-itc').value === '1'; });
+    $('pu-notes').addEventListener('input', () => { form.notes = $('pu-notes').value; });
+    rerenderLines();
+  }, 0);
+
+  function rerenderLines() {
+    const tbody = linesTbl.querySelector('tbody');
+    tbody.innerHTML = '';
+    form.lines.forEach((ln, idx) => {
+      const tr = h('tr');
+      const descInp = h('input', { type: 'text', value: ln.description || '', style: 'width:100%' });
+      descInp.oninput = (e) => { ln.description = e.target.value; };
+      const tdDesc = h('td'); tdDesc.appendChild(descInp); tr.appendChild(tdDesc);
+
+      const hsnInp = h('input', { type: 'text', value: ln.hsnSac || '', style: 'width:100%' });
+      hsnInp.oninput = (e) => { ln.hsnSac = e.target.value; };
+      const tdHsn = h('td'); tdHsn.appendChild(hsnInp); tr.appendChild(tdHsn);
+
+      const qtyInp = h('input', { type: 'text', value: ln.quantity || '', style: 'width:100%;text-align:right' });
+      qtyInp.oninput = (e) => { ln.quantity = e.target.value; recomputeTotals(); };
+      const tdQty = h('td', { class: 'num' }); tdQty.appendChild(qtyInp); tr.appendChild(tdQty);
+
+      const rateInp = h('input', { type: 'text', value: ln.rate || '', placeholder: '0.00', style: 'width:100%;text-align:right' });
+      rateInp.oninput = (e) => { ln.rate = e.target.value; recomputeTotals(); };
+      const tdRate = h('td', { class: 'num' }); tdRate.appendChild(rateInp); tr.appendChild(tdRate);
+
+      const taxSel = document.createElement('select');
+      taxSel.style.width = '100%';
+      const activeForDate = getActiveGstRates(form.billDate || nowIso());
+      let lineRateInActive = false;
+      for (const r of activeForDate) {
+        const dec = r.rate / 100;
+        const o = h('option', { value: String(dec) }, [r.rate + '%']);
+        if (Math.abs(ln.tax_rate - dec) < 1e-9) { o.selected = true; lineRateInActive = true; }
+        taxSel.appendChild(o);
+      }
+      if (!lineRateInActive && ln.tax_rate != null) {
+        const o = h('option', { value: String(ln.tax_rate) }, [(ln.tax_rate * 100).toFixed(2) + '% (retired)']);
+        o.selected = true;
+        taxSel.insertBefore(o, taxSel.firstChild);
+      }
+      taxSel.onchange = (e) => { ln.tax_rate = parseFloat(e.target.value); recomputeTotals(); };
+      const tdTax = h('td', { class: 'num' }); tdTax.appendChild(taxSel); tr.appendChild(tdTax);
+
+      const taxableCell = h('td', { class: 'num' }, [fmtINR(computeLineTaxable(ln))]);
+      tr.appendChild(taxableCell);
+
+      const tdRm = h('td');
+      if (form.lines.length > 1) {
+        const rmBtn = h('button', { class: 'small' }, ['×']);
+        rmBtn.onclick = () => { form.lines.splice(idx, 1); rerenderLines(); };
+        tdRm.appendChild(rmBtn);
+      }
+      tr.appendChild(tdRm);
+      tbody.appendChild(tr);
+    });
+    recomputeTotals();
+  }
+
+  function computeLineTaxable(ln) {
+    const qty = parseFloat(ln.quantity) || 0;
+    const rate = parseRupees(ln.rate);
+    return Math.max(0, Math.round(qty * rate));
+  }
+
+  function recomputeTotals() {
+    const customerState = form.placeOfSupply || null;
+    const computedLines = form.lines.map(ln => ({ ...ln, taxable: computeLineTaxable(ln) }));
+    const totals = computeInvoiceTax({
+      companyStateIso: companyState,
+      customerStateIso: customerState,
+      isExport: false,
+      isSez: false,
+      lines: computedLines,
+    });
+    const routing = form.reverseCharge
+      ? 'RCM · self-pay GST'
+      : (totals.intraState ? 'intra-state · CGST+SGST' : 'inter-state · IGST');
+    totalsBox.innerHTML = `
+      <div>Subtotal: <b>${fmtINR(totals.subtotal)}</b></div>
+      ${totals.cgst ? `<div>CGST: <b>${fmtINR(totals.cgst)}</b></div>` : ''}
+      ${totals.sgst ? `<div>SGST: <b>${fmtINR(totals.sgst)}</b></div>` : ''}
+      ${totals.igst ? `<div>IGST: <b>${fmtINR(totals.igst)}</b></div>` : ''}
+      <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:15px">Bill total: ${fmtINR(totals.total)}</b></div>
+      <div style="font-size:11px;color:var(--ink-2);margin-top:4px">${routing}</div>
+    `;
+    postBtn.disabled = totals.total <= 0;
+  }
+
+  async function doPostPurchase() {
+    try {
+      const vendor = vendors.find(v => v.id === form.vendorId);
+      if (!vendor) { toast('Pick a vendor', 'err'); return; }
+      if (!$('pu-bill').value.trim()) { toast('Vendor bill number is required', 'err'); return; }
+      const billDateForLookup = $('pu-date').value || nowIso();
+      const computedLines = form.lines
+        .map((ln, i) => ({
+          line_no: i + 1,
+          description: ln.description || '',
+          hsn_sac: ln.hsnSac || null,
+          quantity: parseFloat(ln.quantity) || 0,
+          rate: parseRupees(ln.rate),
+          taxable: computeLineTaxable(ln),
+          tax_rate: ln.tax_rate || 0,
+          rate_id: rateIdForDecimal(ln.tax_rate || 0, billDateForLookup),
+        }))
+        .filter(ln => ln.taxable > 0 && ln.description);
+      if (!computedLines.length) { toast('Add at least one valid line', 'err'); return; }
+      const customerState = form.placeOfSupply || null;
+      const totals = computeInvoiceTax({
+        companyStateIso: companyState,
+        customerStateIso: customerState,
+        isExport: false,
+        isSez: false,
+        lines: computedLines,
+      });
+
+      const billNumber = $('pu-bill').value.trim();
+      const internalRefVal = $('pu-ref').value;
+      const billDate = $('pu-date').value;
+      const notes = $('pu-notes').value.trim() || null;
+      const rcm = $('pu-rcm').value === '1' ? 1 : 0;
+      const itcEligible = $('pu-itc').value === '1' ? 1 : 0;
+
+      const companySnapshot = JSON.stringify(STATE.manifest.company || {});
+      const fullVendorRow = STATE.db.exec(
+        'SELECT name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section FROM vendors WHERE id = ?',
+        [vendor.id]
+      );
+      const vv = (fullVendorRow.length && fullVendorRow[0].values.length) ? fullVendorRow[0].values[0] : [];
+      const vendorStateRow = vv[3] && STATE_BY_ISO.has(vv[3]) ? STATE_BY_ISO.get(vv[3]) : null;
+      const vendorSnapshot = JSON.stringify({
+        name: vv[0] || null, gstin: vv[1] || null, pan: vv[2] || null,
+        state: vv[3] || null,
+        stateName: vendorStateRow ? vendorStateRow[2] : null,
+        email: vv[4] || null, phone: vv[5] || null, address: vv[6] || null,
+        rcm_applicable: vv[7] || 0, tds_section: vv[8] || null,
+      });
+      const posRow = customerState && STATE_BY_ISO.has(customerState) ? STATE_BY_ISO.get(customerState) : null;
+      const placeOfSupplyName = posRow ? posRow[2] : null;
+
+      STATE.db.run('BEGIN');
+      try {
+        STATE.db.run(
+          'INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [billNumber, internalRefVal, vendor.id, billDate, customerState, placeOfSupplyName, rcm, itcEligible, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.total, notes, 'posted', companySnapshot, vendorSnapshot, nowIso()]
+        );
+        const purchaseId = lastInsertId(STATE.db);
+        const lineStmt = STATE.db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        for (const ln of computedLines) {
+          lineStmt.run([purchaseId, ln.line_no, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, itcEligible, ln.total || (ln.taxable + (ln.cgst||0) + (ln.sgst||0) + (ln.igst||0))]);
+        }
+        lineStmt.free();
+        STATE.db.run('COMMIT');
+
+        const entryId = await postPurchaseToLedger(STATE.db, {
+          internal_ref: internalRefVal,
+          bill_number: billNumber,
+          bill_date: billDate,
+          subtotal: totals.subtotal,
+          cgst: totals.cgst, sgst: totals.sgst, igst: totals.igst,
+          total: totals.total,
+          reverse_charge: rcm,
+        }, vendor, computedLines);
+        STATE.db.run('UPDATE purchases SET ledger_entry_id = ? WHERE id = ?', [entryId, purchaseId]);
+
+        setSaveStatus('unsaved');
+        const ok = await persistKhata();
+        if (!ok) { render(); return; }
+        toast(`Purchase ${internalRefVal} posted (${fmtINR(totals.total)}) and saved`, 'ok');
+        nav('#/purchases');
+      } catch (e) {
+        try { STATE.db.run('ROLLBACK'); } catch (_) {}
+        throw e;
+      }
+    } catch (e) {
+      console.error(e);
+      toast('Post failed: ' + e.message, 'err');
+    }
+  }
+}
+
+// --- Reports: Trial Balance / Balance Sheet / Day Book / Account Ledger ---
+
+function renderTrialBalance(main) {
+  if (!requireFileOrPrompt(main, 'Trial Balance')) return;
+  main.appendChild(h('h1', {}, ['Trial Balance']));
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `<div class="field" style="margin:0"><label>As of</label><input id="tb-date" type="date" value="${today}"></div>`;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'tb-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const asOf = $('tb-date').value || today;
+    const rows = getTrialBalance(STATE.db, asOf);
+    if (!rows.length) {
+      out.appendChild(h('div', { class: 'empty' }, ['No postings yet.']));
+      return;
+    }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Account</th><th>Type</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>';
+    const tbody = h('tbody');
+    let totalDr = 0, totalCr = 0;
+    for (const row of rows) {
+      const tr = h('tr');
+      const drVal = Math.max(0, row.balance);
+      const crVal = Math.max(0, -row.balance);
+      totalDr += drVal; totalCr += crVal;
+      tr.innerHTML = `
+        <td>${escapeHtml(row.name)}</td>
+        <td><span style="font-size:10px;color:var(--ink-2);text-transform:uppercase">${escapeHtml(row.type)}</span></td>
+        <td class="num">${drVal ? fmtINR(drVal) : '—'}</td>
+        <td class="num">${crVal ? fmtINR(crVal) : '—'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+    const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+    totalRow.innerHTML = `<td colspan="2"><b>Totals</b></td><td class="num"><b>${fmtINR(totalDr)}</b></td><td class="num"><b>${fmtINR(totalCr)}</b></td>`;
+    tbody.appendChild(totalRow);
+    if (Math.abs(totalDr - totalCr) > 1) {
+      const warn = h('tr');
+      warn.innerHTML = `<td colspan="4" style="color:var(--alert)"><b>⚠ Trial balance does not tie. Difference: ${fmtINR(Math.abs(totalDr - totalCr))}</b></td>`;
+      tbody.appendChild(warn);
+    }
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+  setTimeout(() => {
+    $('tb-date').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+function renderBalanceSheet(main) {
+  if (!requireFileOrPrompt(main, 'Balance Sheet')) return;
+  main.appendChild(h('h1', {}, ['Balance Sheet']));
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `<div class="field" style="margin:0"><label>As of</label><input id="bs-date" type="date" value="${today}"></div>`;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'bs-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const asOf = $('bs-date').value || today;
+    const bs = getBalanceSheet(STATE.db, asOf);
+    function section(title, items, total) {
+      const panel = h('div', { class: 'panel' });
+      panel.appendChild(h('div', { class: 'panel-h' }, [title]));
+      const b = h('div', { class: 'panel-b' });
+      if (!items.length) {
+        b.appendChild(h('div', { class: 'empty' }, ['—']));
+      } else {
+        const tbl = h('table', { class: 'dense' });
+        tbl.innerHTML = '<thead><tr><th>Account</th><th class="num">Amount</th></tr></thead>';
+        const tbody = h('tbody');
+        for (const it of items) {
+          const tr = h('tr');
+          tr.innerHTML = `<td>${escapeHtml(it.name)}</td><td class="num">${fmtINR(it.balance)}</td>`;
+          tbody.appendChild(tr);
+        }
+        const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+        totalRow.innerHTML = `<td><b>Total ${escapeHtml(title)}</b></td><td class="num"><b>${fmtINR(total)}</b></td>`;
+        tbody.appendChild(totalRow);
+        tbl.appendChild(tbody);
+        b.appendChild(tbl);
+      }
+      panel.appendChild(b);
+      return panel;
+    }
+    out.appendChild(section('Assets', bs.assets, bs.totalAssets));
+    out.appendChild(section('Liabilities', bs.liabilities, bs.totalLiabilities));
+    out.appendChild(section('Equity', bs.equity, bs.totalEquity));
+    const tieDiff = bs.totalAssets - (bs.totalLiabilities + bs.totalEquity);
+    const tieBox = h('div', { class: 'panel' });
+    tieBox.appendChild(h('div', { class: 'panel-h' }, ['Tie check']));
+    tieBox.appendChild(h('div', { class: 'panel-b' }, [
+      h('div', {}, [`Total assets: ${fmtINR(bs.totalAssets)}`]),
+      h('div', {}, [`Total liabilities + equity: ${fmtINR(bs.totalLiabilities + bs.totalEquity)}`]),
+      h('div', { style: Math.abs(tieDiff) > 1 ? 'color:var(--alert);font-weight:700' : 'color:var(--green);font-weight:700' }, [
+        Math.abs(tieDiff) > 1 ? `⚠ Out of balance by ${fmtINR(Math.abs(tieDiff))}` : '✓ Balance sheet ties',
+      ]),
+    ]));
+    out.appendChild(tieBox);
+  }
+  setTimeout(() => {
+    $('bs-date').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+function renderDayBook(main) {
+  if (!requireFileOrPrompt(main, 'Day Book')) return;
+  main.appendChild(h('h1', {}, ['Day Book']));
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0"><label>From</label><input id="db-from" type="date" value="${today.slice(0, 8)}01"></div>
+    <div class="field" style="margin:0"><label>To</label><input id="db-to" type="date" value="${today}"></div>
+  `;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'db-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const from = $('db-from').value, to = $('db-to').value;
+    const rows = getDayBook(STATE.db, from, to);
+    if (!rows.length) { out.appendChild(h('div', { class: 'empty' }, ['No entries in this range.'])); return; }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Date</th><th>Voucher</th><th>Ref</th><th>Narration</th><th class="num">Amount</th></tr></thead>';
+    const tbody = h('tbody');
+    let total = 0;
+    for (const r of rows) {
+      total += r.total || 0;
+      const tr = h('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml((r.posted_at || '').slice(0, 10))}</td>
+        <td><span style="font-size:10px;text-transform:uppercase;color:var(--ink-2)">${escapeHtml(r.voucher_type || '')}</span></td>
+        <td><code>${escapeHtml(r.voucher_ref || '')}</code></td>
+        <td>${escapeHtml(r.narration || '')}</td>
+        <td class="num">${fmtINR(r.total)}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+    const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+    totalRow.innerHTML = `<td colspan="4"><b>${rows.length} entries</b></td><td class="num"><b>${fmtINR(total)}</b></td>`;
+    tbody.appendChild(totalRow);
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+  setTimeout(() => {
+    $('db-from').addEventListener('change', rebuild);
+    $('db-to').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+function renderAccountLedger(main) {
+  if (!requireFileOrPrompt(main, 'Account Ledger')) return;
+  main.appendChild(h('h1', {}, ['Account Ledger']));
+  const accR = STATE.db.exec('SELECT id, name, type FROM accounts WHERE archived=0 ORDER BY type, name');
+  if (!accR.length || !accR[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No accounts.']));
+    return;
+  }
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  const accOpts = accR[0].values.map(([id, name, type]) => `<option value="${id}">${escapeHtml(name)} (${escapeHtml(type)})</option>`).join('');
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0;min-width:280px"><label>Account</label><select id="al-acc">${accOpts}</select></div>
+    <div class="field" style="margin:0"><label>From</label><input id="al-from" type="date" value="${today.slice(0, 4)}-04-01"></div>
+    <div class="field" style="margin:0"><label>To</label><input id="al-to" type="date" value="${today}"></div>
+  `;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'al-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const accId = parseInt($('al-acc').value, 10);
+    const from = $('al-from').value, to = $('al-to').value;
+    const rows = getAccountLedger(STATE.db, accId, from, to);
+    if (!rows.length) { out.appendChild(h('div', { class: 'empty' }, ['No postings to this account in range.'])); return; }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Date</th><th>Voucher</th><th>Ref</th><th>Narration</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const r of rows) {
+      const tr = h('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml((r.posted_at || '').slice(0, 10))}</td>
+        <td><span style="font-size:10px;text-transform:uppercase;color:var(--ink-2)">${escapeHtml(r.voucher_type || '')}</span></td>
+        <td><code>${escapeHtml(r.voucher_ref || '')}</code></td>
+        <td>${escapeHtml(r.narration || '')}</td>
+        <td class="num">${r.debit ? fmtINR(r.debit) : '—'}</td>
+        <td class="num">${r.credit ? fmtINR(r.credit) : '—'}</td>
+        <td class="num"><b>${fmtINR(r.running_balance)}</b></td>
+      `;
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+  setTimeout(() => {
+    $('al-acc').addEventListener('change', rebuild);
+    $('al-from').addEventListener('change', rebuild);
+    $('al-to').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+function renderSalesRegister(main) {
+  if (!requireFileOrPrompt(main, 'Sales Register')) return;
+  main.appendChild(h('h1', {}, ['Sales Register']));
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0"><label>From</label><input id="sr-from" type="date" value="${today.slice(0, 8)}01"></div>
+    <div class="field" style="margin:0"><label>To</label><input id="sr-to" type="date" value="${today}"></div>
+  `;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'sr-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const from = $('sr-from').value, to = $('sr-to').value;
+    const r = STATE.db.exec(`
+      SELECT i.invoice_number, i.invoice_date, c.name, i.place_of_supply, i.subtotal, i.cgst, i.sgst, i.igst, i.total
+      FROM invoices i JOIN customers c ON c.id = i.customer_id
+      WHERE i.status='posted' AND i.invoice_date BETWEEN ? AND ?
+      ORDER BY i.invoice_date, i.id
+    `, [from, to]);
+    if (!r.length || !r[0].values.length) {
+      out.appendChild(h('div', { class: 'empty' }, ['No invoices in this range.'])); return;
+    }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>#</th><th>Date</th><th>Customer</th><th>POS</th><th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total</th></tr></thead>';
+    const tbody = h('tbody');
+    let tSub = 0, tC = 0, tS = 0, tI = 0, tT = 0;
+    for (const [num, date, cust, pos, sub, c, s, i, total] of r[0].values) {
+      tSub += sub; tC += (c||0); tS += (s||0); tI += (i||0); tT += total;
+      const tr = h('tr');
+      tr.innerHTML = `
+        <td><code>${escapeHtml(num)}</code></td>
+        <td>${escapeHtml(date)}</td>
+        <td>${escapeHtml(cust)}</td>
+        <td>${escapeHtml(pos || '—')}</td>
+        <td class="num">${fmtINR(sub)}</td>
+        <td class="num">${c ? fmtINR(c) : '—'}</td>
+        <td class="num">${s ? fmtINR(s) : '—'}</td>
+        <td class="num">${i ? fmtINR(i) : '—'}</td>
+        <td class="num"><b>${fmtINR(total)}</b></td>
+      `;
+      tbody.appendChild(tr);
+    }
+    const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+    totalRow.innerHTML = `<td colspan="4"><b>Totals (${r[0].values.length} invoices)</b></td><td class="num"><b>${fmtINR(tSub)}</b></td><td class="num"><b>${fmtINR(tC)}</b></td><td class="num"><b>${fmtINR(tS)}</b></td><td class="num"><b>${fmtINR(tI)}</b></td><td class="num"><b>${fmtINR(tT)}</b></td>`;
+    tbody.appendChild(totalRow);
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+  setTimeout(() => {
+    $('sr-from').addEventListener('change', rebuild);
+    $('sr-to').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+function renderPurchaseRegister(main) {
+  if (!requireFileOrPrompt(main, 'Purchase Register')) return;
+  main.appendChild(h('h1', {}, ['Purchase Register']));
+  const today = nowIso().slice(0, 10);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `
+    <div class="field" style="margin:0"><label>From</label><input id="pr-from" type="date" value="${today.slice(0, 8)}01"></div>
+    <div class="field" style="margin:0"><label>To</label><input id="pr-to" type="date" value="${today}"></div>
+  `;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'pr-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const from = $('pr-from').value, to = $('pr-to').value;
+    const r = STATE.db.exec(`
+      SELECT p.internal_ref, p.bill_number, p.bill_date, v.name, p.subtotal, p.cgst, p.sgst, p.igst, p.total, p.reverse_charge
+      FROM purchases p JOIN vendors v ON v.id = p.vendor_id
+      WHERE p.status='posted' AND p.bill_date BETWEEN ? AND ?
+      ORDER BY p.bill_date, p.id
+    `, [from, to]);
+    if (!r.length || !r[0].values.length) {
+      out.appendChild(h('div', { class: 'empty' }, ['No purchases in this range.'])); return;
+    }
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Internal</th><th>Bill #</th><th>Date</th><th>Vendor</th><th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total</th><th>RCM</th></tr></thead>';
+    const tbody = h('tbody');
+    let tSub = 0, tC = 0, tS = 0, tI = 0, tT = 0;
+    for (const [ref, bill, date, vend, sub, c, s, i, total, rcm] of r[0].values) {
+      tSub += sub; tC += (c||0); tS += (s||0); tI += (i||0); tT += total;
+      const tr = h('tr');
+      tr.innerHTML = `
+        <td><code>${escapeHtml(ref)}</code></td>
+        <td>${escapeHtml(bill)}</td>
+        <td>${escapeHtml(date)}</td>
+        <td>${escapeHtml(vend)}</td>
+        <td class="num">${fmtINR(sub)}</td>
+        <td class="num">${c ? fmtINR(c) : '—'}</td>
+        <td class="num">${s ? fmtINR(s) : '—'}</td>
+        <td class="num">${i ? fmtINR(i) : '—'}</td>
+        <td class="num"><b>${fmtINR(total)}</b></td>
+        <td>${rcm ? '<b style="color:var(--saffron-deep)">RCM</b>' : '—'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+    const totalRow = h('tr', { style: 'border-top:2px solid var(--ink);font-weight:700;background:var(--ash)' });
+    totalRow.innerHTML = `<td colspan="4"><b>Totals (${r[0].values.length} purchases)</b></td><td class="num"><b>${fmtINR(tSub)}</b></td><td class="num"><b>${fmtINR(tC)}</b></td><td class="num"><b>${fmtINR(tS)}</b></td><td class="num"><b>${fmtINR(tI)}</b></td><td class="num"><b>${fmtINR(tT)}</b></td><td></td>`;
+    tbody.appendChild(totalRow);
+    tbl.appendChild(tbody);
+    out.appendChild(tbl);
+  }
+  setTimeout(() => {
+    $('pr-from').addEventListener('change', rebuild);
+    $('pr-to').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// --- GSTR-3B view -------------------------------------------------------
+
+function renderGSTR3B(main) {
+  if (!requireFileOrPrompt(main, 'GSTR-3B')) return;
+  main.appendChild(h('h1', {}, ['GSTR-3B — monthly summary']));
+  if (STATE.manifest.company?.composition?.enabled) {
+    main.appendChild(h('div', { class: 'error-screen' }, [
+      h('h3', {}, ['Composition mode']),
+      h('p', {}, ['Composition dealers do not file GSTR-3B. They file CMP-08 (quarterly) and GSTR-4 (annual). Use the CMP-08 export instead.']),
+    ]));
+    return;
+  }
+  const now = new Date();
+  const curMonth = now.toISOString().slice(0, 7);
+  const ctrl = h('div', { class: 'row' });
+  ctrl.innerHTML = `<div class="field" style="margin:0"><label>Period</label><input id="g3b-month" type="month" value="${curMonth}"></div>`;
+  main.appendChild(ctrl);
+  const out = h('div', { id: 'g3b-out', style: 'margin-top:14px' });
+  main.appendChild(out);
+  function rebuild() {
+    out.innerHTML = '';
+    const m = $('g3b-month').value;
+    if (!m) return;
+    const start = m + '-01';
+    const [y, mo] = m.split('-').map(Number);
+    const lastDay = new Date(y, mo, 0).getDate();
+    const end = `${m}-${String(lastDay).padStart(2, '0')}`;
+    const sum = buildGSTR3BSummary(STATE.db, start, end);
+
+    const sec = (title, body) => {
+      const p = h('div', { class: 'panel' });
+      p.appendChild(h('div', { class: 'panel-h' }, [title]));
+      const b = h('div', { class: 'panel-b' });
+      b.innerHTML = body;
+      p.appendChild(b);
+      return p;
+    };
+
+    out.appendChild(sec('Section 3.1 — Outward and inward (RCM) supplies', `
+      <table class="dense">
+        <thead><tr><th>Nature</th><th class="num">Taxable</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th></tr></thead>
+        <tbody>
+          <tr><td>(a) Outward taxable (other than zero rated, nil and exempted)</td><td class="num">${fmtINR(sum.outward.taxable)}</td><td class="num">${fmtINR(sum.outward.cgst)}</td><td class="num">${fmtINR(sum.outward.sgst)}</td><td class="num">${fmtINR(sum.outward.igst)}</td></tr>
+          <tr><td>(d) Inward supplies (liable to reverse charge)</td><td class="num">${fmtINR(sum.rcm.taxable)}</td><td class="num">${fmtINR(sum.rcm.cgst)}</td><td class="num">${fmtINR(sum.rcm.sgst)}</td><td class="num">${fmtINR(sum.rcm.igst)}</td></tr>
+        </tbody>
+      </table>
+    `));
+
+    out.appendChild(sec('Section 4 — Eligible ITC', `
+      <table class="dense">
+        <thead><tr><th>Source</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th></tr></thead>
+        <tbody>
+          <tr><td>(A) ITC available (other than RCM)</td><td class="num">${fmtINR(sum.itc.cgst)}</td><td class="num">${fmtINR(sum.itc.sgst)}</td><td class="num">${fmtINR(sum.itc.igst)}</td></tr>
+          <tr><td>(A)(3) Inward supplies liable to RCM (input)</td><td class="num">${fmtINR(sum.rcm.cgst)}</td><td class="num">${fmtINR(sum.rcm.sgst)}</td><td class="num">${fmtINR(sum.rcm.igst)}</td></tr>
+        </tbody>
+      </table>
+    `));
+
+    const liab = sum.netLiability;
+    out.appendChild(sec('Net liability after ITC', `
+      <table class="dense">
+        <thead><tr><th></th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th></tr></thead>
+        <tbody>
+          <tr><td>Net payable</td><td class="num"><b>${fmtINR(Math.max(0, liab.cgst))}</b></td><td class="num"><b>${fmtINR(Math.max(0, liab.sgst))}</b></td><td class="num"><b>${fmtINR(Math.max(0, liab.igst))}</b></td></tr>
+        </tbody>
+      </table>
+      <p class="help">Negative values indicate input credit carry-forward. Phase 3 ships the summary; the GSTN portal upload JSON for GSTR-3B is a Phase 4 polish item.</p>
+    `));
+
+    // Download buttons
+    const dl = h('div', { class: 'panel' });
+    dl.appendChild(h('div', { class: 'panel-h' }, ['Download']));
+    const dbody = h('div', { class: 'panel-b' });
+    const row = h('div', { class: 'row' });
+    const j = h('button', { class: 'primary' }, ['Download JSON']);
+    j.onclick = async () => {
+      try {
+        const blob = new Blob([JSON.stringify(sum, null, 2)], { type: 'application/json' });
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `gstr3b-${slugify(STATE.manifest.company?.name || 'co')}-${m}.json`,
+          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+        });
+        const w = await handle.createWritable(); await w.write(blob); await w.close();
+        toast(`Saved ${handle.name}`, 'ok');
+      } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+    };
+    const c = h('button', {}, ['Download CSV summary']);
+    c.onclick = async () => {
+      try {
+        const csv = [
+          'Bahi GSTR-3B summary',
+          `Company,${STATE.manifest.company?.name || ''}`,
+          `GSTIN,${STATE.manifest.company?.gstin || ''}`,
+          `Period,${start} to ${end}`,
+          '',
+          'Section,Taxable,CGST,SGST,IGST',
+          `3.1(a) Outward taxable,${paiseToRs(sum.outward.taxable)},${paiseToRs(sum.outward.cgst)},${paiseToRs(sum.outward.sgst)},${paiseToRs(sum.outward.igst)}`,
+          `3.1(d) RCM inward,${paiseToRs(sum.rcm.taxable)},${paiseToRs(sum.rcm.cgst)},${paiseToRs(sum.rcm.sgst)},${paiseToRs(sum.rcm.igst)}`,
+          `4(A) ITC available,${paiseToRs(sum.itc.taxable)},${paiseToRs(sum.itc.cgst)},${paiseToRs(sum.itc.sgst)},${paiseToRs(sum.itc.igst)}`,
+          `Net liability,,${paiseToRs(Math.max(0,liab.cgst))},${paiseToRs(Math.max(0,liab.sgst))},${paiseToRs(Math.max(0,liab.igst))}`,
+        ].join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `gstr3b-summary-${slugify(STATE.manifest.company?.name || 'co')}-${m}.csv`,
+          types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
+        });
+        const w = await handle.createWritable(); await w.write(blob); await w.close();
+        toast(`Saved ${handle.name}`, 'ok');
+      } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+    };
+    row.appendChild(j); row.appendChild(c);
+    dbody.appendChild(row);
+    dl.appendChild(dbody);
+    out.appendChild(dl);
+  }
+  setTimeout(() => {
+    $('g3b-month').addEventListener('change', rebuild);
+    rebuild();
+  }, 0);
+}
+
+// --- Credit notes -------------------------------------------------------
+
+function renderCreditNotes(main) {
+  if (!requireFileOrPrompt(main, 'Credit Notes')) return;
+  main.appendChild(h('h1', {}, ['Credit Notes']));
+  const actions = h('div', { class: 'row' });
+  const newBtn = h('button', { class: 'primary' }, ['+ New credit note']);
+  newBtn.onclick = () => nav('#/credit-note/new');
+  actions.appendChild(newBtn);
+  main.appendChild(actions);
+  const r = STATE.db.exec(`
+    SELECT cn.id, cn.cn_number, cn.cn_date, cn.original_invoice_number, c.name, cn.reason, cn.subtotal, cn.cgst, cn.sgst, cn.igst, cn.total
+    FROM credit_notes cn JOIN customers c ON c.id = cn.customer_id
+    WHERE cn.status='posted' ORDER BY cn.cn_date DESC, cn.id DESC
+  `);
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No credit notes posted yet.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>CN #</th><th>Date</th><th>Against</th><th>Customer</th><th>Reason</th><th class="num">Taxable</th><th class="num">GST</th><th class="num">Total</th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, num, date, origNum, cust, reason, sub, c, s, i, total] of r[0].values) {
+    const tr = h('tr');
+    tr.innerHTML = `
+      <td><code>${escapeHtml(num)}</code></td>
+      <td>${escapeHtml(date)}</td>
+      <td><code>${escapeHtml(origNum)}</code></td>
+      <td>${escapeHtml(cust)}</td>
+      <td>${escapeHtml(reason || '—')}</td>
+      <td class="num">${fmtINR(sub)}</td>
+      <td class="num">${fmtINR((c||0)+(s||0)+(i||0))}</td>
+      <td class="num"><b>${fmtINR(total)}</b></td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function renderCreditNoteForm(main) {
+  if (!requireFileOrPrompt(main, 'New credit note')) return;
+  main.appendChild(h('h1', {}, ['New credit note']));
+  const invR = STATE.db.exec(`
+    SELECT id, invoice_number, invoice_date, customer_id, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, customer_snapshot, company_snapshot
+    FROM invoices WHERE status='posted' ORDER BY invoice_date DESC, id DESC LIMIT 200
+  `);
+  if (!invR.length || !invR[0].values.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [h('p', {}, ['No invoices to credit against. Post an invoice first.'])]));
+    return;
+  }
+  const invoices = invR[0].values.map(v => ({
+    id: v[0], invoice_number: v[1], invoice_date: v[2], customer_id: v[3],
+    place_of_supply: v[4], place_of_supply_name: v[5],
+    subtotal: v[6], cgst: v[7], sgst: v[8], igst: v[9], total: v[10],
+    customer_snapshot: v[11], company_snapshot: v[12],
+  }));
+
+  const form = {
+    invoiceId: invoices[0].id,
+    cnDate: nowIso().slice(0, 10),
+    reason: 'sales-return',
+    notes: '',
+    fullReversal: true,
+    partialAmount: '',
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Credit note details']));
+  const body = h('div', { class: 'panel-b' });
+  const opts = invoices.map(i => `<option value="${i.id}">${escapeHtml(i.invoice_number)} · ${i.invoice_date} · ${fmtINR(i.total)}</option>`).join('');
+  body.innerHTML = `
+    <div class="field"><label>Original invoice</label><select id="cn-inv">${opts}</select></div>
+    <div class="field"><label>CN number (auto)</label><input id="cn-num" value="${escapeHtml(nextCreditNoteNumber(STATE.db))}" readonly style="background:var(--ash)"></div>
+    <div class="field"><label>CN date</label><input id="cn-date" type="date" value="${form.cnDate}"></div>
+    <div class="field"><label>Reason</label>
+      <select id="cn-reason">
+        <option value="sales-return" selected>Sales return</option>
+        <option value="rate-difference">Rate difference</option>
+        <option value="discount">Post-supply discount</option>
+        <option value="deficiency">Deficiency in service</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div class="field"><label>Mode</label>
+      <select id="cn-mode">
+        <option value="full" selected>Full reversal (mirror invoice)</option>
+        <option value="partial">Partial credit (enter amount)</option>
+      </select>
+    </div>
+    <div class="field" id="cn-partial-wrap" style="display:none"><label>Partial credit (₹)</label><input id="cn-partial" placeholder="0.00" style="text-align:right"></div>
+    <div class="field"><label>Notes</label><textarea id="cn-notes" rows="2"></textarea></div>
+    <div id="cn-summary" style="margin-top:14px;padding:10px;background:var(--ash);border:1px solid var(--rule);border-radius:4px"></div>
+  `;
+  panel.appendChild(body);
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const postBtn = h('button', { class: 'primary' }, ['Post credit note & save']);
+  postBtn.onclick = doPostCN;
+  ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  function recomputeSummary() {
+    const inv = invoices.find(i => i.id === form.invoiceId);
+    if (!inv) return;
+    const partialWrap = $('cn-partial-wrap');
+    const isPartial = $('cn-mode').value === 'partial';
+    partialWrap.style.display = isPartial ? '' : 'none';
+    let cnTotal, cnSub, cnCgst, cnSgst, cnIgst;
+    if (isPartial) {
+      cnTotal = parseRupees($('cn-partial').value);
+      const ratio = inv.total > 0 ? cnTotal / inv.total : 0;
+      cnSub = Math.round(inv.subtotal * ratio);
+      cnCgst = Math.round((inv.cgst || 0) * ratio);
+      cnSgst = Math.round((inv.sgst || 0) * ratio);
+      cnIgst = Math.round((inv.igst || 0) * ratio);
+    } else {
+      cnTotal = inv.total; cnSub = inv.subtotal; cnCgst = inv.cgst || 0; cnSgst = inv.sgst || 0; cnIgst = inv.igst || 0;
+    }
+    $('cn-summary').innerHTML = `
+      <div style="font-size:11px;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700">Credit summary</div>
+      <div style="margin-top:6px">Taxable: <b>${fmtINR(cnSub)}</b></div>
+      ${cnCgst ? `<div>CGST: <b>${fmtINR(cnCgst)}</b></div>` : ''}
+      ${cnSgst ? `<div>SGST: <b>${fmtINR(cnSgst)}</b></div>` : ''}
+      ${cnIgst ? `<div>IGST: <b>${fmtINR(cnIgst)}</b></div>` : ''}
+      <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:14px">Credit total: ${fmtINR(cnTotal)}</b></div>
+    `;
+  }
+
+  setTimeout(() => {
+    $('cn-inv').addEventListener('change', () => { form.invoiceId = parseInt($('cn-inv').value, 10); recomputeSummary(); });
+    $('cn-mode').addEventListener('change', recomputeSummary);
+    $('cn-partial').addEventListener('input', recomputeSummary);
+    $('cn-date').addEventListener('change', () => { form.cnDate = $('cn-date').value; });
+    recomputeSummary();
+  }, 0);
+
+  async function doPostCN() {
+    try {
+      const inv = invoices.find(i => i.id === form.invoiceId);
+      if (!inv) { toast('Pick an invoice', 'err'); return; }
+      const isPartial = $('cn-mode').value === 'partial';
+      let cnSub, cnCgst, cnSgst, cnIgst, cnTotal;
+      if (isPartial) {
+        cnTotal = parseRupees($('cn-partial').value);
+        if (cnTotal <= 0 || cnTotal > inv.total) {
+          toast(`Partial amount must be between ₹0.01 and ${fmtINR(inv.total)}`, 'err'); return;
+        }
+        const ratio = cnTotal / inv.total;
+        cnSub = Math.round(inv.subtotal * ratio);
+        cnCgst = Math.round((inv.cgst || 0) * ratio);
+        cnSgst = Math.round((inv.sgst || 0) * ratio);
+        cnIgst = Math.round((inv.igst || 0) * ratio);
+      } else {
+        cnSub = inv.subtotal; cnCgst = inv.cgst || 0; cnSgst = inv.sgst || 0; cnIgst = inv.igst || 0; cnTotal = inv.total;
+      }
+      const custR = STATE.db.exec('SELECT id, name FROM customers WHERE id = ?', [inv.customer_id]);
+      const customer = (custR.length && custR[0].values.length) ? { id: custR[0].values[0][0], name: custR[0].values[0][1] } : { id: inv.customer_id, name: 'Customer' };
+
+      const cnNumber = $('cn-num').value;
+      const cnDate = $('cn-date').value;
+      const reason = $('cn-reason').value;
+      const notes = $('cn-notes').value.trim() || null;
+
+      STATE.db.run('BEGIN');
+      try {
+        STATE.db.run(
+          'INSERT INTO credit_notes (cn_number, cn_date, original_invoice_id, original_invoice_number, customer_id, reason, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [cnNumber, cnDate, inv.id, inv.invoice_number, inv.customer_id, reason, inv.place_of_supply, inv.place_of_supply_name, cnSub, cnCgst, cnSgst, cnIgst, cnTotal, notes, 'posted', inv.company_snapshot, inv.customer_snapshot, nowIso()]
+        );
+        const cnId = lastInsertId(STATE.db);
+        const linesR = STATE.db.exec('SELECT line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no', [inv.id]);
+        const ratio = inv.total > 0 ? cnTotal / inv.total : 0;
+        const computedLines = [];
+        if (linesR.length && linesR[0].values.length) {
+          const lineStmt = STATE.db.prepare('INSERT INTO credit_note_lines (cn_id, line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+          for (const lv of linesR[0].values) {
+            const [ln, desc, hsn, hsnD, qty, rate, taxable, taxR, rateId, c, s, i, t] = lv;
+            const aSub = Math.round((taxable || 0) * ratio);
+            const aC = Math.round((c || 0) * ratio);
+            const aS = Math.round((s || 0) * ratio);
+            const aI = Math.round((i || 0) * ratio);
+            const aT = aSub + aC + aS + aI;
+            lineStmt.run([cnId, ln, desc, hsn, hsnD, qty, rate, aSub, taxR, rateId, aC, aS, aI, aT]);
+            computedLines.push({ cgst: aC, sgst: aS, igst: aI, tax_rate: taxR });
+          }
+          lineStmt.free();
+        }
+        STATE.db.run('COMMIT');
+
+        const entryId = await postCreditNoteToLedger(STATE.db, {
+          cn_number: cnNumber, cn_date: cnDate,
+          original_invoice_number: inv.invoice_number,
+          subtotal: cnSub, cgst: cnCgst, sgst: cnSgst, igst: cnIgst, total: cnTotal,
+        }, customer, computedLines);
+        STATE.db.run('UPDATE credit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, cnId]);
+
+        setSaveStatus('unsaved');
+        const ok = await persistKhata();
+        if (!ok) { render(); return; }
+        toast(`Credit note ${cnNumber} posted (${fmtINR(cnTotal)})`, 'ok');
+        nav('#/credit-notes');
+      } catch (e) {
+        try { STATE.db.run('ROLLBACK'); } catch (_) {}
+        throw e;
+      }
+    } catch (e) {
+      console.error(e);
+      toast('Post failed: ' + e.message, 'err');
+    }
+  }
+}
+
+// --- Debit notes -------------------------------------------------------
+
+function renderDebitNotes(main) {
+  if (!requireFileOrPrompt(main, 'Debit Notes')) return;
+  main.appendChild(h('h1', {}, ['Debit Notes']));
+  const actions = h('div', { class: 'row' });
+  const newBtn = h('button', { class: 'primary' }, ['+ New debit note']);
+  newBtn.onclick = () => nav('#/debit-note/new');
+  actions.appendChild(newBtn);
+  main.appendChild(actions);
+  const r = STATE.db.exec(`
+    SELECT dn.id, dn.dn_number, dn.dn_date, dn.original_bill_number, v.name, dn.reason, dn.subtotal, dn.cgst, dn.sgst, dn.igst, dn.total
+    FROM debit_notes dn JOIN vendors v ON v.id = dn.vendor_id
+    WHERE dn.status='posted' ORDER BY dn.dn_date DESC, dn.id DESC
+  `);
+  if (!r.length || !r[0].values.length) {
+    main.appendChild(h('div', { class: 'empty' }, ['No debit notes posted yet.']));
+    return;
+  }
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>DN #</th><th>Date</th><th>Against bill</th><th>Vendor</th><th>Reason</th><th class="num">Taxable</th><th class="num">GST</th><th class="num">Total</th></tr></thead>';
+  const tbody = h('tbody');
+  for (const [id, num, date, origBill, vend, reason, sub, c, s, i, total] of r[0].values) {
+    const tr = h('tr');
+    tr.innerHTML = `
+      <td><code>${escapeHtml(num)}</code></td>
+      <td>${escapeHtml(date)}</td>
+      <td>${escapeHtml(origBill)}</td>
+      <td>${escapeHtml(vend)}</td>
+      <td>${escapeHtml(reason || '—')}</td>
+      <td class="num">${fmtINR(sub)}</td>
+      <td class="num">${fmtINR((c||0)+(s||0)+(i||0))}</td>
+      <td class="num"><b>${fmtINR(total)}</b></td>
+    `;
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  main.appendChild(tbl);
+}
+
+function renderDebitNoteForm(main) {
+  if (!requireFileOrPrompt(main, 'New debit note')) return;
+  main.appendChild(h('h1', {}, ['New debit note']));
+  const purR = STATE.db.exec(`
+    SELECT id, internal_ref, bill_number, bill_date, vendor_id, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, vendor_snapshot, company_snapshot
+    FROM purchases WHERE status='posted' ORDER BY bill_date DESC, id DESC LIMIT 200
+  `);
+  if (!purR.length || !purR[0].values.length) {
+    main.appendChild(h('div', { class: 'error-screen' }, [h('p', {}, ['No purchases to debit against. Post a purchase first.'])]));
+    return;
+  }
+  const purchases = purR[0].values.map(v => ({
+    id: v[0], internal_ref: v[1], bill_number: v[2], bill_date: v[3], vendor_id: v[4],
+    place_of_supply: v[5], place_of_supply_name: v[6],
+    subtotal: v[7], cgst: v[8], sgst: v[9], igst: v[10], total: v[11],
+    vendor_snapshot: v[12], company_snapshot: v[13],
+  }));
+
+  const form = { purchaseId: purchases[0].id, dnDate: nowIso().slice(0, 10) };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Debit note details']));
+  const body = h('div', { class: 'panel-b' });
+  const opts = purchases.map(p => `<option value="${p.id}">${escapeHtml(p.internal_ref)} · ${escapeHtml(p.bill_number)} · ${p.bill_date} · ${fmtINR(p.total)}</option>`).join('');
+  body.innerHTML = `
+    <div class="field"><label>Original purchase</label><select id="dn-pur">${opts}</select></div>
+    <div class="field"><label>DN number (auto)</label><input id="dn-num" value="${escapeHtml(nextDebitNoteNumber(STATE.db))}" readonly style="background:var(--ash)"></div>
+    <div class="field"><label>DN date</label><input id="dn-date" type="date" value="${form.dnDate}"></div>
+    <div class="field"><label>Reason</label>
+      <select id="dn-reason">
+        <option value="purchase-return" selected>Purchase return</option>
+        <option value="rate-difference">Rate difference</option>
+        <option value="quality">Quality issue</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div class="field"><label>Mode</label>
+      <select id="dn-mode">
+        <option value="full" selected>Full reversal</option>
+        <option value="partial">Partial</option>
+      </select>
+    </div>
+    <div class="field" id="dn-partial-wrap" style="display:none"><label>Partial amount (₹)</label><input id="dn-partial" placeholder="0.00" style="text-align:right"></div>
+    <div class="field"><label>Notes</label><textarea id="dn-notes" rows="2"></textarea></div>
+    <div id="dn-summary" style="margin-top:14px;padding:10px;background:var(--ash);border:1px solid var(--rule);border-radius:4px"></div>
+  `;
+  panel.appendChild(body);
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const postBtn = h('button', { class: 'primary' }, ['Post debit note & save']);
+  postBtn.onclick = doPostDN;
+  ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  function recomputeSummary() {
+    const pur = purchases.find(p => p.id === form.purchaseId);
+    if (!pur) return;
+    const isPartial = $('dn-mode').value === 'partial';
+    $('dn-partial-wrap').style.display = isPartial ? '' : 'none';
+    let dnTotal, dnSub, dnCgst, dnSgst, dnIgst;
+    if (isPartial) {
+      dnTotal = parseRupees($('dn-partial').value);
+      const ratio = pur.total > 0 ? dnTotal / pur.total : 0;
+      dnSub = Math.round(pur.subtotal * ratio);
+      dnCgst = Math.round((pur.cgst || 0) * ratio);
+      dnSgst = Math.round((pur.sgst || 0) * ratio);
+      dnIgst = Math.round((pur.igst || 0) * ratio);
+    } else {
+      dnTotal = pur.total; dnSub = pur.subtotal; dnCgst = pur.cgst || 0; dnSgst = pur.sgst || 0; dnIgst = pur.igst || 0;
+    }
+    $('dn-summary').innerHTML = `
+      <div style="font-size:11px;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700">Debit summary</div>
+      <div style="margin-top:6px">Taxable: <b>${fmtINR(dnSub)}</b></div>
+      ${dnCgst ? `<div>CGST: <b>${fmtINR(dnCgst)}</b></div>` : ''}
+      ${dnSgst ? `<div>SGST: <b>${fmtINR(dnSgst)}</b></div>` : ''}
+      ${dnIgst ? `<div>IGST: <b>${fmtINR(dnIgst)}</b></div>` : ''}
+      <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:14px">Debit total: ${fmtINR(dnTotal)}</b></div>
+    `;
+  }
+
+  setTimeout(() => {
+    $('dn-pur').addEventListener('change', () => { form.purchaseId = parseInt($('dn-pur').value, 10); recomputeSummary(); });
+    $('dn-mode').addEventListener('change', recomputeSummary);
+    $('dn-partial').addEventListener('input', recomputeSummary);
+    $('dn-date').addEventListener('change', () => { form.dnDate = $('dn-date').value; });
+    recomputeSummary();
+  }, 0);
+
+  async function doPostDN() {
+    try {
+      const pur = purchases.find(p => p.id === form.purchaseId);
+      if (!pur) { toast('Pick a purchase', 'err'); return; }
+      const isPartial = $('dn-mode').value === 'partial';
+      let dnSub, dnCgst, dnSgst, dnIgst, dnTotal;
+      if (isPartial) {
+        dnTotal = parseRupees($('dn-partial').value);
+        if (dnTotal <= 0 || dnTotal > pur.total) { toast(`Amount must be between ₹0.01 and ${fmtINR(pur.total)}`, 'err'); return; }
+        const ratio = dnTotal / pur.total;
+        dnSub = Math.round(pur.subtotal * ratio);
+        dnCgst = Math.round((pur.cgst || 0) * ratio);
+        dnSgst = Math.round((pur.sgst || 0) * ratio);
+        dnIgst = Math.round((pur.igst || 0) * ratio);
+      } else {
+        dnSub = pur.subtotal; dnCgst = pur.cgst || 0; dnSgst = pur.sgst || 0; dnIgst = pur.igst || 0; dnTotal = pur.total;
+      }
+      const vR = STATE.db.exec('SELECT id, name FROM vendors WHERE id = ?', [pur.vendor_id]);
+      const vendor = (vR.length && vR[0].values.length) ? { id: vR[0].values[0][0], name: vR[0].values[0][1] } : { id: pur.vendor_id, name: 'Vendor' };
+
+      const dnNumber = $('dn-num').value;
+      const dnDate = $('dn-date').value;
+      const reason = $('dn-reason').value;
+      const notes = $('dn-notes').value.trim() || null;
+
+      STATE.db.run('BEGIN');
+      try {
+        STATE.db.run(
+          'INSERT INTO debit_notes (dn_number, dn_date, original_purchase_id, original_bill_number, vendor_id, reason, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [dnNumber, dnDate, pur.id, pur.bill_number, pur.vendor_id, reason, pur.place_of_supply, pur.place_of_supply_name, dnSub, dnCgst, dnSgst, dnIgst, dnTotal, notes, 'posted', pur.company_snapshot, pur.vendor_snapshot, nowIso()]
+        );
+        const dnId = lastInsertId(STATE.db);
+        const linesR = STATE.db.exec('SELECT line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total FROM purchase_lines WHERE purchase_id = ? ORDER BY line_no', [pur.id]);
+        const ratio = pur.total > 0 ? dnTotal / pur.total : 0;
+        const computedLines = [];
+        if (linesR.length && linesR[0].values.length) {
+          const lineStmt = STATE.db.prepare('INSERT INTO debit_note_lines (dn_id, line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+          for (const lv of linesR[0].values) {
+            const [ln, desc, hsn, hsnD, qty, rate, taxable, taxR, rateId, c, s, i, t] = lv;
+            const aSub = Math.round((taxable || 0) * ratio);
+            const aC = Math.round((c || 0) * ratio);
+            const aS = Math.round((s || 0) * ratio);
+            const aI = Math.round((i || 0) * ratio);
+            const aT = aSub + aC + aS + aI;
+            lineStmt.run([dnId, ln, desc, hsn, hsnD, qty, rate, aSub, taxR, rateId, aC, aS, aI, aT]);
+            computedLines.push({ cgst: aC, sgst: aS, igst: aI, tax_rate: taxR });
+          }
+          lineStmt.free();
+        }
+        STATE.db.run('COMMIT');
+
+        const entryId = await postDebitNoteToLedger(STATE.db, {
+          dn_number: dnNumber, dn_date: dnDate,
+          original_bill_number: pur.bill_number,
+          subtotal: dnSub, cgst: dnCgst, sgst: dnSgst, igst: dnIgst, total: dnTotal,
+        }, vendor, computedLines);
+        STATE.db.run('UPDATE debit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, dnId]);
+
+        setSaveStatus('unsaved');
+        const ok = await persistKhata();
+        if (!ok) { render(); return; }
+        toast(`Debit note ${dnNumber} posted (${fmtINR(dnTotal)})`, 'ok');
+        nav('#/debit-notes');
+      } catch (e) {
+        try { STATE.db.run('ROLLBACK'); } catch (_) {}
+        throw e;
+      }
+    } catch (e) {
+      console.error(e);
+      toast('Post failed: ' + e.message, 'err');
+    }
+  }
+}
+
+// --- Journal voucher form ----------------------------------------------
+
+function renderJournalVoucherForm(main) {
+  if (!requireFileOrPrompt(main, 'Journal voucher')) return;
+  main.appendChild(h('h1', {}, ['Journal Voucher']));
+  main.appendChild(h('p', { class: 'help' }, ['Free-form double-entry posting. Use for adjustments, year-end provisions, opening balances, and any movement that doesn\'t fit invoices, purchases, payments, or notes.']));
+
+  const accR = STATE.db.exec('SELECT id, name, type FROM accounts WHERE archived=0 ORDER BY type, name');
+  if (!accR.length || !accR[0].values.length) { main.appendChild(h('div', { class: 'empty' }, ['No accounts.'])); return; }
+  const accounts = accR[0].values.map(v => ({ id: v[0], name: v[1], type: v[2] }));
+
+  const form = {
+    voucherRef: '',
+    postedAt: nowIso().slice(0, 10),
+    narration: '',
+    lines: [
+      { accountId: accounts[0].id, debit: '', credit: '' },
+      { accountId: accounts[0].id, debit: '', credit: '' },
+    ],
+  };
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Journal voucher details']));
+  const body = h('div', { class: 'panel-b' });
+  body.innerHTML = `
+    <div class="field"><label>Voucher reference</label><input id="jv-ref" placeholder="e.g. JV/2025/001"></div>
+    <div class="field"><label>Posting date</label><input id="jv-date" type="date" value="${form.postedAt}"></div>
+    <div class="field"><label>Narration</label><textarea id="jv-narr" rows="2" placeholder="What is this entry for?"></textarea></div>
+  `;
+  panel.appendChild(body);
+  const linesTbl = h('table', { class: 'dense', style: 'margin-top:14px' });
+  linesTbl.innerHTML = '<thead><tr><th>Account</th><th class="num">Debit (₹)</th><th class="num">Credit (₹)</th><th></th></tr></thead><tbody></tbody>';
+  body.appendChild(linesTbl);
+  const totalsBox = h('div', { id: 'jv-totals', style: 'margin-top:14px;font-size:13px;text-align:right;line-height:1.8' });
+  body.appendChild(totalsBox);
+
+  const ctrls = h('div', { class: 'row', style: 'margin-top:14px' });
+  const addLineBtn = h('button', {}, ['+ Add line']);
+  addLineBtn.onclick = () => { form.lines.push({ accountId: accounts[0].id, debit: '', credit: '' }); rerender(); };
+  const postBtn = h('button', { class: 'primary' }, ['Post journal voucher & save']);
+  postBtn.onclick = doPost;
+  ctrls.appendChild(addLineBtn); ctrls.appendChild(postBtn);
+  body.appendChild(ctrls);
+  main.appendChild(panel);
+
+  setTimeout(() => {
+    $('jv-ref').addEventListener('input', () => { form.voucherRef = $('jv-ref').value; });
+    $('jv-date').addEventListener('change', () => { form.postedAt = $('jv-date').value; });
+    $('jv-narr').addEventListener('input', () => { form.narration = $('jv-narr').value; });
+    rerender();
+  }, 0);
+
+  function rerender() {
+    const tbody = linesTbl.querySelector('tbody');
+    tbody.innerHTML = '';
+    form.lines.forEach((ln, idx) => {
+      const tr = h('tr');
+      const accSel = document.createElement('select');
+      accSel.style.width = '100%';
+      for (const a of accounts) {
+        const o = h('option', { value: String(a.id) }, [`${a.name} (${a.type})`]);
+        if (String(a.id) === String(ln.accountId)) o.selected = true;
+        accSel.appendChild(o);
+      }
+      accSel.onchange = (e) => { ln.accountId = parseInt(e.target.value, 10); };
+      const tdAcc = h('td'); tdAcc.appendChild(accSel); tr.appendChild(tdAcc);
+      const drInp = h('input', { type: 'text', value: ln.debit || '', placeholder: '0.00', style: 'width:100%;text-align:right' });
+      drInp.id = `jv-dr-${idx}`;
+      drInp.oninput = (e) => { ln.debit = e.target.value; if (e.target.value) { ln.credit = ''; const ce = document.getElementById(`jv-cr-${idx}`); if (ce) ce.value = ''; } recomputeTotals(); };
+      const tdDr = h('td', { class: 'num' }); tdDr.appendChild(drInp); tr.appendChild(tdDr);
+      const crInp = h('input', { type: 'text', value: ln.credit || '', placeholder: '0.00', style: 'width:100%;text-align:right' });
+      crInp.id = `jv-cr-${idx}`;
+      crInp.oninput = (e) => { ln.credit = e.target.value; if (e.target.value) { ln.debit = ''; const de = document.getElementById(`jv-dr-${idx}`); if (de) de.value = ''; } recomputeTotals(); };
+      const tdCr = h('td', { class: 'num' }); tdCr.appendChild(crInp); tr.appendChild(tdCr);
+      const tdRm = h('td');
+      if (form.lines.length > 2) {
+        const rmBtn = h('button', { class: 'small' }, ['×']);
+        rmBtn.onclick = () => { form.lines.splice(idx, 1); rerender(); };
+        tdRm.appendChild(rmBtn);
+      }
+      tr.appendChild(tdRm);
+      tbody.appendChild(tr);
+    });
+    recomputeTotals();
+  }
+  function recomputeTotals() {
+    let totalDr = 0, totalCr = 0;
+    for (const ln of form.lines) { totalDr += parseRupees(ln.debit); totalCr += parseRupees(ln.credit); }
+    const diff = totalDr - totalCr;
+    const balanced = Math.abs(diff) < 1;
+    totalsBox.innerHTML = `
+      <div>Total Dr: <b>${fmtINR(totalDr)}</b></div>
+      <div>Total Cr: <b>${fmtINR(totalCr)}</b></div>
+      <div style="font-weight:700;color:${balanced ? 'var(--green)' : 'var(--alert)'}">${balanced ? '✓ Balanced' : `⚠ Out of balance by ${fmtINR(Math.abs(diff))}`}</div>
+    `;
+    postBtn.disabled = !balanced || totalDr <= 0;
+  }
+  async function doPost() {
+    try {
+      const ref = $('jv-ref').value.trim();
+      if (!ref) { toast('Voucher reference is required', 'err'); return; }
+      const lines = form.lines
+        .map(ln => ({ accountId: ln.accountId, debit: parseRupees(ln.debit), credit: parseRupees(ln.credit) }))
+        .filter(ln => ln.debit > 0 || ln.credit > 0);
+      if (lines.length < 2) { toast('At least 2 lines required', 'err'); return; }
+      const result = await postEntry(STATE.db, {
+        voucherType: 'journal',
+        voucherRef: ref,
+        narration: $('jv-narr').value.trim() || `Journal voucher ${ref}`,
+        postedAt: $('jv-date').value,
+        actor: 'owner',
+        lines,
+      });
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`Journal voucher posted (entry #${result.entryId})`, 'ok');
+      nav('#/day-book');
+    } catch (e) {
+      console.error(e);
+      toast('Post failed: ' + e.message, 'err');
+    }
+  }
+}
+
+// --- Period locks --------------------------------------------------------
+
+function renderPeriodLocks(main) {
+  if (!requireFileOrPrompt(main, 'Period Locks')) return;
+  main.appendChild(h('h1', {}, ['Period Locks (returns filed)']));
+  main.appendChild(h('p', { class: 'help' }, ['Lock a return period after filing. Postings dated within a locked period will be flagged as amendments instead of being silently editable.']));
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Mark a return as filed']));
+  const body = h('div', { class: 'panel-b' });
+  body.innerHTML = `
+    <div class="field"><label>Return type</label>
+      <select id="pl-type">
+        <option value="gstr1">GSTR-1</option>
+        <option value="gstr3b">GSTR-3B</option>
+        <option value="cmp08">CMP-08</option>
+        <option value="gstr4">GSTR-4 (annual)</option>
+        <option value="26q">Form 26Q (TDS)</option>
+        <option value="27eq">Form 27EQ (TCS)</option>
+      </select>
+    </div>
+    <div class="field"><label>Period start</label><input id="pl-start" type="date"></div>
+    <div class="field"><label>Period end</label><input id="pl-end" type="date"></div>
+    <div class="field"><label>Notes (optional)</label><input id="pl-notes" placeholder="ARN, filed by, etc."></div>
+  `;
+  panel.appendChild(body);
+  const lockBtn = h('button', { class: 'primary' }, ['Lock period']);
+  lockBtn.onclick = async () => {
+    const type = $('pl-type').value, start = $('pl-start').value, end = $('pl-end').value;
+    if (!start || !end) { toast('Pick start and end dates', 'err'); return; }
+    if (end < start) { toast('End must be on/after start', 'err'); return; }
+    try {
+      STATE.db.run('INSERT INTO period_locks (return_type, period_start, period_end, filed_at, filed_by, notes, created_at) VALUES (?,?,?,?,?,?,?)',
+        [type, start, end, nowIso(), 'owner', $('pl-notes').value.trim() || null, nowIso()]);
+      await appendAuditEntry(STATE.db, { actor: 'owner', action: 'period.lock', ref: `${type}:${start}/${end}`, payload: { type, start, end } });
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`Period locked: ${type} ${start} → ${end}`, 'ok');
+      render();
+    } catch (e) { toast('Lock failed: ' + e.message, 'err'); }
+  };
+  body.appendChild(h('div', { class: 'row', style: 'margin-top:10px' }, [lockBtn]));
+  main.appendChild(panel);
+
+  const r = STATE.db.exec('SELECT id, return_type, period_start, period_end, filed_at, notes FROM period_locks ORDER BY filed_at DESC');
+  if (r.length && r[0].values.length) {
+    main.appendChild(h('h2', { style: 'margin-top:24px;font-size:14px' }, ['Existing locks']));
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>Type</th><th>Period</th><th>Filed at</th><th>Notes</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const [id, type, start, end, filedAt, notes] of r[0].values) {
+      const tr = h('tr');
+      tr.innerHTML = `<td><b>${escapeHtml(type.toUpperCase())}</b></td><td>${escapeHtml(start)} → ${escapeHtml(end)}</td><td>${escapeHtml(filedAt.slice(0, 10))}</td><td>${escapeHtml(notes || '—')}</td>`;
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    main.appendChild(tbl);
+  }
+}
+
+// --- FY rollover wizard --------------------------------------------------
+
+function renderFYRollover(main) {
+  if (!requireFileOrPrompt(main, 'Financial Year Rollover')) return;
+  main.appendChild(h('h1', {}, ['Financial Year Rollover']));
+  main.appendChild(h('p', { class: 'help' }, ['Closes a financial year by zeroing out income and expense accounts to P&L Summary, then transferring the net profit/loss to the Capital Account. The closing entry is a system-generated journal voucher.']));
+  const r = STATE.db.exec('SELECT id, fy_start, fy_end, closed_at, net_profit FROM fy_closings ORDER BY fy_start DESC');
+  if (r.length && r[0].values.length) {
+    main.appendChild(h('h2', { style: 'margin-top:14px;font-size:14px' }, ['Closed years']));
+    const tbl = h('table', { class: 'dense' });
+    tbl.innerHTML = '<thead><tr><th>FY</th><th>Closed at</th><th class="num">Net profit/loss</th></tr></thead>';
+    const tbody = h('tbody');
+    for (const [id, st, en, closedAt, np] of r[0].values) {
+      const tr = h('tr');
+      const npLabel = np >= 0 ? `<span style="color:var(--green)">${fmtINR(np)} (profit)</span>` : `<span style="color:var(--alert)">${fmtINR(-np)} (loss)</span>`;
+      tr.innerHTML = `<td><b>FY ${escapeHtml(st.slice(0, 4))}-${escapeHtml(en.slice(2, 4))}</b></td><td>${escapeHtml(closedAt.slice(0, 10))}</td><td class="num">${npLabel}</td>`;
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    main.appendChild(tbl);
+  }
+
+  const panel = h('div', { class: 'panel', style: 'margin-top:24px' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['Close a financial year']));
+  const body = h('div', { class: 'panel-b' });
+  const now = new Date();
+  let defStartY = now.getMonth() < 3 ? now.getFullYear() - 2 : now.getFullYear() - 1;
+  body.innerHTML = `
+    <div class="field"><label>FY start year (April)</label><input id="fy-y" type="number" value="${defStartY}" min="2017" max="2099" style="width:120px"></div>
+    <div id="fy-preview" style="margin-top:14px"></div>
+  `;
+  panel.appendChild(body);
+
+  const previewBtn = h('button', {}, ['Preview']);
+  previewBtn.onclick = () => preview();
+  const closeBtn = h('button', { class: 'primary' }, ['Close FY (post entries)']);
+  closeBtn.onclick = doClose;
+  body.appendChild(h('div', { class: 'row', style: 'margin-top:10px' }, [previewBtn, closeBtn]));
+  main.appendChild(panel);
+
+  function preview() {
+    const y = parseInt($('fy-y').value, 10);
+    const fyStart = `${y}-04-01`;
+    const fyEnd = `${y + 1}-03-31`;
+    const np = computeFYNetProfit(STATE.db, fyStart, fyEnd);
+    const out = $('fy-preview');
+    out.innerHTML = `
+      <div style="padding:10px;background:var(--ash);border:1px solid var(--rule);border-radius:4px">
+        <div style="font-size:11px;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.5px;font-weight:700">Preview FY ${y}-${(y+1).toString().slice(2,4)}</div>
+        <div style="margin-top:6px">Income: <b>${fmtINR(np.income)}</b></div>
+        <div>Expense: <b>${fmtINR(np.expense)}</b></div>
+        <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px;font-size:14px">
+          ${np.netProfit >= 0
+            ? `<b style="color:var(--green)">Net profit: ${fmtINR(np.netProfit)}</b>`
+            : `<b style="color:var(--alert)">Net loss: ${fmtINR(-np.netProfit)}</b>`}
+        </div>
+      </div>
+    `;
+  }
+
+  async function doClose() {
+    const y = parseInt($('fy-y').value, 10);
+    const fyStart = `${y}-04-01`;
+    const fyEnd = `${y + 1}-03-31`;
+    const ex = STATE.db.exec('SELECT id FROM fy_closings WHERE fy_start = ?', [fyStart]);
+    if (ex.length && ex[0].values.length) { toast(`FY ${y}-${(y+1).toString().slice(2,4)} is already closed`, 'err'); return; }
+    if (!confirm(`Close FY ${y}-${(y+1).toString().slice(2,4)}?\n\nThis posts year-end closing entries that zero out all income and expense accounts. Cannot be undone except by reversing the closing entries manually.`)) return;
+    try {
+      const result = await postFYClosingEntry(STATE.db, fyStart, fyEnd);
+      STATE.db.run('INSERT INTO fy_closings (fy_start, fy_end, closed_at, closing_entry_id, net_profit, created_at) VALUES (?,?,?,?,?,?)',
+        [fyStart, fyEnd, nowIso(), result.entryId, result.netProfit, nowIso()]);
+      await appendAuditEntry(STATE.db, { actor: 'owner', action: 'fy.close', ref: `${fyStart}/${fyEnd}`, payload: { fyStart, fyEnd, netProfit: result.netProfit } });
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`FY ${y}-${(y+1).toString().slice(2,4)} closed. Net ${result.netProfit >= 0 ? 'profit' : 'loss'}: ${fmtINR(Math.abs(result.netProfit))}`, 'ok');
+      render();
+    } catch (e) { console.error(e); toast('Close failed: ' + e.message, 'err'); }
+  }
+}
+
+// --- Tax payment challans -----------------------------------------------
+
+function renderTaxChallans(main) {
+  if (!requireFileOrPrompt(main, 'Tax Challans')) return;
+  main.appendChild(h('h1', {}, ['Tax Payment Challans']));
+  main.appendChild(h('p', { class: 'help' }, ['Generate ready-to-fill challan data sheets for the most common Indian tax payments. Phase 3 ships templated JSON exports — you take the data to the bank or government portal.']));
+
+  const challans = [
+    { code: 'PMT-06', title: 'GST PMT-06 (monthly tax payment)', desc: 'Section 39 monthly GST payment. Used by regular taxpayers to pay net liability before filing GSTR-3B.' },
+    { code: 'DRC-03', title: 'GST DRC-03 (voluntary payment)', desc: 'Voluntary tax + interest + penalty payment. Often used to clear notice demands or correct earlier returns.' },
+    { code: 'ITNS-280', title: 'Income Tax Challan 280 (advance / self-assessment)', desc: 'For non-TDS direct tax payments by individuals, firms, companies. Advance tax, self-assessment tax, regular assessment tax.' },
+    { code: 'ITNS-281', title: 'Income Tax Challan 281 (TDS/TCS)', desc: 'For depositing TDS deducted under various sections (192, 194C, 194J, etc.) and TCS collected under section 206C.' },
+    { code: 'ITNS-282', title: 'Income Tax Challan 282 (other direct taxes)', desc: 'Securities transaction tax, hotel receipt tax, expenditure tax, estate duty, wealth tax, gift tax.' },
+    { code: 'ITNS-283', title: 'Income Tax Challan 283 (banking cash transaction tax)', desc: 'Now largely historical — was used for BCTT and FBT.' },
+    { code: 'ECR', title: 'EPF Electronic Challan-cum-Return', desc: 'Monthly provident fund contribution upload to EPFO portal.' },
+    { code: 'ESI', title: 'ESI Monthly Contribution', desc: 'Employee State Insurance monthly contribution (employer + employee shares).' },
+    { code: 'PTRC', title: 'Professional Tax (Maharashtra PTRC/PTEC)', desc: 'State professional tax. Format varies by state — Maharashtra is the most common.' },
+    { code: 'LWF', title: 'Labour Welfare Fund', desc: 'State labour welfare fund contribution. Period and rate vary by state.' },
+    { code: 'CUSTOM', title: 'Custom challan', desc: 'Free-form challan builder for any payment Bahi doesn\'t template natively.' },
+  ];
+
+  for (const c of challans) {
+    const panel = h('div', { class: 'panel', style: 'margin-bottom:12px' });
+    const ph = h('div', { class: 'panel-h' });
+    ph.innerHTML = `<span><b>${escapeHtml(c.code)}</b> — ${escapeHtml(c.title)}</span>`;
+    panel.appendChild(ph);
+    const pb = h('div', { class: 'panel-b' });
+    pb.appendChild(h('p', { style: 'font-size:12px;color:var(--ink-2)' }, [c.desc]));
+    const btn = h('button', {}, ['Generate JSON template']);
+    btn.onclick = async () => {
+      try {
+        const data = {
+          challan_code: c.code,
+          challan_title: c.title,
+          generated_at: nowIso(),
+          company: STATE.manifest.company || {},
+          fields: {
+            assessee_name: STATE.manifest.company?.legalName || STATE.manifest.company?.name || '',
+            gstin: STATE.manifest.company?.gstin || '',
+            pan: STATE.manifest.company?.pan || '',
+            address: STATE.manifest.company?.address || '',
+            state: STATE.manifest.company?.state || '',
+            period: '',
+            amount: 0,
+            interest: 0,
+            penalty: 0,
+            major_head: '',
+            minor_head: '',
+            section: '',
+          },
+          notes: 'Open in any text editor, fill in the period/amount fields, then enter the data into the bank or government portal. Bahi does NOT submit on your behalf.',
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `challan-${c.code.toLowerCase()}-${slugify(STATE.manifest.company?.name || 'co')}-${nowIso().slice(0, 10)}.json`,
+          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+        });
+        const w = await handle.createWritable(); await w.write(blob); await w.close();
+        toast(`Saved ${handle.name}`, 'ok');
+      } catch (e) { if (e.name !== 'AbortError') toast('Save failed: ' + e.message, 'err'); }
+    };
+    pb.appendChild(btn);
+    panel.appendChild(pb);
+    main.appendChild(panel);
+  }
+}
+
+//------------------------------------------------------------
 // === View: Debug Console (the acceptance gate) ===
 //------------------------------------------------------------
 
@@ -8301,7 +10724,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">Phase 2C · freelancer + polish (snapshot bucketing + OPFS atomic staging + first-run welcome)</div>
+      <div class="k">Bahi version</div><div class="v">Phase 3 · service SMB tier (vendors + purchases + credit/debit notes + journal vouchers + reports + GSTR-3B + FY rollover + tax challans)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>
@@ -8452,7 +10875,8 @@ function renderSettings(main) {
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 2C — Polish (snapshots + OPFS + welcome).</b> <b>Snapshot retention</b> upgraded from "last 20 saves" to the spec's full §9.3 policy: last 10 saves + last 7 daily + last 12 monthly + permanent (manual / FY-close), with set-union dedupe so a snapshot satisfying multiple buckets stays once. <b>OPFS atomic-write staging</b> mirrors every blob to <code>OPFS:bahi-staging/{workspaceId}.khata</code> BEFORE writing to the user's disk file, then deletes the staging copy on success — if a save is interrupted (browser crash, OS crash, power loss, USB yank), the next file open detects the orphan staging copy with a newer audit head and surfaces a Settings → Crash recovery panel offering Recover or Discard. <b>First-run welcome modal</b>: per-machine localStorage flag (<code>bahi.introSeen</code>), three-card explainer (Create / Open / Restore), explicit "Got it" + "Read README" buttons (no Escape-only dismiss).</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Still deferred (lower priority):</b> daily/monthly snapshot bucketing (currently last-20-saves only), Wrong-file Layer 3 (ancestry on refresh — needs Phase 6 reconciliation), Wrong-file Layer 4 (export-time check — no .khata exports yet), audit-log replay restoration, full HSN top-2000 + SAC bundle (needs khata-standard repo to publish), reference data update UI (Phase 2 work), OPFS staging for true atomic writes (currently verify-before-write), one-time backfill flow for legacy v1 invoices, Devanagari/Tamil PDF fonts (currently Helvetica only — uses "Rs." instead of ₹), advance receipts (on-account credit when payment exceeds allocation), contra entries (bank-to-cash, bank-to-bank).</p>
     <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 2B coming next:</b> dashboard (receivables aging, cashflow, recent activity), GSTR-1 JSON export, advance receipts with GST on advance, multiple invoice series (domestic / export / SEZ / bill of supply), composition scheme handling, first-run onboarding screen, PAN-aware multi-GSTIN copy-from-existing wizard, Devanagari font lazy-load for PDF (Phase 2B.3).</p>
-    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 3+:</b> Service SMB tier (vendors, purchases, credit/debit notes, journal vouchers, full reports, TDS, RCM, TCS, CMP-08, financial year rollover) → Goods SMB tier (inventory, stock, e-way bills) → Tally import → CA mode → polish &amp; launch.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 3 — Service SMB tier (this build).</b> <b>Vendor master</b> mirrors customers, with RCM-applicable + default TDS section flags. <b>Purchases</b> with internal ref (PUR/{FY}/{NNNN}), vendor's bill number, place-of-supply state routing, RCM toggle (auto-routes to GST RCM Input/Output sub-accounts), ITC eligible flag (motor vehicles, club fees, etc. blocked-credit support), per-rate sub-account auto-create. <b>Credit notes</b> (against invoices) and <b>debit notes</b> (against purchases) with full-reversal or partial-amount modes; both inherit company + customer/vendor snapshots from the parent so reprints stay historically correct. <b>Journal voucher</b> form for free-form double-entry adjustments. <b>Reports</b>: Trial Balance, Balance Sheet (with tie check + period-profit rollup), Day Book, Account Ledger (per-account with running balance), Sales Register, Purchase Register. <b>GSTR-3B</b> summary view (Section 3.1 outward + 3.1d RCM + Section 4 ITC + net liability) with JSON + CSV download. <b>FY rollover wizard</b>: preview net profit/loss, post system-generated closing entries that zero out income/expense accounts → P&amp;L Summary → Capital Account, recorded in <code>fy_closings</code>. <b>Period locks</b> for marking GSTR-1 / GSTR-3B / CMP-08 / 26Q / 27EQ as filed. <b>Tax payment challans</b> templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, and a custom builder.</p>
+    <p style="font-size:12px;line-height:1.6;margin-top:10px"><b>Phase 4+:</b> Goods SMB tier (inventory, stock, e-way bills, multi-warehouse) → Tally import → CA mode (multi-company) → TDS Form 26Q export + TCS Form 27EQ export + Form 27D certificates → polish &amp; launch.</p>
   `;
   notes.appendChild(nb);
   main.appendChild(notes);

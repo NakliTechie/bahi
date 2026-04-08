@@ -16,12 +16,125 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; scroll-padding-top: 72px; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     color: var(--ink);
     background: var(--paper);
     line-height: 1.5;
     font-size: 16px;
+  }
+
+  /* Sticky section navigation */
+  nav.toc {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(250,248,243,0.96);
+    backdrop-filter: saturate(140%) blur(6px);
+    -webkit-backdrop-filter: saturate(140%) blur(6px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav.toc .toc-inner {
+    max-width: 1100px; margin: 0 auto; padding: 12px 32px;
+    display: flex; align-items: center; gap: 22px; font-size: 0.88rem;
+  }
+  nav.toc a { color: var(--muted); text-decoration: none; white-space: nowrap; }
+  nav.toc a:hover { color: var(--saffron); }
+  nav.toc .toc-brand { font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
+  nav.toc .toc-app {
+    margin-left: auto; font-weight: 600; color: #fff;
+    background: var(--saffron); padding: 6px 12px; border-radius: 3px;
+  }
+  nav.toc .toc-app:hover { color: #fff; background: #6e2d17; }
+  @media (max-width: 900px) {
+    nav.toc .toc-inner { overflow-x: auto; padding: 10px 18px; gap: 16px; }
+    nav.toc .toc-brand, nav.toc .toc-app { flex: 0 0 auto; }
+  }
+
+  /* Two-modes section */
+  .modes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 36px; }
+  .mode-card {
+    background: #fff; border: 1px solid var(--line); border-radius: 6px;
+    padding: 30px 28px 24px; position: relative;
+  }
+  .mode-card .mode-badge-fake {
+    position: absolute; top: -13px; left: 28px;
+    display: inline-block; padding: 5px 12px; border-radius: 3px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .mode-card .mode-badge-fake.owner { background: #fbe9e2; color: var(--saffron); border: 1px solid var(--saffron); }
+  .mode-card .mode-badge-fake.ca    { background: var(--ink); color: #fff; border: 1px solid var(--ink); }
+  .mode-card h3 { margin: 4px 0 2px; color: var(--navy); font-size: 1.3rem; }
+  .mode-card .subtitle { color: var(--muted); margin: 0 0 16px; font-size: 0.9rem; font-style: italic; }
+  .mode-card ul { margin: 0 0 16px; padding-left: 20px; font-size: 0.93rem; }
+  .mode-card ul li { margin-bottom: 7px; }
+  .mode-card ul li b { color: var(--navy); }
+  .mode-card .jump {
+    margin: 0; padding-top: 12px; border-top: 1px solid var(--line);
+    font-size: 0.9rem; font-weight: 600;
+  }
+  .mode-card .jump a { text-decoration: none; }
+  .mode-card .jump a:hover { text-decoration: underline; }
+  .modes-how {
+    margin-top: 22px; padding: 16px 20px;
+    background: #fff; border: 1px solid var(--line); border-radius: 6px;
+    font-size: 0.9rem; color: var(--muted);
+  }
+  .modes-how b { color: var(--ink); }
+  .modes-how code { background: var(--ash); }
+  @media (max-width: 720px) { .modes-grid { grid-template-columns: 1fr; } }
+
+  /* "Try it yourself" getting-started steps */
+  .try-it {
+    margin-top: 36px;
+    background: #fff;
+    border: 1px solid var(--saffron);
+    border-left-width: 4px;
+    border-radius: 6px;
+    padding: 28px 32px 24px;
+  }
+  .try-it h3 {
+    margin: 0 0 6px; color: var(--saffron); font-size: 1.2rem;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .try-it .lede-small { color: var(--muted); margin: 0 0 22px; font-size: 0.95rem; }
+  .try-it ol.steps { list-style: none; padding: 0; margin: 0; counter-reset: step; display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .try-it ol.steps li {
+    counter-increment: step; padding: 18px 18px 16px 54px; position: relative;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 4px;
+  }
+  .try-it ol.steps li::before {
+    content: counter(step); position: absolute; left: 16px; top: 16px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--saffron); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.95rem;
+  }
+  .try-it ol.steps li h4 { margin: 0 0 6px; color: var(--navy); font-size: 0.98rem; }
+  .try-it ol.steps li p { margin: 0 0 10px; font-size: 0.88rem; color: var(--ink); }
+  .try-it ol.steps li p:last-child { margin-bottom: 0; }
+  .try-it .file-links { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; }
+  .try-it .file-links a {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; background: #fff; border: 1px solid var(--line);
+    border-radius: 3px; text-decoration: none; color: var(--ink);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82rem;
+  }
+  .try-it .file-links a:hover { border-color: var(--saffron); color: var(--saffron); }
+  .try-it .file-links a .size { color: var(--muted); margin-left: auto; font-size: 0.78rem; }
+  .try-it .cta-row {
+    margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .try-it .cta-row a.primary {
+    background: var(--saffron); color: #fff; padding: 10px 18px; border-radius: 3px;
+    text-decoration: none; font-weight: 600; font-size: 0.92rem;
+  }
+  .try-it .cta-row a.primary:hover { background: #6e2d17; }
+  .try-it .cta-row .fine { color: var(--muted); font-size: 0.82rem; }
+  @media (max-width: 720px) {
+    .try-it ol.steps { grid-template-columns: 1fr; }
   }
   a { color: var(--saffron); }
   code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em; background: var(--ash); padding: 1px 5px; border-radius: 3px; }
@@ -130,6 +243,19 @@
 </head>
 <body>
 
+<nav class="toc" aria-label="Section navigation">
+  <div class="toc-inner">
+    <a class="toc-brand" href="#top">Bahi demo</a>
+    <a href="#modes">Modes</a>
+    <a href="#samples">Samples</a>
+    <a href="#accountant-walkthrough">Accountant</a>
+    <a href="#ca-audit-walkthrough">CA audit</a>
+    <a href="#capture-summary">Regression log</a>
+    <a class="toc-app" href="../">Open app →</a>
+  </div>
+</nav>
+
+<a id="top"></a>
 <header class="hero">
   <div class="inner">
     <h1>Bahi<span class="alpha">ALPHA</span></h1>
@@ -153,7 +279,44 @@
 
 <main>
 
-<h2>Why local-first</h2>
+<h2 id="modes">Two modes, one app</h2>
+<p class="intro">Bahi asks <em>who are you?</em> the first time you open it. Your answer flips a single flag in the browser, reshapes the sidebar, and tags every entry you post with the right actor in the audit log. You can switch any time from the topbar badge or with <code>Ctrl+Shift+M</code>. Both modes read and write the same <code>.khata</code> files — nothing is hidden from either side.</p>
+<div class="modes-grid">
+
+  <article class="mode-card">
+    <span class="mode-badge-fake owner">OWNER</span>
+    <h3>Owner mode</h3>
+    <p class="subtitle">The day-to-day bookkeeper running a business</p>
+    <ul>
+      <li>Manage <b>one company at a time</b> — the <code>.khata</code> file you have open is yours</li>
+      <li>Raise invoices, record receipts, enter purchase bills, pay vendors with TDS, reconcile bank</li>
+      <li>Run GSTR-1, GSTR-3B, CMP-08, Form 26Q / 27EQ / 27D straight out of the ledger</li>
+      <li>Full inventory engine (WAC + FIFO + batches), delivery challans, e-way bills, FY rollover</li>
+      <li>Tally-style keyboard parity (F4–F10 vouchers, <code>Ctrl+Z</code> undo, <code>Ctrl+Shift+B</code> backup)</li>
+      <li>Audit log tags every action with <code>actor='owner'</code></li>
+    </ul>
+    <p class="jump"><a href="#accountant-walkthrough">→ See the full accountant walkthrough</a></p>
+  </article>
+
+  <article class="mode-card">
+    <span class="mode-badge-fake ca">CA · AB</span>
+    <h3>CA mode</h3>
+    <p class="subtitle">The chartered accountant reviewing multiple clients</p>
+    <ul>
+      <li>One CA profile, <b>many client files</b> — open any <code>.khata</code> a client sends you</li>
+      <li>Client-review panel with per-voucher-type unreviewed counts and bulk sign-off</li>
+      <li>Attach <b>annotations</b> to any entry; track which rows are <b>reviewed vs unreviewed</b></li>
+      <li>CA-authored <b>adjustment vouchers</b> (year-end, depreciation, accruals, prepaid)</li>
+      <li>Printable <b>review report PDF</b> with firm letterhead, Trial Balance, P&amp;L, BS, observations</li>
+      <li>Audit log tags every CA action with <code>actor='ca'</code> so the client can see exactly what changed</li>
+    </ul>
+    <p class="jump"><a href="#ca-audit-walkthrough">→ See the full CA audit walkthrough</a></p>
+  </article>
+
+</div>
+<p class="modes-how"><b>Switching modes:</b> click the <code>OWNER</code> / <code>CA · AB</code> badge in the topbar, or press <code>Ctrl+Shift+M</code>. The first time you pick CA mode, Bahi collects name, firm, and ICAI membership number — stored in IndexedDB on your machine only, never inside any client's <code>.khata</code> file. Your clients get the audit trail, not your profile.</p>
+
+<h2 id="why">Why local-first</h2>
 <p class="intro">Every Indian accounting tool on the market sends your books to someone else's database. Bahi doesn't. The whole application is one HTML file. Your data is one <code>.khata</code> file. You own both.</p>
 <div class="why-grid">
   <div class="why"><h4>One file</h4><p>Every company is a single <code>.khata</code> zip — <code>manifest.json</code> + <code>books.sqlite</code>. Copy, backup, version-control. Nothing else.</p></div>
@@ -162,7 +325,7 @@
   <div class="why"><h4>CA-ready</h4><p>Built-in CA mode, review markers, annotations, and a printable review report. Works across multiple client files without a login.</p></div>
 </div>
 
-<h2>The three sample files</h2>
+<h2 id="samples">The three sample files</h2>
 <p class="intro">Three intentionally different shapes — goods+services, goods-only, services-only — to prove the app handles every branch of the chart of accounts. All three pass the 45-assertion data integrity test suite.</p>
 <div class="samples">
 
@@ -209,7 +372,44 @@
     </article>
 </div>
 
-<h2>Accountant walkthrough</h2>
+<section class="try-it" id="try-it">
+  <h3>Try it yourself — 3 steps</h3>
+  <p class="lede-small">The screenshots below are static. To click through the real app with the real data, grab a sample file from the repo and open it in the live build. No install, no account, no upload.</p>
+  <ol class="steps">
+    <li>
+      <h4>Download a sample file</h4>
+      <p>Pick whichever shape you want to explore. These are the exact files used throughout this demo — synthetic data, 2 FYs each.</p>
+      <div class="file-links">
+        <a href="https://raw.githubusercontent.com/NakliTechie/bahi/main/sample-data/pharma.khata" download>
+          pharma.khata <span class="size">1.3 MB</span>
+        </a>
+        <a href="https://raw.githubusercontent.com/NakliTechie/bahi/main/sample-data/manufacturing.khata" download>
+          manufacturing.khata <span class="size">779 KB</span>
+        </a>
+        <a href="https://raw.githubusercontent.com/NakliTechie/bahi/main/sample-data/consulting.khata" download>
+          consulting.khata <span class="size">164 KB</span>
+        </a>
+      </div>
+    </li>
+    <li>
+      <h4>Open the live app</h4>
+      <p>Use Chrome, Edge, Brave, Arc or Opera. Safari and Firefox don't expose the File System Access API that Bahi needs to write back to your disk.</p>
+      <p><a href="../">→ Launch Bahi</a> in a new tab. You'll land on the Workspace screen with the first-run welcome.</p>
+    </li>
+    <li>
+      <h4>Click "Open existing .khata"</h4>
+      <p>Pick the file you just downloaded. Bahi will ask permission to read &amp; write the file on your disk — allow it.</p>
+      <p>Once open, you'll see the dashboard with real receivables aging, top customers, and recent activity. Click anywhere in the sidebar to explore.</p>
+    </li>
+  </ol>
+  <div class="cta-row">
+    <a class="primary" href="https://raw.githubusercontent.com/NakliTechie/bahi/main/sample-data/pharma.khata" download>Download pharma sample (1.3 MB)</a>
+    <a href="../">Open app ↗</a>
+    <span class="fine">Files open read-write in place. Nothing uploads anywhere. If you prefer to keep the sample untouched, copy it first and open the copy.</span>
+  </div>
+</section>
+
+<h2 id="accountant-walkthrough">Accountant walkthrough</h2>
 <p class="intro">Every route the day-to-day accountant touches, captured against the pharma sample. Click any screenshot to open the live Bahi route in this build (load <code>pharma.khata</code> first).</p>
 <section class="flow">
   <h3>Daily</h3>
@@ -731,7 +931,7 @@
 </section>
 
 
-<h2>Manufacturing highlights</h2>
+<h2 id="manufacturing">Manufacturing highlights</h2>
 <p class="intro">High-value B2B invoices, heavy stock movement, WAC valuation. Goods-only workflow — no SACs, no credit notes in the sample.</p>
 <div class="grid">
 <figure class="shot">
@@ -907,7 +1107,7 @@
 
 </div>
 
-<h2>Consulting highlights</h2>
+<h2 id="consulting">Consulting highlights</h2>
 <p class="intro">Services-only LLP. No inventory, no purchases, simpler dashboard. Proof that Bahi's layout scales down as well as up.</p>
 <div class="grid">
 <figure class="shot">
@@ -1056,7 +1256,7 @@
 
 </div>
 
-<h2>CA audit walkthrough</h2>
+<h2 id="ca-audit-walkthrough">CA audit walkthrough</h2>
 <p class="intro">One CA profile, three client files, one review workflow. The CA opens each <code>.khata</code> in sequence, runs trial balance / balance sheet / P&amp;L, uses the review panel to annotate and sign off, and exports a printable report — all without leaving the browser.</p>
 <section class="flow">
   <h3>Client 1 — Pharma (Vaidya Life Sciences)</h3>
@@ -1242,7 +1442,7 @@
 </section>
 
 
-<h2>Capture summary</h2>
+<h2 id="capture-summary">Capture summary</h2>
 <p class="intro">Every screenshot on this page is generated by <code>capture.py</code> — a Playwright script that drives a local Bahi dev server, loads each sample file via Bahi's in-page globals, navigates to each route, and records a 1400×900 PNG. The script doubles as a regression test: any route that fails to render or throws a console error is flagged in <a href="CAPTURE-LOG.md">CAPTURE-LOG.md</a>.</p>
 <div class="why-grid">
   <div class="why"><h4>Pharma</h4><p>58 routes captured.</p></div>

@@ -6,7 +6,13 @@
 !.gitignore
 !docs
 !docs/**
+!demo
+!demo/**
+!sample-data
+!sample-data/**
 docs/.DS_Store
+demo/.DS_Store
+sample-data/.DS_Store
 
 # wrangler files
 .wrangler

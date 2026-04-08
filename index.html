@@ -53,6 +53,12 @@ button.primary:disabled{background:#aaa;border-color:#aaa;cursor:not-allowed}
 button.danger{color:var(--alert);border-color:var(--alert)}
 button.danger:hover{background:var(--alert-soft)}
 button.small{padding:3px 8px;font-size:11px}
+a.topbar-link{
+  display:inline-block;padding:3px 8px;font-size:11px;
+  color:var(--ink);background:var(--white);border:1px solid var(--rule);
+  border-radius:3px;text-decoration:none;
+}
+a.topbar-link:hover{background:var(--ash);border-color:var(--saffron);color:var(--saffron-deep)}
 input,select,textarea{
   font:inherit;color:inherit;
   border:1px solid var(--rule);background:var(--white);
@@ -298,6 +304,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <div id="company-switcher-menu" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--white);border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,0.12);z-index:100;min-width:280px;max-height:60vh;overflow-y:auto"></div>
     </div>
     <div class="spacer"></div>
+    <a href="demo/index.html" class="small topbar-link" title="Feature walkthrough with screenshots">Demo &amp; tour</a>
     <button id="backup-btn" class="small" onclick="window._bahi.backupNow()" style="display:none" title="Ctrl+Shift+B">Backup Now</button>
     <div id="savestatus" class="save-indicator idle">
       <span class="dot"></span>

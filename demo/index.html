@@ -210,13 +210,13 @@
 </div>
 
 <h2>Accountant walkthrough</h2>
-<p class="intro">Every route the day-to-day accountant touches, captured against the pharma sample. Click any screenshot to open the live Bahi route on localhost:8101 (load <code>pharma.khata</code> first).</p>
+<p class="intro">Every route the day-to-day accountant touches, captured against the pharma sample. Click any screenshot to open the live Bahi route in this build (load <code>pharma.khata</code> first).</p>
 <section class="flow">
   <h3>Daily</h3>
   <p class="section-intro">The work the accountant does every morning. Raise invoices, record receipts, enter purchase bills, pay vendors.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/invoices"><img src="screenshots/pharma/07-invoices.png" alt="Sales invoices" loading="lazy"></a>
+  <a class="shot-link" href="../#/invoices"><img src="screenshots/pharma/07-invoices.png" alt="Sales invoices" loading="lazy"></a>
   <figcaption>
     <h4>Sales invoices</h4>
     <p>Every invoice with status badge (paid / partial / unpaid / cancelled), customer, date, amount and tax split. Filterable by series, customer, date range, and status.</p>
@@ -225,7 +225,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/invoice/new"><img src="screenshots/pharma/08-invoice-new.png" alt="New invoice form" loading="lazy"></a>
+  <a class="shot-link" href="../#/invoice/new"><img src="screenshots/pharma/08-invoice-new.png" alt="New invoice form" loading="lazy"></a>
   <figcaption>
     <h4>New invoice form</h4>
     <p>HSN/SAC items, auto-routed CGST+SGST (intra-state) or IGST (inter-state), place-of-supply captured per invoice, round-off, notes, and live preview of the outgoing ledger entry.</p>
@@ -234,7 +234,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/payment/new"><img src="screenshots/pharma/16-payment-new.png" alt="Record a customer receipt" loading="lazy"></a>
+  <a class="shot-link" href="../#/payment/new"><img src="screenshots/pharma/16-payment-new.png" alt="Record a customer receipt" loading="lazy"></a>
   <figcaption>
     <h4>Record a customer receipt</h4>
     <p>Pick the customer, amount, mode (bank/cash/UPI), and allocate across one or many open invoices. Enforces allocated <= received.</p>
@@ -243,7 +243,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/purchases"><img src="screenshots/pharma/11-purchases.png" alt="Purchase bills" loading="lazy"></a>
+  <a class="shot-link" href="../#/purchases"><img src="screenshots/pharma/11-purchases.png" alt="Purchase bills" loading="lazy"></a>
   <figcaption>
     <h4>Purchase bills</h4>
     <p>Vendor bills with input GST captured separately. Consulting has zero purchases — proof that the sample data is shape-correct.</p>
@@ -252,7 +252,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/purchase/new"><img src="screenshots/pharma/12-purchase-new.png" alt="New purchase bill" loading="lazy"></a>
+  <a class="shot-link" href="../#/purchase/new"><img src="screenshots/pharma/12-purchase-new.png" alt="New purchase bill" loading="lazy"></a>
   <figcaption>
     <h4>New purchase bill</h4>
     <p>TDS section selector (194J / 194C / 194I / 194H), tax-aware totals, and a preview of the resulting vendor ledger and TDS payable postings.</p>
@@ -261,7 +261,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/vendor-payment/new"><img src="screenshots/pharma/17-vendor-payment-new.png" alt="Pay a vendor (with TDS)" loading="lazy"></a>
+  <a class="shot-link" href="../#/vendor-payment/new"><img src="screenshots/pharma/17-vendor-payment-new.png" alt="Pay a vendor (with TDS)" loading="lazy"></a>
   <figcaption>
     <h4>Pay a vendor (with TDS)</h4>
     <p>Pay a vendor bill, deduct TDS under the applicable section, and post to TDS Payable in one step. The section header and certificate metadata travel with the deduction.</p>
@@ -270,7 +270,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/tcs-collection/new"><img src="screenshots/pharma/18-tcs-collection-new.png" alt="Record TCS collection" loading="lazy"></a>
+  <a class="shot-link" href="../#/tcs-collection/new"><img src="screenshots/pharma/18-tcs-collection-new.png" alt="Record TCS collection" loading="lazy"></a>
   <figcaption>
     <h4>Record TCS collection</h4>
     <p>For sellers liable under 206C(1H). Bahi computes and posts the TCS payable liability alongside the customer receipt.</p>
@@ -286,7 +286,7 @@
   <p class="section-intro">Housekeeping tasks. Review masters, reconcile bank, add new items and series.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/customers"><img src="screenshots/pharma/03-customers.png" alt="Customer master" loading="lazy"></a>
+  <a class="shot-link" href="../#/customers"><img src="screenshots/pharma/03-customers.png" alt="Customer master" loading="lazy"></a>
   <figcaption>
     <h4>Customer master</h4>
     <p>Complete customer ledger with GSTIN, state, payment terms, current outstanding and aging. Clicking a row drills through to their invoice history.</p>
@@ -295,7 +295,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/vendors"><img src="screenshots/pharma/04-vendors.png" alt="Vendor master" loading="lazy"></a>
+  <a class="shot-link" href="../#/vendors"><img src="screenshots/pharma/04-vendors.png" alt="Vendor master" loading="lazy"></a>
   <figcaption>
     <h4>Vendor master</h4>
     <p>Vendors with PAN, GSTIN, default TDS section and current dues. Used for purchase and vendor-payment workflows.</p>
@@ -304,7 +304,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/items"><img src="screenshots/pharma/05-items.png" alt="Items & services" loading="lazy"></a>
+  <a class="shot-link" href="../#/items"><img src="screenshots/pharma/05-items.png" alt="Items & services" loading="lazy"></a>
   <figcaption>
     <h4>Items & services</h4>
     <p>Unified master for HSN goods and SAC services. Pharma has both: tablet strips, surgical consumables, lab services. Manufacturing has steel products only. Consulting has only SACs.</p>
@@ -313,7 +313,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/series"><img src="screenshots/pharma/06-series.png" alt="Invoice series" loading="lazy"></a>
+  <a class="shot-link" href="../#/series"><img src="screenshots/pharma/06-series.png" alt="Invoice series" loading="lazy"></a>
   <figcaption>
     <h4>Invoice series</h4>
     <p>FY-scoped numbering series (INV/25-26, CN/25-26, PUR/25-26 …). Each .khata file carries its own series and resets them automatically at year-end rollover.</p>
@@ -322,7 +322,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/bank-reconcile"><img src="screenshots/pharma/38-bank-reconcile.png" alt="Bank reconciliation" loading="lazy"></a>
+  <a class="shot-link" href="../#/bank-reconcile"><img src="screenshots/pharma/38-bank-reconcile.png" alt="Bank reconciliation" loading="lazy"></a>
   <figcaption>
     <h4>Bank reconciliation</h4>
     <p>Pick a bank account, paste the bank statement rows, and match them against ledger entries. Unmatched items stay highlighted until resolved.</p>
@@ -331,7 +331,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/credit-notes"><img src="screenshots/pharma/09-credit-notes.png" alt="Credit notes" loading="lazy"></a>
+  <a class="shot-link" href="../#/credit-notes"><img src="screenshots/pharma/09-credit-notes.png" alt="Credit notes" loading="lazy"></a>
   <figcaption>
     <h4>Credit notes</h4>
     <p>Sales returns with a back-link to the original invoice. Pharma has 4-5 credit notes in the sample against expired stock returns.</p>
@@ -340,7 +340,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/credit-note/new"><img src="screenshots/pharma/10-credit-note-new.png" alt="New credit note" loading="lazy"></a>
+  <a class="shot-link" href="../#/credit-note/new"><img src="screenshots/pharma/10-credit-note-new.png" alt="New credit note" loading="lazy"></a>
   <figcaption>
     <h4>New credit note</h4>
     <p>Pick parent invoice, adjust lines, auto-reverses the proportional tax, and produces a balanced journal entry.</p>
@@ -349,7 +349,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/debit-notes"><img src="screenshots/pharma/13-debit-notes.png" alt="Debit notes" loading="lazy"></a>
+  <a class="shot-link" href="../#/debit-notes"><img src="screenshots/pharma/13-debit-notes.png" alt="Debit notes" loading="lazy"></a>
   <figcaption>
     <h4>Debit notes</h4>
     <p>Purchase returns, symmetric to credit notes. Rare in the sample but the route renders correctly with the empty-state panel for companies that have none.</p>
@@ -358,7 +358,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/debit-note/new"><img src="screenshots/pharma/14-debit-note-new.png" alt="New debit note" loading="lazy"></a>
+  <a class="shot-link" href="../#/debit-note/new"><img src="screenshots/pharma/14-debit-note-new.png" alt="New debit note" loading="lazy"></a>
   <figcaption>
     <h4>New debit note</h4>
     <p>Adjust the parent purchase bill, reverse the proportional input GST, and post the balanced ledger entry.</p>
@@ -367,7 +367,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/advances"><img src="screenshots/pharma/19-advances.png" alt="Advances" loading="lazy"></a>
+  <a class="shot-link" href="../#/advances"><img src="screenshots/pharma/19-advances.png" alt="Advances" loading="lazy"></a>
   <figcaption>
     <h4>Advances</h4>
     <p>Customer advances received before an invoice exists. Tracked separately and auto-adjusted against the first matching invoice.</p>
@@ -376,7 +376,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/advance/new"><img src="screenshots/pharma/20-advance-new.png" alt="New advance receipt" loading="lazy"></a>
+  <a class="shot-link" href="../#/advance/new"><img src="screenshots/pharma/20-advance-new.png" alt="New advance receipt" loading="lazy"></a>
   <figcaption>
     <h4>New advance receipt</h4>
     <p>Capture the advance, its GST treatment (taxable on receipt or on adjustment), and the PAN/GSTIN for statutory reporting.</p>
@@ -392,7 +392,7 @@
   <p class="section-intro">Period close and statutory filings. Dashboard review, aging, GST returns and TDS returns.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/dashboard"><img src="screenshots/pharma/01-dashboard.png" alt="Dashboard" loading="lazy"></a>
+  <a class="shot-link" href="../#/dashboard"><img src="screenshots/pharma/01-dashboard.png" alt="Dashboard" loading="lazy"></a>
   <figcaption>
     <h4>Dashboard</h4>
     <p>KPIs for the current month: cashflow vs last month, total outstanding receivables, GST liability, receivables aging and top customers. This is the first thing the accountant sees every morning.</p>
@@ -401,7 +401,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/gstr1"><img src="screenshots/pharma/46-gstr1.png" alt="GSTR-1" loading="lazy"></a>
+  <a class="shot-link" href="../#/gstr1"><img src="screenshots/pharma/46-gstr1.png" alt="GSTR-1" loading="lazy"></a>
   <figcaption>
     <h4>GSTR-1</h4>
     <p>Outward supplies summary auto-assembled from the invoice table. B2B, B2CL, B2CS, exports, CDNR, HSN summary — all tabs.</p>
@@ -410,7 +410,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/gstr3b"><img src="screenshots/pharma/47-gstr3b.png" alt="GSTR-3B" loading="lazy"></a>
+  <a class="shot-link" href="../#/gstr3b"><img src="screenshots/pharma/47-gstr3b.png" alt="GSTR-3B" loading="lazy"></a>
   <figcaption>
     <h4>GSTR-3B</h4>
     <p>Monthly return summary: 3.1 outward, 3.2 inter-state supplies, 4 ITC, 5 exempt, 6.1 payment. Numbers reconcile to the sales and purchase registers.</p>
@@ -419,7 +419,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/form-26q"><img src="screenshots/pharma/49-form-26q.png" alt="Form 26Q" loading="lazy"></a>
+  <a class="shot-link" href="../#/form-26q"><img src="screenshots/pharma/49-form-26q.png" alt="Form 26Q" loading="lazy"></a>
   <figcaption>
     <h4>Form 26Q</h4>
     <p>Quarterly TDS return for non-salary deductions. Lists every deduction with section, deductee PAN, amount, rate, date of deduction and date of deposit.</p>
@@ -428,7 +428,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/form-27eq"><img src="screenshots/pharma/50-form-27eq.png" alt="Form 27EQ" loading="lazy"></a>
+  <a class="shot-link" href="../#/form-27eq"><img src="screenshots/pharma/50-form-27eq.png" alt="Form 27EQ" loading="lazy"></a>
   <figcaption>
     <h4>Form 27EQ</h4>
     <p>Quarterly TCS return — counterpart to 26Q on the collection side. Renders the quarter selector and the (empty) deductee table for sample data.</p>
@@ -437,7 +437,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/form-27d"><img src="screenshots/pharma/51-form-27d.png" alt="Form 27D certificates" loading="lazy"></a>
+  <a class="shot-link" href="../#/form-27d"><img src="screenshots/pharma/51-form-27d.png" alt="Form 27D certificates" loading="lazy"></a>
   <figcaption>
     <h4>Form 27D certificates</h4>
     <p>TCS certificate generator — one printable certificate per collectee per quarter.</p>
@@ -446,7 +446,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/tax-challans"><img src="screenshots/pharma/52-tax-challans.png" alt="Tax challan templates" loading="lazy"></a>
+  <a class="shot-link" href="../#/tax-challans"><img src="screenshots/pharma/52-tax-challans.png" alt="Tax challan templates" loading="lazy"></a>
   <figcaption>
     <h4>Tax challan templates</h4>
     <p>ITNS 280 / 281 challan printable templates pre-filled from the period's liability. No bank integration — just print and take to the bank portal.</p>
@@ -455,7 +455,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/cmp08"><img src="screenshots/pharma/48-cmp08.png" alt="CMP-08" loading="lazy"></a>
+  <a class="shot-link" href="../#/cmp08"><img src="screenshots/pharma/48-cmp08.png" alt="CMP-08" loading="lazy"></a>
   <figcaption>
     <h4>CMP-08</h4>
     <p>Composition scheme quarterly statement. Renders empty for the sample files since none are composition dealers — but the route is healthy.</p>
@@ -471,7 +471,7 @@
   <p class="section-intro">Every inventory route in sequence. Pharma has the full story — dashboard, stock on hand, register, valuation, batches, aging, godowns, DCs, e-way bills and transfers.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/inventory"><img src="screenshots/pharma/21-inventory-dashboard.png" alt="Inventory dashboard" loading="lazy"></a>
+  <a class="shot-link" href="../#/inventory"><img src="screenshots/pharma/21-inventory-dashboard.png" alt="Inventory dashboard" loading="lazy"></a>
   <figcaption>
     <h4>Inventory dashboard</h4>
     <p>Stock value on hand, count of items below reorder level, count of batches expiring soon, and a top-10 by value strip. Only goods companies see this populated.</p>
@@ -480,7 +480,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-on-hand"><img src="screenshots/pharma/22-stock-on-hand.png" alt="Stock on hand" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-on-hand"><img src="screenshots/pharma/22-stock-on-hand.png" alt="Stock on hand" loading="lazy"></a>
   <figcaption>
     <h4>Stock on hand</h4>
     <p>Per-item current balance across godowns with WAC (weighted average cost) valuation. Used for monthly closing and the balance-sheet stock figure.</p>
@@ -489,7 +489,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-movements"><img src="screenshots/pharma/23-stock-movements.png" alt="Stock movement log" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-movements"><img src="screenshots/pharma/23-stock-movements.png" alt="Stock movement log" loading="lazy"></a>
   <figcaption>
     <h4>Stock movement log</h4>
     <p>Every in/out movement — sale, purchase, transfer, adjustment, return — with source document reference. This is the source of truth the register is built from.</p>
@@ -498,7 +498,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-register"><img src="screenshots/pharma/24-stock-register.png" alt="Stock register (per item)" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-register"><img src="screenshots/pharma/24-stock-register.png" alt="Stock register (per item)" loading="lazy"></a>
   <figcaption>
     <h4>Stock register (per item)</h4>
     <p>Walk-through of a single item's movements with running balance and running WAC. Auditor workflow: pick an item, verify opening + movements = closing.</p>
@@ -507,7 +507,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/batches"><img src="screenshots/pharma/25-batches.png" alt="Batch list" loading="lazy"></a>
+  <a class="shot-link" href="../#/batches"><img src="screenshots/pharma/25-batches.png" alt="Batch list" loading="lazy"></a>
   <figcaption>
     <h4>Batch list</h4>
     <p>Batch-tracked items with manufacture and expiry dates. Critical for pharma — expired batches block sale at the item-picker.</p>
@@ -516,7 +516,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/valuation-summary"><img src="screenshots/pharma/26-valuation-summary.png" alt="Valuation summary" loading="lazy"></a>
+  <a class="shot-link" href="../#/valuation-summary"><img src="screenshots/pharma/26-valuation-summary.png" alt="Valuation summary" loading="lazy"></a>
   <figcaption>
     <h4>Valuation summary</h4>
     <p>Stock value by godown and by item class. Ties directly to the inventory line on the balance sheet.</p>
@@ -525,7 +525,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/reorder-alerts"><img src="screenshots/pharma/27-reorder-alerts.png" alt="Reorder alerts" loading="lazy"></a>
+  <a class="shot-link" href="../#/reorder-alerts"><img src="screenshots/pharma/27-reorder-alerts.png" alt="Reorder alerts" loading="lazy"></a>
   <figcaption>
     <h4>Reorder alerts</h4>
     <p>Items below reorder level. The accountant runs this weekly to trigger purchase indents.</p>
@@ -534,7 +534,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-aging"><img src="screenshots/pharma/28-stock-aging.png" alt="Stock aging (batch)" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-aging"><img src="screenshots/pharma/28-stock-aging.png" alt="Stock aging (batch)" loading="lazy"></a>
   <figcaption>
     <h4>Stock aging (batch)</h4>
     <p>Batch-tracked stock bucketed by age (0-30 / 31-60 / 61-90 / 90+ days). Pharma's sample data doesn't cross the 0-30 day threshold so the route renders its empty-state panel — a valid result.</p>
@@ -543,7 +543,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/godowns"><img src="screenshots/pharma/29-godowns.png" alt="Godown master" loading="lazy"></a>
+  <a class="shot-link" href="../#/godowns"><img src="screenshots/pharma/29-godowns.png" alt="Godown master" loading="lazy"></a>
   <figcaption>
     <h4>Godown master</h4>
     <p>Named storage locations — factory, warehouse-1, consignment — with per-location stock roll-ups.</p>
@@ -552,7 +552,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/delivery-challans"><img src="screenshots/pharma/30-delivery-challans.png" alt="Delivery challans" loading="lazy"></a>
+  <a class="shot-link" href="../#/delivery-challans"><img src="screenshots/pharma/30-delivery-challans.png" alt="Delivery challans" loading="lazy"></a>
   <figcaption>
     <h4>Delivery challans</h4>
     <p>DCs for goods dispatched without an immediate invoice (job-work, consignment, returnable).</p>
@@ -561,7 +561,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/delivery-challan/new"><img src="screenshots/pharma/31-delivery-challan-new.png" alt="New delivery challan" loading="lazy"></a>
+  <a class="shot-link" href="../#/delivery-challan/new"><img src="screenshots/pharma/31-delivery-challan-new.png" alt="New delivery challan" loading="lazy"></a>
   <figcaption>
     <h4>New delivery challan</h4>
     <p>Item picker, transport details, and the 'convert to invoice' button that reuses the DC lines on a new tax invoice.</p>
@@ -570,7 +570,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/eway-bills"><img src="screenshots/pharma/32-eway-bills.png" alt="E-way bills" loading="lazy"></a>
+  <a class="shot-link" href="../#/eway-bills"><img src="screenshots/pharma/32-eway-bills.png" alt="E-way bills" loading="lazy"></a>
   <figcaption>
     <h4>E-way bills</h4>
     <p>E-way bill register for invoices crossing the INR 50k / inter-state threshold. Each row links back to its parent invoice.</p>
@@ -579,7 +579,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/eway-bill/new"><img src="screenshots/pharma/33-eway-bill-new.png" alt="New e-way bill" loading="lazy"></a>
+  <a class="shot-link" href="../#/eway-bill/new"><img src="screenshots/pharma/33-eway-bill-new.png" alt="New e-way bill" loading="lazy"></a>
   <figcaption>
     <h4>New e-way bill</h4>
     <p>Transporter details, distance, vehicle number and validity. Bahi pre-fills from the selected invoice so there's no retyping.</p>
@@ -588,7 +588,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-transfers"><img src="screenshots/pharma/34-stock-transfers.png" alt="Stock transfers" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-transfers"><img src="screenshots/pharma/34-stock-transfers.png" alt="Stock transfers" loading="lazy"></a>
   <figcaption>
     <h4>Stock transfers</h4>
     <p>Inter-godown transfer register — one side of the 'out' matches the other side's 'in'.</p>
@@ -597,7 +597,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-transfer/out/new"><img src="screenshots/pharma/35-stock-transfer-out.png" alt="New stock transfer (outward)" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-transfer/out/new"><img src="screenshots/pharma/35-stock-transfer-out.png" alt="New stock transfer (outward)" loading="lazy"></a>
   <figcaption>
     <h4>New stock transfer (outward)</h4>
     <p>Pick source godown, destination godown, items, quantities. Produces the 'out' movement and a printable transfer slip for the receiving side.</p>
@@ -606,7 +606,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-transfer/in/import"><img src="screenshots/pharma/36-stock-transfer-in.png" alt="Stock transfer (inbound import)" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-transfer/in/import"><img src="screenshots/pharma/36-stock-transfer-in.png" alt="Stock transfer (inbound import)" loading="lazy"></a>
   <figcaption>
     <h4>Stock transfer (inbound import)</h4>
     <p>Import the paired 'in' side of a transfer from a sister godown .khata file. Keeps both sides reconciled without network sync.</p>
@@ -622,7 +622,7 @@
   <p class="section-intro">Free-form accounting entries — journal voucher, day book, ledger lookups, registers.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/journal/new"><img src="screenshots/pharma/37-journal-new.png" alt="Journal voucher" loading="lazy"></a>
+  <a class="shot-link" href="../#/journal/new"><img src="screenshots/pharma/37-journal-new.png" alt="Journal voucher" loading="lazy"></a>
   <figcaption>
     <h4>Journal voucher</h4>
     <p>Free-form double-entry voucher for anything the dedicated forms don't cover — depreciation, provisions, expense accruals, CA adjustments.</p>
@@ -631,7 +631,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/day-book"><img src="screenshots/pharma/39-day-book.png" alt="Day book" loading="lazy"></a>
+  <a class="shot-link" href="../#/day-book"><img src="screenshots/pharma/39-day-book.png" alt="Day book" loading="lazy"></a>
   <figcaption>
     <h4>Day book</h4>
     <p>Chronological voucher tape — every entry in date order with narration, ref and running totals. The auditor's first scan of the period.</p>
@@ -640,7 +640,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/account-ledger"><img src="screenshots/pharma/40-account-ledger.png" alt="Account ledger" loading="lazy"></a>
+  <a class="shot-link" href="../#/account-ledger"><img src="screenshots/pharma/40-account-ledger.png" alt="Account ledger" loading="lazy"></a>
   <figcaption>
     <h4>Account ledger</h4>
     <p>Ledger view for any account — sundry debtors, vendor subledger, bank, TDS payable — with opening, movements and closing balance.</p>
@@ -649,7 +649,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/sales-register"><img src="screenshots/pharma/44-sales-register.png" alt="Sales register" loading="lazy"></a>
+  <a class="shot-link" href="../#/sales-register"><img src="screenshots/pharma/44-sales-register.png" alt="Sales register" loading="lazy"></a>
   <figcaption>
     <h4>Sales register</h4>
     <p>GST-compliant sales register: invoice no, customer, GSTIN, taxable value, CGST, SGST, IGST. Used for filing GSTR-1 and also as a standalone printout for CAs.</p>
@@ -658,7 +658,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/purchase-register"><img src="screenshots/pharma/45-purchase-register.png" alt="Purchase register" loading="lazy"></a>
+  <a class="shot-link" href="../#/purchase-register"><img src="screenshots/pharma/45-purchase-register.png" alt="Purchase register" loading="lazy"></a>
   <figcaption>
     <h4>Purchase register</h4>
     <p>Symmetric register on the input side. Drives the ITC figures in GSTR-3B Table 4.</p>
@@ -674,7 +674,7 @@
   <p class="section-intro">Trial balance, financials, period locks and year-end rollover.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/trial-balance"><img src="screenshots/pharma/41-trial-balance.png" alt="Trial balance" loading="lazy"></a>
+  <a class="shot-link" href="../#/trial-balance"><img src="screenshots/pharma/41-trial-balance.png" alt="Trial balance" loading="lazy"></a>
   <figcaption>
     <h4>Trial balance</h4>
     <p>Opening + debits + credits + closing for every account grouped by type (asset / liability / income / expense / equity). Grand totals must tie — enforced by a data-integrity test.</p>
@@ -683,7 +683,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/balance-sheet"><img src="screenshots/pharma/42-balance-sheet.png" alt="Balance sheet" loading="lazy"></a>
+  <a class="shot-link" href="../#/balance-sheet"><img src="screenshots/pharma/42-balance-sheet.png" alt="Balance sheet" loading="lazy"></a>
   <figcaption>
     <h4>Balance sheet</h4>
     <p>Schedule-III compliant balance sheet assembled from the trial balance in-browser. No cloud, no spreadsheet.</p>
@@ -692,7 +692,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/pnl"><img src="screenshots/pharma/43-pnl.png" alt="Profit & loss" loading="lazy"></a>
+  <a class="shot-link" href="../#/pnl"><img src="screenshots/pharma/43-pnl.png" alt="Profit & loss" loading="lazy"></a>
   <figcaption>
     <h4>Profit & loss</h4>
     <p>P&L summary with income categories, direct expenses, and indirect expenses. Drilldown to account ledger from each line.</p>
@@ -701,7 +701,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/period-locks"><img src="screenshots/pharma/53-period-locks.png" alt="Period locks" loading="lazy"></a>
+  <a class="shot-link" href="../#/period-locks"><img src="screenshots/pharma/53-period-locks.png" alt="Period locks" loading="lazy"></a>
   <figcaption>
     <h4>Period locks</h4>
     <p>Lock a completed fiscal period so no backdated entries can be made. Attempted writes are blocked with a visible banner.</p>
@@ -710,7 +710,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/fy-rollover"><img src="screenshots/pharma/54-fy-rollover.png" alt="FY rollover wizard" loading="lazy"></a>
+  <a class="shot-link" href="../#/fy-rollover"><img src="screenshots/pharma/54-fy-rollover.png" alt="FY rollover wizard" loading="lazy"></a>
   <figcaption>
     <h4>FY rollover wizard</h4>
     <p>Close the current fiscal year and carry forward balances as opening entries in the new year. Creates a snapshot before committing.</p>
@@ -719,7 +719,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/annotations"><img src="screenshots/pharma/55-annotations.png" alt="Annotations" loading="lazy"></a>
+  <a class="shot-link" href="../#/annotations"><img src="screenshots/pharma/55-annotations.png" alt="Annotations" loading="lazy"></a>
   <figcaption>
     <h4>Annotations</h4>
     <p>Sticky notes the CA leaves on specific entries, customers or accounts. Visible in-line and in the annotations register.</p>
@@ -735,7 +735,7 @@
 <p class="intro">High-value B2B invoices, heavy stock movement, WAC valuation. Goods-only workflow — no SACs, no credit notes in the sample.</p>
 <div class="grid">
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/dashboard"><img src="screenshots/manufacturing/01-dashboard.png" alt="Dashboard" loading="lazy"></a>
+  <a class="shot-link" href="../#/dashboard"><img src="screenshots/manufacturing/01-dashboard.png" alt="Dashboard" loading="lazy"></a>
   <figcaption>
     <h4>Dashboard</h4>
     <p>KPIs for the current month: cashflow vs last month, total outstanding receivables, GST liability, receivables aging and top customers. This is the first thing the accountant sees every morning.</p>
@@ -744,7 +744,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/invoices"><img src="screenshots/manufacturing/03-invoices.png" alt="Sales invoices" loading="lazy"></a>
+  <a class="shot-link" href="../#/invoices"><img src="screenshots/manufacturing/03-invoices.png" alt="Sales invoices" loading="lazy"></a>
   <figcaption>
     <h4>Sales invoices</h4>
     <p>Every invoice with status badge (paid / partial / unpaid / cancelled), customer, date, amount and tax split. Filterable by series, customer, date range, and status.</p>
@@ -753,7 +753,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/customers"><img src="screenshots/manufacturing/04-customers.png" alt="Customer master" loading="lazy"></a>
+  <a class="shot-link" href="../#/customers"><img src="screenshots/manufacturing/04-customers.png" alt="Customer master" loading="lazy"></a>
   <figcaption>
     <h4>Customer master</h4>
     <p>Complete customer ledger with GSTIN, state, payment terms, current outstanding and aging. Clicking a row drills through to their invoice history.</p>
@@ -762,7 +762,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/purchases"><img src="screenshots/manufacturing/07-purchases.png" alt="Purchase bills" loading="lazy"></a>
+  <a class="shot-link" href="../#/purchases"><img src="screenshots/manufacturing/07-purchases.png" alt="Purchase bills" loading="lazy"></a>
   <figcaption>
     <h4>Purchase bills</h4>
     <p>Vendor bills with input GST captured separately. Consulting has zero purchases — proof that the sample data is shape-correct.</p>
@@ -771,7 +771,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/inventory"><img src="screenshots/manufacturing/08-inventory.png" alt="Inventory" loading="lazy"></a>
+  <a class="shot-link" href="../#/inventory"><img src="screenshots/manufacturing/08-inventory.png" alt="Inventory" loading="lazy"></a>
   <figcaption>
     <h4>Inventory</h4>
     <p></p>
@@ -780,7 +780,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-on-hand"><img src="screenshots/manufacturing/09-stock-on-hand.png" alt="Stock on hand" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-on-hand"><img src="screenshots/manufacturing/09-stock-on-hand.png" alt="Stock on hand" loading="lazy"></a>
   <figcaption>
     <h4>Stock on hand</h4>
     <p>Per-item current balance across godowns with WAC (weighted average cost) valuation. Used for monthly closing and the balance-sheet stock figure.</p>
@@ -789,7 +789,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-movements"><img src="screenshots/manufacturing/10-stock-movements.png" alt="Stock movement log" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-movements"><img src="screenshots/manufacturing/10-stock-movements.png" alt="Stock movement log" loading="lazy"></a>
   <figcaption>
     <h4>Stock movement log</h4>
     <p>Every in/out movement — sale, purchase, transfer, adjustment, return — with source document reference. This is the source of truth the register is built from.</p>
@@ -798,7 +798,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/valuation-summary"><img src="screenshots/manufacturing/11-valuation-summary.png" alt="Valuation summary" loading="lazy"></a>
+  <a class="shot-link" href="../#/valuation-summary"><img src="screenshots/manufacturing/11-valuation-summary.png" alt="Valuation summary" loading="lazy"></a>
   <figcaption>
     <h4>Valuation summary</h4>
     <p>Stock value by godown and by item class. Ties directly to the inventory line on the balance sheet.</p>
@@ -807,7 +807,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-aging"><img src="screenshots/manufacturing/12-stock-aging.png" alt="Stock aging (batch)" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-aging"><img src="screenshots/manufacturing/12-stock-aging.png" alt="Stock aging (batch)" loading="lazy"></a>
   <figcaption>
     <h4>Stock aging (batch)</h4>
     <p>Batch-tracked stock bucketed by age (0-30 / 31-60 / 61-90 / 90+ days). Pharma's sample data doesn't cross the 0-30 day threshold so the route renders its empty-state panel — a valid result.</p>
@@ -816,7 +816,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-register"><img src="screenshots/manufacturing/13-stock-register.png" alt="Stock register (per item)" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-register"><img src="screenshots/manufacturing/13-stock-register.png" alt="Stock register (per item)" loading="lazy"></a>
   <figcaption>
     <h4>Stock register (per item)</h4>
     <p>Walk-through of a single item's movements with running balance and running WAC. Auditor workflow: pick an item, verify opening + movements = closing.</p>
@@ -825,7 +825,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/delivery-challans"><img src="screenshots/manufacturing/14-delivery-challans.png" alt="Delivery challans" loading="lazy"></a>
+  <a class="shot-link" href="../#/delivery-challans"><img src="screenshots/manufacturing/14-delivery-challans.png" alt="Delivery challans" loading="lazy"></a>
   <figcaption>
     <h4>Delivery challans</h4>
     <p>DCs for goods dispatched without an immediate invoice (job-work, consignment, returnable).</p>
@@ -834,7 +834,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/eway-bills"><img src="screenshots/manufacturing/15-eway-bills.png" alt="E-way bills" loading="lazy"></a>
+  <a class="shot-link" href="../#/eway-bills"><img src="screenshots/manufacturing/15-eway-bills.png" alt="E-way bills" loading="lazy"></a>
   <figcaption>
     <h4>E-way bills</h4>
     <p>E-way bill register for invoices crossing the INR 50k / inter-state threshold. Each row links back to its parent invoice.</p>
@@ -843,7 +843,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/stock-transfers"><img src="screenshots/manufacturing/16-stock-transfers.png" alt="Stock transfers" loading="lazy"></a>
+  <a class="shot-link" href="../#/stock-transfers"><img src="screenshots/manufacturing/16-stock-transfers.png" alt="Stock transfers" loading="lazy"></a>
   <figcaption>
     <h4>Stock transfers</h4>
     <p>Inter-godown transfer register — one side of the 'out' matches the other side's 'in'.</p>
@@ -852,7 +852,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/godowns"><img src="screenshots/manufacturing/17-godowns.png" alt="Godown master" loading="lazy"></a>
+  <a class="shot-link" href="../#/godowns"><img src="screenshots/manufacturing/17-godowns.png" alt="Godown master" loading="lazy"></a>
   <figcaption>
     <h4>Godown master</h4>
     <p>Named storage locations — factory, warehouse-1, consignment — with per-location stock roll-ups.</p>
@@ -861,7 +861,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/trial-balance"><img src="screenshots/manufacturing/18-trial-balance.png" alt="Trial balance" loading="lazy"></a>
+  <a class="shot-link" href="../#/trial-balance"><img src="screenshots/manufacturing/18-trial-balance.png" alt="Trial balance" loading="lazy"></a>
   <figcaption>
     <h4>Trial balance</h4>
     <p>Opening + debits + credits + closing for every account grouped by type (asset / liability / income / expense / equity). Grand totals must tie — enforced by a data-integrity test.</p>
@@ -870,7 +870,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/balance-sheet"><img src="screenshots/manufacturing/19-balance-sheet.png" alt="Balance sheet" loading="lazy"></a>
+  <a class="shot-link" href="../#/balance-sheet"><img src="screenshots/manufacturing/19-balance-sheet.png" alt="Balance sheet" loading="lazy"></a>
   <figcaption>
     <h4>Balance sheet</h4>
     <p>Schedule-III compliant balance sheet assembled from the trial balance in-browser. No cloud, no spreadsheet.</p>
@@ -879,7 +879,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/pnl"><img src="screenshots/manufacturing/20-pnl.png" alt="Profit & loss" loading="lazy"></a>
+  <a class="shot-link" href="../#/pnl"><img src="screenshots/manufacturing/20-pnl.png" alt="Profit & loss" loading="lazy"></a>
   <figcaption>
     <h4>Profit & loss</h4>
     <p>P&L summary with income categories, direct expenses, and indirect expenses. Drilldown to account ledger from each line.</p>
@@ -888,7 +888,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/gstr1"><img src="screenshots/manufacturing/21-gstr1.png" alt="GSTR-1" loading="lazy"></a>
+  <a class="shot-link" href="../#/gstr1"><img src="screenshots/manufacturing/21-gstr1.png" alt="GSTR-1" loading="lazy"></a>
   <figcaption>
     <h4>GSTR-1</h4>
     <p>Outward supplies summary auto-assembled from the invoice table. B2B, B2CL, B2CS, exports, CDNR, HSN summary — all tabs.</p>
@@ -897,7 +897,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/gstr3b"><img src="screenshots/manufacturing/22-gstr3b.png" alt="GSTR-3B" loading="lazy"></a>
+  <a class="shot-link" href="../#/gstr3b"><img src="screenshots/manufacturing/22-gstr3b.png" alt="GSTR-3B" loading="lazy"></a>
   <figcaption>
     <h4>GSTR-3B</h4>
     <p>Monthly return summary: 3.1 outward, 3.2 inter-state supplies, 4 ITC, 5 exempt, 6.1 payment. Numbers reconcile to the sales and purchase registers.</p>
@@ -911,7 +911,7 @@
 <p class="intro">Services-only LLP. No inventory, no purchases, simpler dashboard. Proof that Bahi's layout scales down as well as up.</p>
 <div class="grid">
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/dashboard"><img src="screenshots/consulting/01-dashboard.png" alt="Dashboard" loading="lazy"></a>
+  <a class="shot-link" href="../#/dashboard"><img src="screenshots/consulting/01-dashboard.png" alt="Dashboard" loading="lazy"></a>
   <figcaption>
     <h4>Dashboard</h4>
     <p>KPIs for the current month: cashflow vs last month, total outstanding receivables, GST liability, receivables aging and top customers. This is the first thing the accountant sees every morning.</p>
@@ -920,7 +920,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/invoices"><img src="screenshots/consulting/03-invoices.png" alt="Sales invoices" loading="lazy"></a>
+  <a class="shot-link" href="../#/invoices"><img src="screenshots/consulting/03-invoices.png" alt="Sales invoices" loading="lazy"></a>
   <figcaption>
     <h4>Sales invoices</h4>
     <p>Every invoice with status badge (paid / partial / unpaid / cancelled), customer, date, amount and tax split. Filterable by series, customer, date range, and status.</p>
@@ -929,7 +929,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/customers"><img src="screenshots/consulting/04-customers.png" alt="Customer master" loading="lazy"></a>
+  <a class="shot-link" href="../#/customers"><img src="screenshots/consulting/04-customers.png" alt="Customer master" loading="lazy"></a>
   <figcaption>
     <h4>Customer master</h4>
     <p>Complete customer ledger with GSTIN, state, payment terms, current outstanding and aging. Clicking a row drills through to their invoice history.</p>
@@ -938,7 +938,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/items"><img src="screenshots/consulting/05-items.png" alt="Items & services" loading="lazy"></a>
+  <a class="shot-link" href="../#/items"><img src="screenshots/consulting/05-items.png" alt="Items & services" loading="lazy"></a>
   <figcaption>
     <h4>Items & services</h4>
     <p>Unified master for HSN goods and SAC services. Pharma has both: tablet strips, surgical consumables, lab services. Manufacturing has steel products only. Consulting has only SACs.</p>
@@ -947,7 +947,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/credit-notes"><img src="screenshots/consulting/06-credit-notes.png" alt="Credit notes" loading="lazy"></a>
+  <a class="shot-link" href="../#/credit-notes"><img src="screenshots/consulting/06-credit-notes.png" alt="Credit notes" loading="lazy"></a>
   <figcaption>
     <h4>Credit notes</h4>
     <p>Sales returns with a back-link to the original invoice. Pharma has 4-5 credit notes in the sample against expired stock returns.</p>
@@ -956,7 +956,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/payments"><img src="screenshots/consulting/07-payments.png" alt="Receipts & payments list" loading="lazy"></a>
+  <a class="shot-link" href="../#/payments"><img src="screenshots/consulting/07-payments.png" alt="Receipts & payments list" loading="lazy"></a>
   <figcaption>
     <h4>Receipts & payments list</h4>
     <p>All customer receipts and vendor payments in one register. Clicking a row shows the allocation breakdown and the underlying ledger entry.</p>
@@ -965,7 +965,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/advances"><img src="screenshots/consulting/08-advances.png" alt="Advances" loading="lazy"></a>
+  <a class="shot-link" href="../#/advances"><img src="screenshots/consulting/08-advances.png" alt="Advances" loading="lazy"></a>
   <figcaption>
     <h4>Advances</h4>
     <p>Customer advances received before an invoice exists. Tracked separately and auto-adjusted against the first matching invoice.</p>
@@ -974,7 +974,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/journal/new"><img src="screenshots/consulting/09-journal-new.png" alt="Journal voucher" loading="lazy"></a>
+  <a class="shot-link" href="../#/journal/new"><img src="screenshots/consulting/09-journal-new.png" alt="Journal voucher" loading="lazy"></a>
   <figcaption>
     <h4>Journal voucher</h4>
     <p>Free-form double-entry voucher for anything the dedicated forms don't cover — depreciation, provisions, expense accruals, CA adjustments.</p>
@@ -983,7 +983,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/day-book"><img src="screenshots/consulting/10-day-book.png" alt="Day book" loading="lazy"></a>
+  <a class="shot-link" href="../#/day-book"><img src="screenshots/consulting/10-day-book.png" alt="Day book" loading="lazy"></a>
   <figcaption>
     <h4>Day book</h4>
     <p>Chronological voucher tape — every entry in date order with narration, ref and running totals. The auditor's first scan of the period.</p>
@@ -992,7 +992,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/trial-balance"><img src="screenshots/consulting/11-trial-balance.png" alt="Trial balance" loading="lazy"></a>
+  <a class="shot-link" href="../#/trial-balance"><img src="screenshots/consulting/11-trial-balance.png" alt="Trial balance" loading="lazy"></a>
   <figcaption>
     <h4>Trial balance</h4>
     <p>Opening + debits + credits + closing for every account grouped by type (asset / liability / income / expense / equity). Grand totals must tie — enforced by a data-integrity test.</p>
@@ -1001,7 +1001,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/balance-sheet"><img src="screenshots/consulting/12-balance-sheet.png" alt="Balance sheet" loading="lazy"></a>
+  <a class="shot-link" href="../#/balance-sheet"><img src="screenshots/consulting/12-balance-sheet.png" alt="Balance sheet" loading="lazy"></a>
   <figcaption>
     <h4>Balance sheet</h4>
     <p>Schedule-III compliant balance sheet assembled from the trial balance in-browser. No cloud, no spreadsheet.</p>
@@ -1010,7 +1010,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/pnl"><img src="screenshots/consulting/13-pnl.png" alt="Profit & loss" loading="lazy"></a>
+  <a class="shot-link" href="../#/pnl"><img src="screenshots/consulting/13-pnl.png" alt="Profit & loss" loading="lazy"></a>
   <figcaption>
     <h4>Profit & loss</h4>
     <p>P&L summary with income categories, direct expenses, and indirect expenses. Drilldown to account ledger from each line.</p>
@@ -1019,7 +1019,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/sales-register"><img src="screenshots/consulting/14-sales-register.png" alt="Sales register" loading="lazy"></a>
+  <a class="shot-link" href="../#/sales-register"><img src="screenshots/consulting/14-sales-register.png" alt="Sales register" loading="lazy"></a>
   <figcaption>
     <h4>Sales register</h4>
     <p>GST-compliant sales register: invoice no, customer, GSTIN, taxable value, CGST, SGST, IGST. Used for filing GSTR-1 and also as a standalone printout for CAs.</p>
@@ -1028,7 +1028,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/gstr1"><img src="screenshots/consulting/15-gstr1.png" alt="GSTR-1" loading="lazy"></a>
+  <a class="shot-link" href="../#/gstr1"><img src="screenshots/consulting/15-gstr1.png" alt="GSTR-1" loading="lazy"></a>
   <figcaption>
     <h4>GSTR-1</h4>
     <p>Outward supplies summary auto-assembled from the invoice table. B2B, B2CL, B2CS, exports, CDNR, HSN summary — all tabs.</p>
@@ -1037,7 +1037,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/gstr3b"><img src="screenshots/consulting/16-gstr3b.png" alt="GSTR-3B" loading="lazy"></a>
+  <a class="shot-link" href="../#/gstr3b"><img src="screenshots/consulting/16-gstr3b.png" alt="GSTR-3B" loading="lazy"></a>
   <figcaption>
     <h4>GSTR-3B</h4>
     <p>Monthly return summary: 3.1 outward, 3.2 inter-state supplies, 4 ITC, 5 exempt, 6.1 payment. Numbers reconcile to the sales and purchase registers.</p>
@@ -1046,7 +1046,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/form-26q"><img src="screenshots/consulting/17-form-26q.png" alt="Form 26Q" loading="lazy"></a>
+  <a class="shot-link" href="../#/form-26q"><img src="screenshots/consulting/17-form-26q.png" alt="Form 26Q" loading="lazy"></a>
   <figcaption>
     <h4>Form 26Q</h4>
     <p>Quarterly TDS return for non-salary deductions. Lists every deduction with section, deductee PAN, amount, rate, date of deduction and date of deposit.</p>
@@ -1063,7 +1063,7 @@
   <p class="section-intro">CA opens pharma.khata. Mode badge turns into the CA tile. Review workflow begins.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/dashboard"><img src="screenshots/ca-audit/01-client1-dashboard.png" alt="Client 1 — Dashboard" loading="lazy"></a>
+  <a class="shot-link" href="../#/dashboard"><img src="screenshots/ca-audit/01-client1-dashboard.png" alt="Client 1 — Dashboard" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — Dashboard</h4>
     <p>CA opens pharma.khata. Mode badge flips to 'CA · CS'. Dashboard greets them with the client's outstanding receivables and aging.</p>
@@ -1072,7 +1072,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/trial-balance"><img src="screenshots/ca-audit/02-client1-trial-balance.png" alt="Client 1 — Trial balance" loading="lazy"></a>
+  <a class="shot-link" href="../#/trial-balance"><img src="screenshots/ca-audit/02-client1-trial-balance.png" alt="Client 1 — Trial balance" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — Trial balance</h4>
     <p>First scan of completeness — grand totals tied, every entry balanced, suspense account empty.</p>
@@ -1081,7 +1081,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/balance-sheet"><img src="screenshots/ca-audit/03-client1-balance-sheet.png" alt="Client 1 — Balance sheet" loading="lazy"></a>
+  <a class="shot-link" href="../#/balance-sheet"><img src="screenshots/ca-audit/03-client1-balance-sheet.png" alt="Client 1 — Balance sheet" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — Balance sheet</h4>
     <p>Schedule-III grouping. Reconciles directly to the trial balance so there's no 'spreadsheet step' to audit.</p>
@@ -1090,7 +1090,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/pnl"><img src="screenshots/ca-audit/04-client1-pnl.png" alt="Client 1 — Profit & loss" loading="lazy"></a>
+  <a class="shot-link" href="../#/pnl"><img src="screenshots/ca-audit/04-client1-pnl.png" alt="Client 1 — Profit & loss" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — Profit & loss</h4>
     <p>P&L summary. Drilldown is one click — from any line to the underlying ledger.</p>
@@ -1099,7 +1099,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/day-book"><img src="screenshots/ca-audit/05-client1-day-book.png" alt="Client 1 — Day book review" loading="lazy"></a>
+  <a class="shot-link" href="../#/day-book"><img src="screenshots/ca-audit/05-client1-day-book.png" alt="Client 1 — Day book review" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — Day book review</h4>
     <p>Chronological voucher tape. The auditor clicks through suspicious entries and drops annotations as they go.</p>
@@ -1108,7 +1108,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/ca/review"><img src="screenshots/ca-audit/06-client1-ca-review.png" alt="Client 1 — CA review panel" loading="lazy"></a>
+  <a class="shot-link" href="../#/ca/review"><img src="screenshots/ca-audit/06-client1-ca-review.png" alt="Client 1 — CA review panel" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — CA review panel</h4>
     <p>Every voucher gets a 'Reviewed' checkbox and an inline 'Note' button. The header counts tell the CA how much is left to sign off.</p>
@@ -1117,7 +1117,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/annotations"><img src="screenshots/ca-audit/07-client1-annotations.png" alt="Client 1 — Annotations" loading="lazy"></a>
+  <a class="shot-link" href="../#/annotations"><img src="screenshots/ca-audit/07-client1-annotations.png" alt="Client 1 — Annotations" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — Annotations</h4>
     <p>Running list of all notes the CA left on this file. Export to the review report with one click.</p>
@@ -1126,7 +1126,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/ca/report"><img src="screenshots/ca-audit/08-client1-ca-report.png" alt="Client 1 — Review report" loading="lazy"></a>
+  <a class="shot-link" href="../#/ca/report"><img src="screenshots/ca-audit/08-client1-ca-report.png" alt="Client 1 — Review report" loading="lazy"></a>
   <figcaption>
     <h4>Client 1 — Review report</h4>
     <p>Final PDF-ready report combining client identity, review checkpoints, annotations and sign-off.</p>
@@ -1142,7 +1142,7 @@
   <p class="section-intro">Close client 1, open client 2. Same keystrokes, different client.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/dashboard"><img src="screenshots/ca-audit/09-client2-dashboard.png" alt="Client 2 — Dashboard" loading="lazy"></a>
+  <a class="shot-link" href="../#/dashboard"><img src="screenshots/ca-audit/09-client2-dashboard.png" alt="Client 2 — Dashboard" loading="lazy"></a>
   <figcaption>
     <h4>Client 2 — Dashboard</h4>
     <p>CA closes pharma.khata, opens manufacturing.khata. The mode badge persists, the dashboard refreshes to the new client.</p>
@@ -1151,7 +1151,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/trial-balance"><img src="screenshots/ca-audit/10-client2-trial-balance.png" alt="Client 2 — Trial balance" loading="lazy"></a>
+  <a class="shot-link" href="../#/trial-balance"><img src="screenshots/ca-audit/10-client2-trial-balance.png" alt="Client 2 — Trial balance" loading="lazy"></a>
   <figcaption>
     <h4>Client 2 — Trial balance</h4>
     <p>Manufacturing's trial balance. Same layout, different numbers — no context switching cost.</p>
@@ -1160,7 +1160,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/balance-sheet"><img src="screenshots/ca-audit/11-client2-balance-sheet.png" alt="Client 2 — Balance sheet" loading="lazy"></a>
+  <a class="shot-link" href="../#/balance-sheet"><img src="screenshots/ca-audit/11-client2-balance-sheet.png" alt="Client 2 — Balance sheet" loading="lazy"></a>
   <figcaption>
     <h4>Client 2 — Balance sheet</h4>
     <p>Heavy on fixed assets and inventory, as you'd expect for a steel products company.</p>
@@ -1169,7 +1169,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/pnl"><img src="screenshots/ca-audit/12-client2-pnl.png" alt="Client 2 — Profit & loss" loading="lazy"></a>
+  <a class="shot-link" href="../#/pnl"><img src="screenshots/ca-audit/12-client2-pnl.png" alt="Client 2 — Profit & loss" loading="lazy"></a>
   <figcaption>
     <h4>Client 2 — Profit & loss</h4>
     <p>High cost of goods sold relative to sales — consistent with the manufacturing margin profile.</p>
@@ -1178,7 +1178,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/ca/review"><img src="screenshots/ca-audit/13-client2-ca-review.png" alt="Client 2 — CA review panel" loading="lazy"></a>
+  <a class="shot-link" href="../#/ca/review"><img src="screenshots/ca-audit/13-client2-ca-review.png" alt="Client 2 — CA review panel" loading="lazy"></a>
   <figcaption>
     <h4>Client 2 — CA review panel</h4>
     <p>Same review workflow applied to the second client. Nothing to install or configure between files.</p>
@@ -1194,7 +1194,7 @@
   <p class="section-intro">Close client 2, open client 3. Services-only balance sheet, and a CA adjustment voucher example.</p>
   <div class="grid">
     <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/dashboard"><img src="screenshots/ca-audit/14-client3-dashboard.png" alt="Client 3 — Dashboard" loading="lazy"></a>
+  <a class="shot-link" href="../#/dashboard"><img src="screenshots/ca-audit/14-client3-dashboard.png" alt="Client 3 — Dashboard" loading="lazy"></a>
   <figcaption>
     <h4>Client 3 — Dashboard</h4>
     <p>Consulting LLP — smaller scale, services only, no inventory panel.</p>
@@ -1203,7 +1203,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/trial-balance"><img src="screenshots/ca-audit/15-client3-trial-balance.png" alt="Client 3 — Trial balance" loading="lazy"></a>
+  <a class="shot-link" href="../#/trial-balance"><img src="screenshots/ca-audit/15-client3-trial-balance.png" alt="Client 3 — Trial balance" loading="lazy"></a>
   <figcaption>
     <h4>Client 3 — Trial balance</h4>
     <p>Fewer accounts, simpler structure — typical for a services LLP.</p>
@@ -1212,7 +1212,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/balance-sheet"><img src="screenshots/ca-audit/16-client3-balance-sheet.png" alt="Client 3 — Balance sheet" loading="lazy"></a>
+  <a class="shot-link" href="../#/balance-sheet"><img src="screenshots/ca-audit/16-client3-balance-sheet.png" alt="Client 3 — Balance sheet" loading="lazy"></a>
   <figcaption>
     <h4>Client 3 — Balance sheet</h4>
     <p>Receivables-heavy, no inventory line. The balance sheet layout adapts to the data present.</p>
@@ -1221,7 +1221,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/pnl"><img src="screenshots/ca-audit/17-client3-pnl.png" alt="Client 3 — Profit & loss" loading="lazy"></a>
+  <a class="shot-link" href="../#/pnl"><img src="screenshots/ca-audit/17-client3-pnl.png" alt="Client 3 — Profit & loss" loading="lazy"></a>
   <figcaption>
     <h4>Client 3 — Profit & loss</h4>
     <p>Services revenue and professional expenses. TDS under 194J is auto-accumulated from the vendor payments.</p>
@@ -1230,7 +1230,7 @@
 </figure>
 
 <figure class="shot">
-  <a class="shot-link" href="http://localhost:8101/#/ca/adjustment/new"><img src="screenshots/ca-audit/18-client3-ca-adjustment.png" alt="Client 3 — CA adjustment voucher" loading="lazy"></a>
+  <a class="shot-link" href="../#/ca/adjustment/new"><img src="screenshots/ca-audit/18-client3-ca-adjustment.png" alt="Client 3 — CA adjustment voucher" loading="lazy"></a>
   <figcaption>
     <h4>Client 3 — CA adjustment voucher</h4>
     <p>CA-authored adjustment entry — depreciation provision, year-end expense accrual, or any reclassification. Signed with the CA's identity from the profile.</p>
@@ -1243,7 +1243,7 @@
 
 
 <h2>Capture summary</h2>
-<p class="intro">Every screenshot on this page is generated by <code>capture.py</code> — a Playwright script that drives the live Bahi instance at localhost:8101, loads each sample file via Bahi's in-page globals, navigates to each route, and records a 1400×900 PNG. The script doubles as a regression test: any route that fails to render or throws a console error is flagged in <a href="CAPTURE-LOG.md">CAPTURE-LOG.md</a>.</p>
+<p class="intro">Every screenshot on this page is generated by <code>capture.py</code> — a Playwright script that drives a local Bahi dev server, loads each sample file via Bahi's in-page globals, navigates to each route, and records a 1400×900 PNG. The script doubles as a regression test: any route that fails to render or throws a console error is flagged in <a href="CAPTURE-LOG.md">CAPTURE-LOG.md</a>.</p>
 <div class="why-grid">
   <div class="why"><h4>Pharma</h4><p>58 routes captured.</p></div>
   <div class="why"><h4>Manufacturing</h4><p>22 routes captured.</p></div>

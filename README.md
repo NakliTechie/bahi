@@ -6,207 +6,180 @@ A browser-native, local-first accounting application for Indian SMBs. Bahi reads
 
 The app is **Bahi** (बही — the traditional bound ledger of Indian merchants). The file format it reads and writes is **`.khata`** (खाता — account/ledger), published as an open standard so any tool can implement it.
 
+- **Live build**: <https://bahi.naklitechie.com/>
+- **Feature walkthrough with screenshots**: <https://bahi.naklitechie.com/demo/>
+- **Sample `.khata` files** (synthetic, 2 FYs each): [`sample-data/`](sample-data/) — pharma, manufacturing, consulting
+
 ---
 
-## Status — Phase 8A (CA-handoff feature complete)
+## Status
 
-Phase 8A closes the 11 spec gaps that block handing Bahi to a real CA. On top of everything Phases 1–7 delivered, Phase 8A adds **TDS deduction recording with auto-deduct on vendor payment**, **Form 26Q + Form 27EQ exports** in NSDL CSV format, **Form 27D TDS certificate** (one PDF per vendor per quarter, with the deductor's company letterhead), **manual bank reconciliation** with statement-vs-book matching and per-line cleared checkboxes, **Layer 4 export-time identity check** that hard-blocks any export when the active workspace entry doesn't match the open file's GSTIN/name (catches the "I clicked Backup Now while looking at Client X but my workspace is on Client Y" mistake), **reference data lazy-fetch** from the live khata-standard CDN (states / GST rates / TDS sections / HSN codes / etc., with SHA-256 verification per dataset), and **audit-log replay restoration** that rebuilds the books from the audit log itself when both the SQLite and the in-file snapshots are damaged. **Schema bumps to v9** with `payments.vendor_id` / `payment_direction` / `tds_amount` / `tds_section` columns and a new `bank_reconciliations` table. Bahi is now feature complete for a CA pilot.
+**Alpha — feature-complete for a CA-assisted pilot.** Bahi ships as a single ~900 KB HTML file. Schema is at v9 and round-trips cleanly across owner and CA workflows. The app has a deterministic generator and a 45-test pytest suite that exercises the format end-to-end against three realistic sample files (pharma + manufacturing + consulting); all 45 pass.
 
-### What's shipped
+The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chain, and report set are stable enough to drive real books. Defaults, copy, ordering, and minor UI affordances will keep moving until v1.
 
-**Engine** (Phase 1A)
+---
+
+## Features
+
+### Engine
+
 - sql.js (SQLite WASM) double-entry ledger, lazy-loaded from CDN
-- `.khata` zip I/O with `manifest.json`, `books.sqlite`, `attachments/`, `exports/`, `snapshots/`
-- Standard Indian Chart of Accounts seeded on file create (36 accounts)
-- Posting engine with hard balance assertion (Dr = Cr or transaction rolls back)
-- Append-only audit log: SHA-256 hash chain + ECDSA P-256 signatures + per-entry `origin` field
+- `.khata` zip I/O — `manifest.json`, `books.sqlite`, `attachments/`, `exports/`, in-file snapshots
+- Standard Indian Chart of Accounts seeded on file create
+- Posting engine with hard balance assertion (Dr = Cr or the transaction rolls back)
+- Append-only audit log: SHA-256 hash chain + ECDSA P-256 signatures + per-entry `origin`
 - File System Access API with **forced** read+write permission on every open
 - Persistent file handles in IndexedDB
 - BroadcastChannel concurrent-tab lock — one file, one tab
-- Identity banner on every file open
-- Clock drift sanity check
+- Identity banner on every file open; clock drift sanity check
 - Format version compatibility check (newer files open read-only, older migrate forward)
-- Optimistic concurrency check on save with conflict modal (reload-from-disk or save-as-conflict-copy)
+- Optimistic concurrency check on save with conflict modal
 - Cross-origin detection on file open
 - Idempotent schema migration runner with `meta.schemaVersion`
 
-**Snapshots & recovery** (Phase 1B)
-- Rolling in-file snapshot system (last 20 saves + permanent manual / FY-close)
-- Snapshots panel in Debug Console with manual save + restore-as-new-file
-- "Backup Now" button — dated `.khata-backup.zip` with audit-log.csv + meta.json
-- Restore from backup — auto-detects `.khata` or backup zip, lists candidates, restores to a new file
-- Wrong-file detection: Layer 2 (identity mismatch on workspace replace, walks `changeHistory`) and Layer 5 (fingerprinted export filenames)
-- Corruption recovery modal — when `PRAGMA integrity_check` fails, lists in-file snapshots and restores to a new file
-- Keypair rotation marker on cross-origin opens
+### Snapshots, backup, recovery
 
-**Freelancer tier** (Phase 2A)
+- Rolling in-file snapshot system: last 10 saves + last 7 daily + last 12 monthly + permanent (manual / FY-close)
+- Snapshots panel with manual save + restore-as-new-file
+- **Backup Now** button — dated `.khata-backup.zip` with `audit-log.csv` + `meta.json`. `Ctrl+Shift+B` shortcut, 30-day nudge banner on the dashboard
+- Restore from backup auto-detects `.khata` or backup zip
+- **OPFS atomic-write staging** — every blob mirrored to `OPFS:bahi-staging/{workspaceId}.khata` before disk write; orphan staging copies surface a Settings → Crash recovery panel
+- 5-layer wrong-file detection (workspace identity, fingerprinted exports, audit-log ancestry, export-time identity, change-history walk)
+- Corruption recovery modal — `PRAGMA integrity_check` failure surfaces three paths: restore from in-file snapshot, restore from backup zip, **rebuild from audit log** (replays every replayable entry on a fresh database)
+
+### Masters
+
 - State stored as **ISO 3166-2:IN code** (canonical FK) with typeable input combobox
-- Reference data subsystem with bundled seeds: states, GST rates, cess, TDS, TCS, RCM, composition rates, common HSN/SAC
-- Customer master with GSTIN ↔ state sync
-- Item / service master with HSN/SAC datalist + auto-suggested rate from history
+- Reference data subsystem with bundled seeds + lazy-fetch from the [khata-standard CDN](https://github.com/NakliTechie/khata-standard) (SHA-256 verified per dataset, persisted per file)
+- Customer master with GSTIN ↔ state sync, outstanding column, payment terms
+- Vendor master with RCM-applicable flag, default TDS section, payable opening balance
+- Item / service master with HSN/SAC datalist, auto-suggested rate, inventory toggle
+- Multiple invoice series (Domestic / Export / SEZ-WP / SEZ-WOP / Bill of Supply, plus user-defined)
+- Full new-company wizard with PAN-aware multi-GSTIN copy from existing files
+- Edit company details with per-field audit log + `manifest.company.changeHistory`
+
+### Sales
+
 - Invoice form with live tax computation (intra-state CGST+SGST vs inter-state IGST routing)
-- Invoice posting through the double-entry engine
-- Invoice list view with per-row action buttons
-- P&L summary computed live from the ledger
-- Indian amount-in-words helper (`Rupees X Lakh Y Thousand Only`)
-- Auto invoice number per FY (`INV/26-27/0001`)
-- Edit company details with per-field audit log + `manifest.company.changeHistory[]`
-- Four themes (Crisp paper, Sakura wash, Asagi haze, Kinari washi) with picker in Settings
+- **Date-parameterized GST rates** (no hardcoded enums); per-rate sub-account auto-create on first use
+- Auto invoice number per FY, per series (`INV/26-27/0001`)
+- **Snapshot pattern** on every invoice — company, customer, place-of-supply, HSN description, account names frozen at posting time so reprints survive any future master edit
+- GST-compliant **invoice PDF** (TAX INVOICE / BILL OF SUPPLY) with multi-line description wrapping, totals, amount in words, signature block
+- **Devanagari support** in PDFs — Noto Sans Devanagari lazy-loaded, ₹ rupee glyph included
+- Credit notes against invoices (full-reversal or partial)
+- Composition scheme: invoice form hides GST routing, PDF prints "BILL OF SUPPLY" with the Rule 49 disclosure
 
-**Historical integrity** (Phase 2A.1 — `BAHI-AGENT-MSG-HISTORICAL-INTEGRITY.md`)
-- Schema v2 snapshot columns: `invoices.company_snapshot`, `invoices.customer_snapshot`, `invoices.place_of_supply_name`, `invoice_lines.hsn_description`, `entry_lines.account_name`
-- Posting captures snapshots from current reference data; reprint paths read snapshot columns only — no live JOINs
-- All 8 invariants enforced
-- 6 integrity check functions, auto-run on file open with warning toasts for legacy v1 rows
+### Purchases
 
-**Tax rate lifecycle** (Phase 2A.2 — `BAHI-AGENT-MSG-TAX-RATE-LIFECYCLE.md`)
-- `REF.gstRates` with effective-dated records (`validFrom` / `validTo`)
-- HSN seed restructured to per-code rate history
-- Date-parameterized lookups: `getActiveGstRates(date)`, `getActiveHsnRate(hsnSac, date)`, `rateIdForDecimal(decimal, date)`, `getRateById(rateId)`
-- Schema v3 `invoice_lines.rate_id` forensic key captured at posting time
-- Both rate dropdowns (item modal + invoice line) built dynamically — **no hardcoded rate enums anywhere**
-- Per-rate sub-account auto-create via `getOrCreateRateAccount`
-- `postInvoiceToLedger` groups lines by rate and routes to `CGST Output @ 9%` / `IGST Output @ 18%` etc.
-- `checkRateChangeResilience` integrity check
-- Cess registered as separate dimension (`REF.cessRates`)
+- Purchases with internal ref (`PUR/{FY}/{NNNN}`), vendor's bill number, place-of-supply state routing
+- RCM toggle that auto-routes posting to GST RCM Input/Output sub-accounts
+- ITC eligibility flag for blocked credits (motor vehicles, club fees, etc.)
+- Per-rate GST Input sub-account auto-create
+- Debit notes against purchases (full-reversal or partial)
+- Item picker with free-text fallback for one-off services
 
-**Invoice PDF export** (Phase 2B.1 + 2B.5 Devanagari)
-- jsPDF lazy CDN
-- GST-compliant A4 template: TAX INVOICE title (or BILL OF SUPPLY for composition dealers), two-column header (company + invoice meta), bill-to / place-of-supply panels, lines table with multi-line description wrapping, totals + amount in words, signature block, page footer
-- Reads exclusively from snapshot columns; legacy v1/v2 invoices get a peach LEGACY watermark + fall back to live joins
-- Save As via FS Access with fingerprinted name (`{invoice-num}-{customer-slug}.pdf`)
-- Print buttons on the invoice list (per row) and the lines modal footer
-- **Devanagari**: detects Devanagari characters in any rendered text; lazy-loads Noto Sans Devanagari (~90 KB pinned-commit TTF) and switches the document font; that font also includes the ₹ rupee glyph so amounts no longer use the Helvetica "Rs." fallback
+### Money
 
-**Payments + advances** (Phase 2B.2 + 2B.6)
-- Regular payment / receipt entry with multi-invoice allocation, FIFO checkboxes, bank/cash picker (with quick-add), mode + reference fields (cheque #, UTR, txn id)
-- Advance receipts with back-calculated taxable from gross + GST routing, separate `advances` + `advance_adjustments` tables
-- "Apply advance" section in the invoice form: open advances appear as checkboxes; on post the adjustment row is created and a reversing journal entry is automatically posted (Dr Customer Advances Received + Dr GST Output / Cr Sundry Debtors)
-- Status badges (PAID / PARTIAL / DUE on invoices, OPEN / PARTIAL / FULLY ADJUSTED / REFUNDED on advances)
-- Outstanding balance column on the Customers list
+- Customer receipts with multi-invoice allocation, FIFO checkboxes, bank/cash picker, mode + reference fields
+- **Vendor payments with auto-TDS** — section + rate auto-fill from vendor master, live `gross − TDS = net to vendor`, posts the journal split (Bank net + per-section TDS Payable)
+- Advance receipts with back-calculated taxable from gross, GST routing, separate `advances` + `advance_adjustments` tables
+- Apply-advance section in the invoice form with reversing journal automation
+- Status badges: PAID / PARTIAL / DUE on invoices, OPEN / PARTIAL / FULLY ADJUSTED on advances
+- TCS collection recording (Section 206C)
+- **Manual bank reconciliation** — pick a bank account + date range, per-line cleared checkbox, statement-vs-book closing balance, snapshot persisted to `bank_reconciliations`
+- Journal voucher form for free-form double-entry adjustments
+- **Session-scoped undo stack** (Ctrl+Z) — posts a counter-entry via the same engine; original and reversal both stay in the audit log
 
-**Dashboard** (Phase 2B.3)
-- Three KPI cards: cashflow this month vs last with delta %, total outstanding receivables, GST liability for current month
-- Receivables aging table with 4 buckets (0–30 / 31–60 / 61–90 / 90+ days)
-- GST liability detail panel with CGST / SGST / IGST breakdown
-- Top 5 customers by outstanding amount
-- Recent activity feed (last 15 audit log entries with friendly action labels: "Posted sales invoice", "Recorded receipt", "Updated company")
-- Quick action buttons; auto-redirects to dashboard after file open / create / reopen
+### Inventory
 
-**GSTR-1 + CMP-08 export** (Phase 2B.4 + 2B.8)
-- GSTR-1 monthly portal upload JSON with B2B / B2CL / B2CS / HSN / doc_issue / AT (Table 11A advances received) / TXP (Table 11B adjustments)
-- CSV summary alongside the JSON for human / CA review
-- Period picker (defaults to current month, supports backdated periods)
-- Validation errors (missing GSTIN, missing place of supply) hard-block JSON download; CSV stays available
-- Composition dealers: GSTR-1 redirects to CMP-08 quarterly view (turnover × composition rate)
+- Items get inventory columns: `enable_inventory`, `valuation_method`, `track_batches`, `reorder_level`, `preferred_vendor_id`, `opening_stock_qty`, `opening_stock_value`
+- **Stock movement engine** with both **Weighted Average Cost** AND **First-In-First-Out**, selectable per item
+- Optional named-batch tracking with `mfg_date` + `expiry_date` for pharma / electronics / perishables
+- Multi-godown support (single auto-seeded "Main" godown by default)
+- Auto stock posting hooks on every invoice / purchase / credit note / debit note / delivery challan
+- **Cost of Goods Sold journal** — every invoice posts a separate Dr COGS / Cr Stock-in-Hand entry at the WAC or FIFO rate
+- **Inventory dashboard** with KPIs + reorder alerts
+- **Reports**: Stock on hand (per item × godown), Stock movements (full log), Stock register (per-item walkthrough), Batches (with expiry warnings), Valuation summary, Reorder alerts, Stock aging
+- **Delivery challans** (outward-job / outward-sample / outward-return / inward-return) — vehicle, transporter, returnable flag, no GL posting
+- **E-way bills** — generated from invoice or DC, NIC bulk-upload JSON, printable PDF with QR placeholder, "Mark as generated" workflow to re-export with the real EWB number
+- **Inter-GSTIN stock transfers** — outbound wizard creates the transfer + matching tax invoice + cross-file JSON; inbound import validates GSTINs and creates the receiving record
 
-**Multiple invoice series** (Phase 2B.7)
-- 5 default series seeded: Domestic, Export, SEZ-WP, SEZ-WOP, Bill of Supply
-- Series master CRUD; picker on the invoice form changes the auto-generated invoice number to the series's prefix
-- `nextInvoiceNumber` walks invoices in the chosen series only with configured reset-on-FY behavior
+### Reports
 
-**Composition scheme** (Phase 2B.8)
-- `manifest.company.composition` flag with type (trader 1% / restaurant 5% / service 6%)
-- Edit-company modal exposes the toggle and type picker
-- When ON: invoice form hides GST routing, invoice posts without CGST/SGST/IGST, invoice PDF prints "BILL OF SUPPLY" + the mandated Rule 49 disclosure, GSTR-1 redirects to CMP-08
+- **Trial Balance** with debit/credit tie check
+- **Balance Sheet** with assets/liabilities/equity sections, tie check, current-period unclosed profit rollup
+- **P&L summary** computed live from the ledger
+- **Day Book** (chronological)
+- **Account Ledger** (per-account with running balance)
+- **Sales Register** and **Purchase Register**, date-filterable
+- **Dashboard**: cashflow vs last month, outstanding receivables, GST liability, receivables aging (4 buckets), top customers, recent activity feed
 
-**Full new-company wizard** (Phase 2B.9 + 2B.10)
-- Collects legal name, trade name, type (proprietorship / partnership / LLP / private / public / HUF / other), GSTIN, TAN, state (typeable combobox), address, FY start, UI tier, composition flag with type
-- **PAN-aware multi-GSTIN copy**: when typing a GSTIN whose embedded PAN matches an existing workspace entry, surfaces an inline notice + Copy details button to pre-fill the legal name from the matched entry
+### Compliance
 
-**Company switcher** (Phase 2B.11)
-- Topbar dropdown showing the current company name with a caret
-- Click → menu of all workspace entries grouped by PAN with the active company highlighted
-- Click an entry → save current → close → open the new file → land on dashboard
+- **GSTR-1** monthly portal-upload JSON — B2B / B2CL / B2CS / HSN / doc_issue / AT (advances) / TXP (adjustments), validation errors hard-block JSON download
+- **GSTR-3B** monthly summary — Section 3.1(a) outward + 3.1(d) RCM + Section 4 ITC + net liability, JSON + CSV export
+- **CMP-08** quarterly view for composition dealers
+- **Form 26Q** quarterly TDS return — section breakdown, validation errors, NSDL-compatible CSV
+- **Form 27EQ** quarterly TCS return — same shape
+- **Form 27D** TDS certificate — per-vendor PDF with deductor letterhead, deductee block, deductions table, totals, signature block
+- **Tax payment challans** — templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, plus a custom challan builder
+- **Period locks** — mark a return type as filed for a date range so postings dated within get flagged as amendments
+- **FY rollover wizard** — preview income / expense / net P/L, then post the year-end closing entries (zero out income/expense to P&L Summary, transfer P&L Summary to Capital Account)
+- **Layer 4 export-time identity check** — every export verifies the active workspace entry's GSTIN + name against the open file's manifest before producing the file
 
-**Polish** (Phase 2C)
-- **Snapshot retention**: full §9.3 policy — last 10 saves + last 7 daily + last 12 monthly + permanent (manual / FY-close), with set-union dedupe so a snapshot satisfying multiple buckets stays once
-- **OPFS atomic-write staging**: every blob is mirrored to `OPFS:bahi-staging/{workspaceId}.khata` BEFORE the disk write, then cleared on success — if a save is interrupted (browser crash, OS crash, power loss, USB yank), the next file open detects the orphan staging copy with a newer audit head and surfaces a Settings → Crash recovery panel offering Recover or Discard
-- **First-run welcome modal**: per-machine localStorage flag (`bahi.introSeen`), three-card explainer (Create / Open / Restore), explicit "Got it" + "Read README" buttons
+### Tally migration
 
-**Service SMB tier** (Phase 3)
-- **Schema v6**: 11 new tables (vendors, purchases, purchase_lines, credit_notes, credit_note_lines, debit_notes, debit_note_lines, tds_deductions, tcs_collections, period_locks, fy_closings) with full snapshot columns following the historical integrity invariants
-- **Vendor master** mirrors customers; adds RCM-applicable flag, default TDS section, payable opening balance
-- **Purchases** with internal ref (`PUR/{FY}/{NNNN}`), vendor's bill number, place-of-supply state routing, RCM toggle that auto-routes posting to GST RCM Input/Output sub-accounts, ITC eligibility flag (motor vehicles, club fees, etc. for blocked credits), per-rate GST Input sub-account auto-create, full company + vendor snapshot capture
-- **Credit notes** (against invoices) and **debit notes** (against purchases) with full-reversal or partial-amount modes; both inherit the parent's company + party snapshots so reprints stay historically correct, lines proportionally allocated for partials
-- **Journal voucher** form for free-form double-entry adjustments — picks any account, balance check before post
-- **Reports**: Trial Balance (with debit/credit tie check), Balance Sheet (assets / liabilities / equity sections + tie check + current-period unclosed profit rollup), Day Book (chronological), Account Ledger (per-account with running balance), Sales Register, Purchase Register — all date-filterable
-- **GSTR-3B** monthly summary view: Section 3.1(a) outward + 3.1(d) RCM inward + Section 4 ITC + net liability after credit, with JSON + CSV export
-- **FY rollover wizard**: preview income / expense / net profit/loss for any FY, then post the year-end closing entries (zero out income/expense to P&L Summary, transfer P&L Summary to Capital Account), recorded in `fy_closings`
-- **Period locks**: mark a return type (GSTR-1 / GSTR-3B / CMP-08 / GSTR-4 / 26Q / 27EQ) as filed for a date range so postings dated within get flagged as amendments
-- **Tax payment challans** module: templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, plus a custom challan builder
-- **Sidebar restructured** into Workspace / Masters / Sales / Purchases / Money / Reports / Compliance / Dev groups (37 routes total)
+- **Permissive parser** for both Tally Prime and Tally ERP 9 (browser-native `DOMParser`, no CDN deps)
+- Walks Masters (Groups, Ledgers, Stock Items, Units, Godowns) and Vouchers (Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note + variants)
+- **6-step wizard**: file summary → date range → mapping review → commit target (new file or merge) → dry-run preview → result
+- Auto-suggested mappings for 25+ standard Tally groups; user-created groups hard-block until resolved
+- Atomic transaction — entire import wraps in `BEGIN` / `COMMIT`; any failure rolls back cleanly
+- Posting bridges reused — every imported invoice goes through `postInvoiceToLedger`, every purchase through `postPurchaseToLedger`, every journal through `postEntry`, so snapshot capture and stock effects fire automatically
+- Forensic audit trail — `tally.import.start` / `tally.import.commit` / `tally.import.failed` entries
 
-**Goods SMB tier** (Phase 4)
-- **Schema v7**: items get inventory columns (`enable_inventory`, `valuation_method`, `track_batches`, `reorder_level`, `preferred_vendor_id`, `opening_stock_qty`, `opening_stock_value`); 8 new tables (godowns, batches, stock_movements, delivery_challans + lines, eway_bills, stock_transfers)
-- **Stock movement engine** with both **Weighted Average Cost AND First-In-First-Out**, selectable per item. WAC stores a single synthetic running-average batch per (item, godown) and recomputes the avg rate on every inward. FIFO creates one batch per inward and dequeues oldest-first on outward, splitting across batches as needed
-- **Optional named-batch tracking** for pharma / electronics / perishables with mfg_date + expiry_date
-- **Single auto-seeded "Main" godown**; multi-godown UI is accessible from the sidebar
-- **Auto stock posting hooks** on every invoice (out), purchase (in), credit note (back in), debit note (back out), delivery challan (no GL)
-- **Cost of Goods Sold journal**: every invoice also posts a separate Dr COGS / Cr Stock-in-Hand entry at the WAC or FIFO rate. Service-only items see zero behaviour change
-- **Inventory dashboard** with KPIs (total stock value, items at reorder, expired batches, aged stock) + reorder alert table
-- **Stock on hand** (per item × godown), **Stock movements** (full log), **Stock register** (per-item movement walkthrough with running qty), **Batches** (with expiry warnings), **Valuation summary** (drives Balance Sheet → Stock-in-Hand), **Reorder alerts** (with quick-link to create purchase from preferred vendor), **Stock aging** (0–30 / 31–60 / 61–90 / 90+ buckets)
-- **Delivery challans**: outward-job / outward-sample / outward-return / inward-return; vehicle, transporter, returnable flag with expected return date; stock movement only, no GL posting
-- **E-way bills**: generated from invoice or delivery challan; auto-pulls supplier + recipient + goods snapshots; transport details (transporter, vehicle, mode, distance, reason code); **NIC bulk-upload JSON export** + **printable PDF** with QR-code placeholder; "Mark as generated" workflow lets you re-export the PDF with the real EWB number after portal submission
-- **Inter-GSTIN stock transfers**: outbound wizard (sender side) creates a draft transfer + raises the matching tax invoice + exports a cross-file JSON; inbound import (receiver side) loads the JSON, validates the GSTINs match, and creates a draft inbound transfer
-- **Sidebar grew** from 37 → 53 routes with the Inventory group
-- **Purchase form extended** with an item picker (free-text fallback for one-off services) so item-level inventory effects can be wired
+### CA mode
 
-**Tally XML importer** (Phase 5)
-- **Permissive parser** handles both Tally Prime and Tally ERP 9 via browser-native `DOMParser` — no CDN deps. Walks Masters (Groups, Ledgers, Stock Items, Units, Godowns) and Vouchers (Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note + variants). ~250 lines of parser, idempotent, returns a structured object the orchestrator consumes
-- **Default group → Bahi account map** covers 25+ reserved Tally groups (Sundry Debtors, Sundry Creditors, Bank Accounts, Cash-in-Hand, Sales/Purchase Accounts, Direct/Indirect Expenses, Capital Account, Duties & Taxes, Stock-in-Hand, Fixed Assets, Current Assets/Liabilities, Loans, Investments, Provisions, etc.)
-- **Voucher classifier**: case-insensitive substring match on `VCHTYPE` → Bahi voucher class. Unsupported types (Stock Journal, Memorandum, Reversing, Sales Order, etc.) get counted and surfaced separately, never silently dropped
-- **6-step wizard** at `#/import/tally`:
-  - **Step 1 — File summary**: source company / GSTIN / format detection / counts (groups, ledgers, stock items, godowns, vouchers) / date range / voucher type breakdown with supported/unsupported flags
-  - **Step 2 — Date range**: from/to pickers defaulted to the full file range, live "vouchers in range" counter
-  - **Step 3 — Mapping review**: auto-mapped groups in a collapsible section with per-row override; user-created groups in a "Needs mapping" section that hard-blocks Continue until every row is resolved
-  - **Step 4 — Commit target**: radio cards for **Create new .khata file** vs **Merge into currently-open file** (merge disabled if no file is open). Merge mode shows a live customer/vendor dedupe preview
-  - **Step 5 — Dry run preview**: full category counts, date range, commit target confirmation
-  - **Step 6 — Result**: full breakdown (created / matched / auto-cleaned-as-services / cost-centre warnings / multi-currency warnings / skipped vouchers with reasons / unsupported voucher types), download import report as JSON
-- **Edge case handling per spec §5.9**: cost centres ignored with a counted warning; multi-currency lines taken at face from the INR column with a counted warning; service-shaped stock items (zero opening, no HSN, name contains "service"/"consulting"/"advice"/"fee") auto-cleaned to `is_service=1, enable_inventory=0`; unbalanced ledger-only vouchers skipped with reason "unbalanced (Dr X ≠ Cr Y)"
-- **Atomic transaction**: the entire import runs inside `BEGIN` / `COMMIT`. Any failure rolls back cleanly, surfaces the error, and writes a `tally.import.failed` audit entry
-- **Forensic audit trail**: `tally.import.start` (with source filename, date range, mode, voucher count) and `tally.import.commit` (with full result counts) entries make every import discoverable in the audit log
-- **Posting bridges reused**: the importer NEVER bypasses `postInvoiceToLedger`, `postPurchaseToLedger`, `postEntry`. Every imported invoice triggers the existing snapshot capture, per-rate sub-account auto-create, and Phase 4 stock effects (for items with `enable_inventory=1`). Imported vouchers are forensically and behaviorally indistinguishable from natively-posted ones
-- **Voucher number collision handling**: in merge mode, Tally voucher numbers that already exist in the target file get a `TALLY-` prefix. Original numbers are preserved in the audit log payload
+- **First-run mode picker** — Business owner / Chartered accountant. Persisted to `localStorage.bahi.mode`
+- **CA profile** stored in IndexedDB outside any client `.khata` file: name, firm name, ICAI membership number, optional logo
+- **Mode-aware sidebar** with a CA-only group (Client review / Adjustment voucher / Annotations / Review report)
+- **Topbar mode badge** showing OWNER or CA · {initials}; click to switch
+- **`auditActor()` helper** auto-tags every audit entry as `'ca'` in CA mode — every CA action is forensically distinguishable from owner actions
+- **Annotations** with target type, body, status, and CA identity captured at creation time
+- **Review markers** track which entries the CA has signed off on
+- **Client review interface** with per-voucher-type unreviewed counts + bulk mark
+- **CA adjustment voucher form** — wraps the journal voucher engine with adjustment-type picker (year-end / depreciation / prepaid / outstanding / accrual)
+- **Printable review report PDF** — multi-page A4 with CA firm letterhead, page numbering, sections for Trial Balance / P&L / Balance Sheet / CA Adjustments / Observations
+- **Layer 3 ancestry check** on file open — compares audit chain head against `workspace.lastKnownHead`; divergent branches route to the Reconciliation View
+- **Reconciliation View** for divergent branches — side-by-side checkbox lists, replay engine that re-executes picked entries via the existing posting bridges, merged manifest carries `integrity.parentHashes = [localHead, importedHead]`
 
-**CA mode** (Phase 6)
-- **First-run mode picker**: extends the existing intro modal with two radio cards — Business owner / Chartered accountant. Persisted to `localStorage.bahi.mode`. Settings → Edit CA profile or click the topbar mode badge to switch later
-- **CA profile** stored in IndexedDB (`caProfile` store, outside any client `.khata` file per spec §6.4): name, firm name, ICAI membership number, optional logo (≤200 KB data URI). Stamped into every annotation and review report
-- **Schema v8**: `annotations` table (target_type / target_id / target_ref / note_type / body / status / ca_name / ca_firm / ca_membership / created_at / created_by / resolved_at / resolved_by) and `review_markers` table (entry_id / reviewed_at / reviewed_by / ca_membership / notes). Both tables follow the snapshot pattern — CA identity is captured at creation time and never re-resolved from a live profile lookup
-- **Mode-aware sidebar**: CA-only items hidden in Owner mode via `body.ca-mode` CSS class. CA group: Client review / + Adjustment voucher / Annotations / Review report
-- **Topbar mode badge**: pill showing OWNER or CA · {initials}, clickable to switch with confirmation
-- **`auditActor()` helper**: returns `'ca'` if mode is CA + profile exists, else `'owner'`. Threaded through every `appendAuditEntry` call (21 sites) so every action a CA takes is automatically tagged in the audit log without each call site having to know about modes
-- **CA review interface** (`#/ca/review`): KPI strip of unreviewed entries by voucher type, sectioned list with bulk "Mark all reviewed" + per-row checkboxes, inline "+ Note" button on every row that opens the annotation modal pre-filled
-- **Annotations** (`#/annotations`): full list filterable by status (open / resolved / all). Each row shows the type, target, body, author chrome (CA name + firm if `created_by='ca'`, "Owner" otherwise), and a Resolve button (CA mode only)
-- **CA adjustment voucher form** (`#/ca/adjustment/new`): thin wrapper around the existing journal voucher engine with adjustment type picker (year-end / depreciation / prepaid / outstanding / accrual / other). Posts via `postEntry` with `actor='ca'` and a dedicated `ca.adjustment` audit action
-- **PDF review report** (`#/ca/report` → Generate PDF): multi-page A4 with CA firm letterhead at the top of every page, page numbering, sections for **(1)** Trial Balance (with tie check), **(2)** P&L Summary (income/expense rows + net profit/loss), **(3)** Balance Sheet (assets/liabilities/equity with tie check), **(4)** CA Adjustments (CA-actor-tagged entries only), **(5)** Observations (open annotations with type, target, and body). Reuses the existing jsPDF lazy loader
-- **Layer 3 ancestry check** on every file open: compares the file's audit log head against the workspace entry's `lastKnownHead`. Outcomes: **identical** (no-op), **fast-forward** (proceed silently), **same-GSTIN-no-shared-ancestry** (warning toast — possible old backup or fresh export), **divergent** (route to Reconciliation View), **different GSTIN** (falls through to Layer 2 hard block). `workspace.lastKnownHead` is updated after every successful save
-- **Reconciliation View** (`#/reconcile`): only reachable when `STATE.pendingReconciliation` is set. Shows side-by-side checkbox lists of audit log entries unique to each branch (local vs imported), with default = keep all. "Build merged file" calls a replay engine that re-executes picked imported entries via the existing posting bridges (`postEntry` for journals, etc.). The merged file's manifest carries `integrity.parentHashes = [localHead, importedHead]` for forensics, and a `merge.commit` audit entry records both parents + replay counts
-- **Settings → Safety & failure modes panel**: 3 new rows for CA round-trip workflows, CA-acting-as-owner detection, and owner-editing-while-CA-was-reviewing recovery
+### Ergonomics
 
-**Polish & launch prep** (Phase 7)
-- **Sumi (dark) theme**: 5th entry in the existing 4-theme palette. New `autoPickTheme()` checks `prefers-color-scheme` on the very first boot — picks Sumi if the OS is in dark mode, otherwise the default. Once the user picks a theme manually, it sticks
-- **Keyboard shortcuts (Tally parity)**: full SHORTCUTS map with 22 entries across Vouchers / Navigation / Edit / Bahi-specific groups. Function keys (F1–F10) and Alt combos work even when typing into a text field; character-key shortcuts are blocked inside text inputs to prevent accidents like F8 jumping when the user is typing a description. Browser-hijacked keys (Ctrl+N/T/W/Tab) are not used. Where Tally uses a key the browser owns (F11=fullscreen, F12=DevTools), Bahi maps Alt+F11 / Alt+F12 per spec §11
-- **Shortcut help overlay** triggered by `?` or `Shift+/`, listing every shortcut grouped by section. One-click **Download cheat sheet PDF** generates a desk-printable A4 with two-column layout
-- **Undo stack** — session-scoped, in-memory, capped at 20 entries. Pushed onto by every successful `postEntry` call. `Ctrl+Z` triggers `undoLast()` which reads the entry's lines, swaps Dr/Cr, and posts a counter-entry via the same `postEntry` engine. **The original is preserved in the audit log forever; the reversal is a separate auditable entry; nothing is silently deleted.** System-actor entries (FY closing, file.create, etc.) are excluded from the stack. Settings panel shows the current stack contents
-- **Backup Now polish** — topbar button revealed when a file is open, `Ctrl+Shift+B` shortcut, last-backup indicator in Settings (with relative time + size + colour-coded urgency), 30-day nudge banner on the dashboard
-- **Documentation** — three Markdown files at `docs/getting-started.md` (~150 lines, blank-slate-to-first-invoice walkthrough), `docs/tally-migration.md` (~250 lines, full Tally export → Bahi import flow with common gotchas), `docs/ca-guide.md` (~250 lines, CA mode workflow including reconciliation). Allowed via `.gitignore` `!docs` + `!docs/**`
-
-**CA-handoff feature complete** (Phase 8A)
-- **Schema v9**: extends `payments` with `vendor_id` / `payment_direction` ('in' for receipts, 'out' for vendor payments) / `tds_amount` / `tds_section` so vendor payments and customer receipts share one table; adds `bank_reconciliations` table for the manual reconciliation snapshots
-- **TDS deduction with auto-deduct on vendor payment** — new `#/vendor-payment/new` form. TDS section auto-fills from the vendor master's `tds_section` field; rate auto-fills from `REF.tdsSections`; the form computes `gross - TDS = net to vendor` live as the user types. Posting writes the payment row + a `tds_deductions` row + a journal entry that splits the gross into Bank (net) + `TDS Payable @ {section}` (auto-created on first use). Per-section TDS Payable sub-accounts mirror the existing per-rate GST sub-account auto-create pattern from Phase 2A.2
-- **Form 26Q export** at `#/form-26q` — quarterly TDS return with KPI strip (period, deductions, total taxable, total TDS), section breakdown table, validation errors panel (missing PAN, missing section), detail rows preview (first 100), NSDL-compatible CSV download with metadata header
-- **Form 27EQ export** at `#/form-27eq` — same shape for TCS collected
-- **Form 27D TDS certificate** at `#/form-27d` — quarter picker, list of vendors with deductions in the period, per-row "Generate PDF" button. The PDF is A4 with the deductor's company letterhead (name + GSTIN + PAN + TAN + address), deductee block (name + PAN + GSTIN + address), table of deductions (date / section / taxable / rate / TDS), totals, amount in words, signature block. Reuses the existing jsPDF lazy loader
-- **Manual bank reconciliation** at `#/bank-reconcile` — pick a bank account + date range, see every entry line on that account in the period with a per-line "Cleared" checkbox, enter the closing balance per the bank statement, see the live difference, save a `bank_reconciliations` row with the matched line IDs serialised. Pre-loads any cleared lines from the most recent reconciliation for the same account
-- **Layer 4 export-time identity check** — new `verifyExportIdentity()` helper that compares the active workspace entry's GSTIN + name against the open file's manifest, walks `manifest.company.changeHistory` for legitimate renames, returns null on success or an error message describing the mismatch. Wired into Backup Now and the new Form 26Q / 27EQ / 27D download buttons via a `withExportCheck()` wrapper
-- **Reference data lazy-fetch from khata-standard CDN** at `#/ref-data-update` — new constant `KHATA_STANDARD_CDN = 'https://naklitechie.github.io/khata-standard/data/'`. The `fetchKhataStandardManifest()` helper GETs `index.json` (5-minute TTL cache); `fetchDataset(name)` GETs the dataset file referenced by the manifest, verifies SHA-256 against the manifest's hash, parses the JSON; `applyDatasetUpdate()` replaces the in-memory `REF[refKey]` and persists the new version in the `meta` table per file. The CBIC HSN dataset (1518 goods + 82 SAC + 78 cess entries) is now reachable via this path
-- **Audit-log replay restoration** — extends the corruption recovery modal with a third path. When `PRAGMA integrity_check` fails on file open, Bahi now extracts the audit log entries before closing the corrupt DB. The modal then offers (1) restore from in-file snapshot, (2) restore from backup zip elsewhere, (3) **rebuild from audit log** — replays every replayable entry on a fresh database via the existing posting bridges. Best-effort, only includes entries with enough payload to reconstruct, but works even when both the SQLite tables AND the in-file snapshots are damaged
-- **Sidebar additions**: Pay vendor (TDS) + Bank reconciliation under Money; Form 26Q + 27EQ + 27D under Compliance; Reference data updates under Dev
+- **5 themes**: Crisp paper, Sakura wash, Asagi haze, Kinari washi, Sumi (dark). Auto-picks Sumi if the OS is in dark mode on first boot
+- **Tally keyboard parity** — F4 contra, F5 payment, F6 receipt, F7 journal, F8 sales, F9 purchase, F10 other vouchers, F1 company picker, F3 company info, plus Ctrl+Z undo, Ctrl+Shift+B backup, Ctrl+Shift+M mode toggle, Ctrl+Shift+D debug, `?` help overlay
+- **Shortcut help overlay** with one-click cheat-sheet PDF
+- **BOFH-style action-aware sidebar search** — search the menu by what each route lets you DO, not just by label
+- **Multi-company workspace switcher** in the topbar
+- Sidebar restructured into Workspace / Masters / Sales / Purchases / Inventory / Money / Reports / Compliance / CA mode / Dev groups (60+ routes)
 
 ---
 
-## Running
+## Try it
+
+The fastest path is the **demo walkthrough** at <https://bahi.naklitechie.com/demo/> — sticky section nav, modes intro, and a 3-step "try it yourself" callout that links directly to a sample `.khata` you can open in the live build.
+
+Or do it manually:
+
+1. Open <https://bahi.naklitechie.com/> in **Chromium** (Chrome, Edge, Brave, Arc, Opera). Safari and Firefox don't expose the File System Access API.
+2. Download a sample from [`sample-data/`](sample-data/) — `pharma.khata` is the most complete (goods + services, ~600 invoices, credit notes, advances, TDS, inventory).
+3. **Workspace → Open existing → pick the file**. Bahi will ask permission to read+write the file in place — allow it.
+4. Click around. Dashboard / GSTR-1 / Form 26Q / Inventory / Trial Balance / Balance Sheet all populate from real data.
+
+The three sample files are deterministically regenerated by [`sample-data/generator.py`](sample-data/generator.py) and validated by the [`sample-data/test_khata.py`](sample-data/test_khata.py) suite (45 tests across format integrity, double-entry invariants, audit-chain walk, snapshot pattern, GST routing, TDS ledger ties, stock integrity, and per-company shape).
+
+---
+
+## Running locally
 
 Single HTML file. No build, no server-side code, no install.
 
@@ -215,8 +188,6 @@ cd Bahi
 python3 -m http.server 8080
 open http://localhost:8080/
 ```
-
-**Chromium-only** (Chrome, Edge, Brave, Arc, Opera) — the File System Access API does not exist in Safari or Firefox.
 
 The first time you open Bahi it lazy-fetches sql.js (~1 MB WASM), JSZip (~95 KB), and jsPDF (~360 KB) from jsdelivr. Subsequent loads are cached and offline.
 
@@ -229,19 +200,23 @@ mybooks.khata  (zip)
 ├── manifest.json    metadata, schema version, integrity hashes, audit head, public key,
 │                    company block (with changeHistory), snapshot index, mode history
 ├── books.sqlite     the double-entry ledger (accounts, entries, entry_lines, audit_log,
-│                    customers, items, invoices, invoice_lines, meta)
-├── snapshots/       rolling snapshots of previous saves (last 20 auto + permanent)
+│                    customers, vendors, items, invoices, invoice_lines, purchases,
+│                    purchase_lines, payments, payment_allocations, advances, credit_notes,
+│                    debit_notes, tds_deductions, tcs_collections, stock_movements, batches,
+│                    godowns, delivery_challans, eway_bills, stock_transfers, annotations,
+│                    review_markers, bank_reconciliations, period_locks, fy_closings, meta)
+├── snapshots/       rolling in-file snapshots
 ├── attachments/     user-uploaded bills, receipts, scans
 └── exports/         cached report exports
 ```
 
-The format is intended to outlive any single app. Reference implementation: this repo. Specification document (`khata-format.md`) will be published on naklitechie.com once the schema fully stabilises through Phase 3.
+Specification: [`khata-format.md`](khata-format.md). The format is intended to outlive any single app — anyone can `unzip file.khata` and inspect the SQLite + JSON inside. Reference data (states, GST rates, HSN/SAC, TDS sections) lives in the open [khata-standard](https://github.com/NakliTechie/khata-standard) repo and is fetched on demand with SHA-256 verification.
 
 ---
 
 ## Engineering decisions & failure model
 
-> A confidence-building summary of the key choices made along the way, and what protects the file in adverse conditions. This section is maintained in lock-step with the build — every new phase adds the relevant guarantees here.
+> A confidence-building summary of the key choices and what protects the file in adverse conditions. If you're handing this off to someone else to evaluate, this is the section to point them at.
 
 ### Why a single file (the `.khata` zip)
 
@@ -252,7 +227,7 @@ The whole point of Bahi is that **your books are a single artifact you control**
 - Restoration is `cp file-backup.khata file.khata`. No magic.
 - The format outlives the app — anyone can `unzip file.khata` and inspect the SQLite + JSON inside.
 
-The trade-off is that simultaneous concurrent editing across machines is genuinely hard with a single-file model. Bahi handles it via optimistic concurrency rather than pretending it can magically merge concurrent edits — see "Failure model" below.
+The trade-off is that simultaneous concurrent editing across machines is genuinely hard with a single-file model. Bahi handles it via optimistic concurrency rather than pretending it can magically merge concurrent edits — see the failure model table below.
 
 ### Why integer paise
 
@@ -277,39 +252,40 @@ Every meaningful action (post entry, edit company, lock period, FY close, openin
 This gives you three things at once:
 - **Tamper evidence.** If anyone edits the SQLite directly, the books hash mismatch shows up at the next write.
 - **Forensic chain-of-custody.** The `origin` field tracks where each entry was written; cross-origin opens leave a marker.
-- **Crash recovery anchor.** The audit head is the comparison key for the optimistic concurrency check and the OPFS staging recovery.
+- **Crash recovery anchor.** The audit head is the comparison key for the optimistic concurrency check, the OPFS staging recovery, and the Layer 3 ancestry check.
+
+### Why undo-via-counter-entry (not delete)
+
+`Ctrl+Z` posts a *new* journal entry that swaps Dr and Cr against the original. Both rows stay in the audit log forever. A user-visible undo never deletes anything from the ledger; the reversal is itself an auditable action.
 
 ### Failure model
-
-Plain language. If you're handing this off to someone else to evaluate, this is the table to point them at.
 
 | Scenario | Protection | What the user sees |
 |---|---|---|
 | Browser crash mid-save | OPFS staging mirror written before disk write | Recovery banner on dashboard + Settings → Crash recovery panel with **Recover** / **Discard** buttons |
 | OS crash / power outage mid-save | Same as above | Same |
-| USB drive yanked mid-save | Same as above; also, `verify-before-write` on the rebuilt blob means the disk file was never partially written | Same |
+| USB drive yanked mid-save | Same as above; verify-before-write on the rebuilt blob means the disk file was never partially written | Same |
 | Same browser, second tab opens the file | BroadcastChannel lock | Hard block: "This company is already open in another Bahi tab" |
-| Different browser / different machine writes the file | Optimistic concurrency check at next save (re-reads disk, compares audit head) | Save conflict modal: **Reload from disk** (lose in-memory work) or **Save as conflict copy** (sibling `{slug}-conflict-{ts}.khata`) |
+| Different browser / different machine writes the file | Optimistic concurrency check at next save (re-reads disk, compares audit head) | Save conflict modal: **Reload from disk** or **Save as conflict copy** (sibling `{slug}-conflict-{ts}.khata`) |
 | File on Dropbox/iCloud syncing in background, outside change arrives | Same concurrency check fires | Same conflict modal |
-| File moved to a different machine and reopened | Cross-origin detection reads the most recent audit entry's `origin`, compares to current | Informational toast; keypair rotation marker appended to the audit log so the new origin is on record |
-| File on disk got corrupted | `PRAGMA integrity_check` runs on every open | Corruption recovery modal lists in-file snapshots and lets you restore one to a fresh file |
-| Wrong file opened (file-name collision) | Layer 2 wrong-file detection walks `manifest.company.changeHistory` | Hard block on workspace replace if the identity doesn't match |
+| File moved to a different machine and reopened | Cross-origin detection reads the most recent audit entry's `origin`, compares to current | Informational toast; keypair rotation marker appended to the audit log |
+| File on disk corrupted (PRAGMA fails) | Three-path corruption recovery modal | Restore from in-file snapshot **or** restore from backup zip **or** rebuild books by replaying every replayable audit entry on a fresh database |
+| Wrong file opened (file-name collision) | 5-layer wrong-file detection (workspace identity, fingerprinted exports, audit-log ancestry, export-time identity, change-history walk) | Hard block on workspace replace if the identity doesn't match; export-time hard block if the active workspace doesn't match the open file |
 | Schema bumped between Bahi versions | Version-tagged migration runner in `meta.schemaVersion` | Older files migrate forward silently; newer files (above this build's `SUPPORTED_FORMAT`) open read-only with a banner |
 | Audit log tampered with | SHA-256 hash chain | Chain verifier in Debug Console reports any break |
 | CA round-trip (owner → CA → owner) introduced silent overwrites | Layer 3 ancestry check on file open + Reconciliation View | "Same GSTIN but no shared history" warning toast for unrelated copies; divergent branches route to `#/reconcile` with side-by-side checkbox merging; merged file carries both parent hashes |
 | CA actions accidentally indistinguishable from owner actions | `auditActor()` helper auto-tags every audit entry as `'ca'` in CA mode | Audit log + review report clearly attribute each entry to either owner or CA, with the CA's name + firm + ICAI membership stamped at creation time |
-| Owner edits the file while CA is reviewing it | Layer 3 ancestry check fires on next CA open | Reconciliation View opens automatically; CA picks which entries to keep from each branch |
+| Owner edits the file while CA was reviewing it | Layer 3 ancestry check fires on next CA open | Reconciliation View opens automatically; CA picks which entries to keep from each branch |
 | Posting mistake — wrong amount, wrong account | Session-scoped undo stack via Ctrl+Z | Counter-entry posted via the same engine; both the original and the reversal stay in the audit log forever; the undo is auditable, not stealthy |
-| User forgot to back up | 30-day nudge banner on the dashboard | Yellow banner appears when last backup is > 30 days old (or never recorded), with a "Backup Now" CTA pointing at Ctrl+Shift+B |
+| User forgot to back up | 30-day nudge banner on the dashboard | Yellow banner appears when last backup is > 30 days old (or never recorded), with a "Backup Now" CTA |
 | Wrong file exported on a CA handoff | Layer 4 export-time identity check | Compares active workspace entry's GSTIN + name against the open file's manifest before any export. Mismatch hard-blocks with an explanation pointing to the mismatch |
-| Reference data drift over time | `#/ref-data-update` lazy-fetches from khata-standard CDN | SHA-256 verified per-dataset; updates persisted per file in the `meta` table; CBIC HSN dataset reachable via this path |
-| SQLite damaged AND in-file snapshots damaged | Audit-log replay restoration | Third path on the corruption recovery modal — rebuilds books by replaying every replayable audit entry on a fresh database. Best-effort but works when other paths can't |
+| Reference data drift over time | `#/ref-data-update` lazy-fetches from khata-standard CDN | SHA-256 verified per-dataset; updates persisted per file in the `meta` table |
+| SQLite damaged AND in-file snapshots damaged | Audit-log replay restoration | Third path on the corruption recovery modal — rebuilds books by replaying every replayable audit entry on a fresh database |
 
 **Not protected (and probably shouldn't be):**
-- **Disk hardware failure.** No software can save you. Use **Backup Now** (Settings → Snapshots) to write a dated `.khata-backup.zip` and keep one offsite.
+- **Disk hardware failure.** No software can save you. Use **Backup Now** to write a dated `.khata-backup.zip` and keep one offsite.
 - **Two clients writing in the exact same millisecond on a network share.** The OS filesystem decides who wins; one write may be silently dropped at the OS level. Bahi's verify-before-write keeps the file from being torn, and Layer 1 catches it on the next save attempt — but the dropped write itself is gone. Don't use Bahi as a multi-user server.
 - **Sync provider conflict copies** (`Bahi (Conflicted Copy 2026-04-07).khata`). Bahi can't automatically see siblings created by Dropbox/iCloud — open them via Workspace → Open existing.
-- **Reconciling two long parallel sessions.** The conflict modal saves as a conflict copy, but merging the two branches is manual. The Reconciliation View (audit-log ancestry merge) lands in Phase 6 alongside CA Mode.
 
 ### How to be extra paranoid
 
@@ -326,7 +302,7 @@ The same content (in plain English) is also visible inside the app at **Settings
 
 1. Open Bahi → **Workspace** → **+ Create new .khata**
 2. Enter a company name + GSTIN → state autofills → save the file to disk
-3. Sidebar → **Customers** → **+ Add customer** (also typeable state input)
+3. Sidebar → **Customers** → **+ Add customer**
 4. Sidebar → **Items / services** → **+ Add item** (HSN auto-suggests tax rate)
 5. Sidebar → **+ New invoice** → pick the customer + add a line → Post & save
 6. Sidebar → **Invoices** → click **PDF** on the row → save the GST-compliant PDF
@@ -336,20 +312,14 @@ For low-level testing (raw posting, audit chain inspection, integrity checks, sn
 
 ---
 
-## Limitations and parked items
+## Known limitations
 
-**Lower priority, on the deferred list:**
-- Daily/monthly snapshot bucketing (currently last-20-saves only)
-- Wrong-file detection Layer 3 (audit-log ancestry on refresh — needs Phase 6 reconciliation)
-- Wrong-file detection Layer 4 (export-time identity check — there are no `.khata` exports yet)
-- Audit-log replay restoration (snapshots cover the recovery use case)
-- Full HSN top-2000 + SAC bundle (needs `khata-standard` repo to publish)
-- Reference data update UI (Phase 2 work)
-- OPFS staging for true atomic writes (currently verify-before-write)
-- One-time backfill flow for legacy v1 invoices
-- Devanagari / Tamil / other Indian script fonts in PDF (currently Helvetica only — uses `Rs.` instead of `₹`; Phase 2B.2 lazy-loads Noto Sans Devanagari)
-
-**Phase 8 (post-launch, v1.5):** BYOK Cloudflare R2 sync, e-invoicing IRN (if GSP integration is feasible), recurring invoices, bank statement reconciliation auto-match, Firefox / Safari degraded mode, TDS Form 26Q export, TCS Form 27EQ export, Form 27D certificates.
+- **Chromium-only.** The File System Access API does not exist in Safari or Firefox. Bahi will refuse to open files in those browsers. There's no degraded mode yet.
+- **Single-user, single-tab per file.** BroadcastChannel enforces this; concurrent editing across machines is handled by optimistic concurrency, not real-time merge.
+- **Bold/italic share the regular weight TTF in Devanagari PDFs.** True bold is a small follow-up.
+- **Tamil / Telugu / Bengali / Gurmukhi / Gujarati / Malayalam / Kannada / Oriya** PDFs warn at print time and fall back to Helvetica. The on-demand font-load pattern is in place; the script-specific fonts aren't wired yet.
+- **e-invoicing (IRN)** is not implemented — needs GSP integration.
+- **No bank-statement auto-match** in bank reconciliation; the manual matcher is fully functional.
 
 ---
 

@@ -1756,6 +1756,68 @@ const THEME_LS_KEY = 'bahi.theme';
 // modal" pattern: explicit dismiss buttons, no Escape-only.
 const INTRO_LS_KEY = 'bahi.introSeen';
 
+// === v1.1 Smart Capture — AI master toggle (per-machine) ===
+// AI is OFF by default. Stored per-machine in localStorage (never in .khata, never in
+// any export). When off, no AI runtime code, no transformers.js CDN load, no AI
+// affordances anywhere — Bahi v1 byte-for-byte. The first time the toggle is flipped
+// on, a confirmation modal explains model-download size and the privacy posture.
+const AI_LS_KEY = 'bahi.ai.enabled';
+const AI_INTRO_LS_KEY = 'bahi.ai.introSeen';
+function getAiEnabled() {
+  try { return localStorage.getItem(AI_LS_KEY) === '1'; } catch (_) { return false; }
+}
+function setAiEnabled(v) {
+  try {
+    if (v) localStorage.setItem(AI_LS_KEY, '1');
+    else localStorage.removeItem(AI_LS_KEY);
+  } catch (_) {}
+}
+
+// Provider registry for the AI subsystem. Local provider runs on-device via the
+// LocalMind adapter; the BYOK providers share a single fetch-based adapter that
+// switches behaviour via these per-provider configs (auth shape, JSON-mode shape,
+// vision-mode shape). API keys are stored in IDB only — never in localStorage,
+// never in .khata, never in any export.
+const AI_PROVIDERS = {
+  'localmind':  { name: 'LocalMind (on-device)',     kind: 'local' },
+  'anthropic':  { name: 'Anthropic',                  kind: 'byok',
+                  baseUrl: 'https://api.anthropic.com/v1/', authHeader: 'x-api-key', authPrefix: '',
+                  defaultModel: 'claude-haiku-4-5',   jsonMode: 'anthropic-tools',     visionMode: 'anthropic-image' },
+  'openai':     { name: 'OpenAI',                     kind: 'byok',
+                  baseUrl: 'https://api.openai.com/v1/', authHeader: 'Authorization', authPrefix: 'Bearer ',
+                  defaultModel: 'gpt-4o-mini',        jsonMode: 'openai-jsonschema',   visionMode: 'openai-image-url' },
+  'mistral':    { name: 'Mistral',                    kind: 'byok',
+                  baseUrl: 'https://api.mistral.ai/v1/', authHeader: 'Authorization', authPrefix: 'Bearer ',
+                  defaultModel: 'mistral-small-latest', jsonMode: 'openai-jsonschema', visionMode: 'openai-image-url' },
+  'openrouter': { name: 'OpenRouter',                 kind: 'byok',
+                  baseUrl: 'https://openrouter.ai/api/v1/', authHeader: 'Authorization', authPrefix: 'Bearer ',
+                  defaultModel: 'anthropic/claude-haiku-4-5', jsonMode: 'openai-jsonschema', visionMode: 'openai-image-url' },
+  'custom':     { name: 'Custom (OpenAI-compatible)', kind: 'byok-custom',
+                  baseUrl: '',                        authHeader: 'Authorization', authPrefix: 'Bearer ',
+                  defaultModel: '',                   jsonMode: 'openai-jsonschema',   visionMode: 'openai-image-url' },
+};
+const DEFAULT_AI_PROVIDER = 'localmind';
+
+async function getAiProvider() {
+  const r = await idbGet(STORES.settings, 'ai.provider');
+  return (r && r.v) || DEFAULT_AI_PROVIDER;
+}
+async function setAiProvider(id) {
+  await idbPut(STORES.settings, { k: 'ai.provider', v: id });
+}
+async function getAiProviderConfig(providerId) {
+  const r = await idbGet(STORES.settings, 'ai.byok.' + providerId);
+  return (r && r.v) || {};
+}
+async function setAiProviderConfig(providerId, config) {
+  await idbPut(STORES.settings, { k: 'ai.byok.' + providerId, v: config });
+}
+async function clearAiProviderKey(providerId) {
+  const c = await getAiProviderConfig(providerId);
+  delete c.apiKey;
+  await setAiProviderConfig(providerId, c);
+}
+
 function applyTheme(themeId) {
   const t = THEMES[themeId] || THEMES[DEFAULT_THEME];
   for (const [k, v] of Object.entries(t.vars)) {
@@ -1923,6 +1985,1075 @@ function arrayBufferToBase64(buffer) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+//------------------------------------------------------------
+// === v1.1 Smart Capture — LLM primitive ===
+//------------------------------------------------------------
+// Five-method interface that every adapter implements. Same shape as the LocalMind /
+// VaultMind runtime so the contract stays portable across the Browser/ series.
+//
+//   loadModel(config)        → adapter-specific model load (local: WebGPU/WASM init;
+//                              remote: noop).
+//   chat(messages, options)  → streaming or batched; returns text or schema-constrained
+//                              JSON. options: { stream, maxTokens, json, schema }.
+//   embed(texts)             → local-only at v1.1; remote adapter throws NotSupported
+//                              (caller falls back to local for v1.2 reconciliation).
+//   capabilities()           → { text, vision, tools, embedding, backend, maxTokens }.
+//                              Synchronous after loadModel resolves.
+//   unload()                 → free GPU memory (local) or noop (remote). Idempotent.
+//
+// Stage 1B ships the class shape + the factory + the AI panel wiring. The actual
+// LocalMind adapter (Transformers.js + WebGPU/WASM + OPFS model cache + SHA-256
+// verify) lands in Stage 1D. The BYOK adapter (single fetch-based file) lands in
+// Stage 1C. Until those land, both adapters throw NotImplemented from chat/embed.
+
+const NOT_IMPLEMENTED = (where, stage) => () => {
+  throw new Error(`LLM.${where} not implemented yet — arrives in Stage ${stage}.`);
+};
+
+class LLM {
+  constructor(opts = {}) {
+    this.opts = opts;
+    this._caps = null;
+    this._loaded = false;
+  }
+  async loadModel(_config) {
+    NOT_IMPLEMENTED('loadModel', this.opts.providerKind === 'local' ? '1D' : '1C')();
+  }
+  async chat(_messages, _options) {
+    NOT_IMPLEMENTED('chat', this.opts.providerKind === 'local' ? '1D' : '1C')();
+  }
+  async embed(_texts) {
+    if (this.opts.providerKind !== 'local') {
+      const err = new Error('embed() is local-only; remote adapters cannot embed. Caller must fall back to LocalMind for embeddings.');
+      err.code = 'NotSupported';
+      throw err;
+    }
+    NOT_IMPLEMENTED('embed', '1D')();
+  }
+  capabilities() {
+    return this._caps || {
+      text: false, vision: false, tools: false, embedding: false,
+      backend: this.opts.providerKind === 'local' ? 'local-pending' : 'remote-pending',
+      maxTokens: 0,
+    };
+  }
+  async unload() { this._loaded = false; this._caps = null; }
+}
+
+// === Stage 1C — BYOK adapter ===
+// Single adapter for every remote provider (Anthropic / OpenAI / Mistral / OpenRouter /
+// Custom OpenAI-compatible). Provider differences live in AI_PROVIDERS config, not in
+// subclasses. Every call is a fetch() directly from the browser to the provider —
+// no proxy, no telemetry, no Bahi server in the middle. Per spec §4.2: 60 s default
+// timeout (120 s for vision), one retry on 5xx with 2 s backoff, no retry on 4xx,
+// errors surface inline only (never in audit log).
+
+const BYOK_DEFAULT_TIMEOUT_MS = 60_000;
+const BYOK_VISION_TIMEOUT_MS  = 120_000;
+const BYOK_RETRY_BACKOFF_MS   = 2_000;
+
+class BYOKAdapter extends LLM {
+  constructor(opts) {
+    super(opts);
+    this.providerId = opts.providerId;
+    this.provider   = opts.provider;
+  }
+
+  async loadModel(_config) {
+    // Remote providers have nothing to load. Capabilities derive from the provider
+    // config because the model is named in config, not introspected over the wire.
+    this._caps = {
+      text:      true,
+      vision:    this.provider.visionMode != null,
+      tools:     true,
+      embedding: false,
+      backend:   'remote',
+      maxTokens: 0,
+    };
+    this._loaded = true;
+  }
+
+  async chat(messages, options = {}) {
+    if (!this._loaded) await this.loadModel();
+    const cfg = await getAiProviderConfig(this.providerId);
+    const apiKey = cfg.apiKey;
+    const model  = cfg.model || this.provider.defaultModel;
+    if (!apiKey) {
+      const err = new Error(`No API key configured for ${this.provider.name}. Add one in Settings → Smart Capture (AI).`);
+      err.code = 'NoKey'; throw err;
+    }
+    if (!model) {
+      const err = new Error(`No model configured for ${this.provider.name}. Add one in Settings → Smart Capture (AI).`);
+      err.code = 'NoModel'; throw err;
+    }
+    const baseUrl = (this.provider.kind === 'byok-custom' ? cfg.baseUrl : this.provider.baseUrl) || '';
+    if (!baseUrl) {
+      const err = new Error(`No base URL configured for ${this.provider.name}.`);
+      err.code = 'NoBaseUrl'; throw err;
+    }
+
+    const isAnthropic = (this.provider.jsonMode === 'anthropic-tools');
+    const url = baseUrl.replace(/\/?$/, '/') + (isAnthropic ? 'messages' : 'chat/completions');
+    const headers = { 'content-type': 'application/json' };
+    headers[this.provider.authHeader] = (this.provider.authPrefix || '') + apiKey;
+    if (isAnthropic) headers['anthropic-version'] = '2023-06-01';
+
+    const body = isAnthropic
+      ? buildAnthropicBody(messages, model, options)
+      : buildOpenAIBody(messages, model, options);
+
+    const timeout = options.vision ? BYOK_VISION_TIMEOUT_MS : BYOK_DEFAULT_TIMEOUT_MS;
+
+    return await byokFetchWithRetry(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    }, timeout, isAnthropic, options.schema);
+  }
+
+  async embed(_texts) {
+    const err = new Error('embed() is local-only; remote adapters cannot embed. Caller must fall back to LocalMind for embeddings.');
+    err.code = 'NotSupported'; throw err;
+  }
+}
+
+function buildAnthropicBody(messages, model, options) {
+  // Anthropic separates `system` from `messages`. Collect all system messages and
+  // join them; the rest pass through unchanged.
+  const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n') || undefined;
+  const msgs = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }));
+  const body = {
+    model,
+    max_tokens: options.maxTokens || 1024,
+    messages: msgs,
+  };
+  if (sys) body.system = sys;
+  if (options.schema) {
+    // Use tool-use as the JSON-output mechanism. Forces the model to call the named
+    // tool with arguments matching the schema; Anthropic enforces the shape.
+    const toolName = options.schemaName || 'extract';
+    body.tools = [{
+      name: toolName,
+      description: options.schemaDescription || 'Return the result as a JSON object matching the schema.',
+      input_schema: options.schema,
+    }];
+    body.tool_choice = { type: 'tool', name: toolName };
+  }
+  return body;
+}
+
+function buildOpenAIBody(messages, model, options) {
+  const body = { model, messages, max_tokens: options.maxTokens || 1024 };
+  if (options.schema) {
+    body.response_format = {
+      type: 'json_schema',
+      json_schema: {
+        name: options.schemaName || 'extract',
+        schema: options.schema,
+        strict: true,
+      },
+    };
+  }
+  return body;
+}
+
+async function byokFetchWithRetry(url, init, timeoutMs, isAnthropic, schema) {
+  const attempt = async () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(url, { ...init, signal: ctrl.signal });
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') {
+        const err = new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} s.`);
+        err.code = 'Timeout'; throw err;
+      }
+      throw e;
+    }
+    clearTimeout(timer);
+    return res;
+  };
+  let res = await attempt();
+  if (res.status >= 500 && res.status < 600) {
+    await new Promise(r => setTimeout(r, BYOK_RETRY_BACKOFF_MS));
+    res = await attempt();
+  }
+  if (!res.ok) {
+    let bodyText = '';
+    try { bodyText = (await res.text()).slice(0, 400); } catch (_) {}
+    const err = new Error(`HTTP ${res.status}: ${bodyText || res.statusText}`);
+    err.code   = res.status === 401 ? 'Unauthorized' : (res.status === 429 ? 'RateLimited' : 'HttpError');
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  if (isAnthropic) {
+    if (schema) {
+      const tu = (data.content || []).find(c => c.type === 'tool_use');
+      if (!tu) throw new Error('Anthropic response missing the expected tool_use block.');
+      return tu.input;
+    }
+    return (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+  }
+  // OpenAI / Mistral / OpenRouter / Custom — all OpenAI-shaped
+  const choice  = (data.choices || [])[0];
+  const content = choice && choice.message && choice.message.content;
+  if (schema) {
+    if (typeof content !== 'string') throw new Error('OpenAI-compatible response missing message.content for JSON schema.');
+    try { return JSON.parse(content); }
+    catch (_) { throw new Error('OpenAI-compatible response was not valid JSON for the schema.'); }
+  }
+  return content;
+}
+
+// === Stage 1D — LocalMind on-device adapter ===
+// Transformers.js v4 + ONNX Runtime Web running in a Web Worker (inline blob URL,
+// no separate file — single-HTML-file constraint). WebGPU primary, WASM fallback.
+// Model files cache in the browser's Cache Storage via Transformers.js's built-in
+// caching layer; SHA-256 verify per file is a follow-up (registry has placeholder
+// hashes pending real-CDN capture). Per spec §3, models lazy-fetch on first use,
+// never preload at app boot.
+
+const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4/+esm';
+
+const LOCAL_MODEL_REGISTRY = {
+  'llama-3.2-1b-it': {
+    id: 'llama-3.2-1b-it',
+    displayName: 'Llama 3.2 1B Instruct',
+    repo: 'onnx-community/Llama-3.2-1B-Instruct',
+    dtype: 'q4f16',
+    sizeBytes: 700 * 1024 * 1024,
+    role: 'text',
+    isDefault: true,
+    sha256: null, // TODO: pin once captured from real CDN download
+  },
+  'qwen-2.5-1.5b-it': {
+    id: 'qwen-2.5-1.5b-it',
+    displayName: 'Qwen 2.5 1.5B Instruct',
+    repo: 'onnx-community/Qwen2.5-1.5B-Instruct',
+    dtype: 'q4f16',
+    sizeBytes: 900 * 1024 * 1024,
+    role: 'text',
+    sha256: null,
+  },
+  // Stage 2 adds PaddleOCR (~50 MB) for bill capture.
+  // Stage v1.1.2 adds Distil-Whisper Small (~150 MB) for voice.
+  // Stage v1.2 adds all-MiniLM-L6-v2 (~22 MB) for reconciliation embeddings.
+};
+const DEFAULT_LOCAL_MODEL_ID = 'llama-3.2-1b-it';
+
+async function getLocalModelId() {
+  const r = await idbGet(STORES.settings, 'ai.localModel');
+  return (r && r.v) || DEFAULT_LOCAL_MODEL_ID;
+}
+async function setLocalModelId(id) {
+  await idbPut(STORES.settings, { k: 'ai.localModel', v: id });
+}
+
+// Lazy WebGPU feature-test. Cached after first call. Returns 'webgpu' if a usable
+// adapter is available; otherwise 'wasm'.
+let _aiBackend = null;
+async function detectAiBackend() {
+  if (_aiBackend) return _aiBackend;
+  if (!navigator.gpu) { _aiBackend = 'wasm'; return _aiBackend; }
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    _aiBackend = adapter ? 'webgpu' : 'wasm';
+  } catch (_) {
+    _aiBackend = 'wasm';
+  }
+  return _aiBackend;
+}
+
+// Worker source. Inline as a string and instantiated via Blob URL so the single-file
+// constraint stays intact. Per CLAUDE.md memory: must use `+esm` build of
+// transformers v4, must use 'application/javascript' MIME, must register an
+// onerror listener on the main thread (otherwise blob-URL module workers fail
+// completely silently).
+const LOCALMIND_WORKER_SOURCE = `
+import { AutoModelForCausalLM, AutoTokenizer, env } from '${TRANSFORMERS_CDN}';
+
+env.allowLocalModels  = false;
+env.allowRemoteModels = true;
+
+let model = null;
+let tokenizer = null;
+
+function send(msg) { self.postMessage(msg); }
+
+self.addEventListener('error', (e) => {
+  send({ type: 'error', message: 'Worker error: ' + (e && e.message ? e.message : String(e)) });
+});
+
+self.addEventListener('message', async (e) => {
+  const m = e.data || {};
+  const requestId = m.requestId;
+  try {
+    if (m.type === 'load') {
+      tokenizer = await AutoTokenizer.from_pretrained(m.repo, {
+        progress_callback: (p) => send({ type: 'progress', stage: 'tokenizer', data: p }),
+      });
+      model = await AutoModelForCausalLM.from_pretrained(m.repo, {
+        dtype:  m.dtype  || 'q4f16',
+        device: m.device || 'webgpu',
+        progress_callback: (p) => send({ type: 'progress', stage: 'model', data: p }),
+      });
+      // Warmup so the first real generation isn't blocked on shader compilation
+      const warm = tokenizer('a');
+      await model.generate({ ...warm, max_new_tokens: 1 });
+      send({ type: 'ready', modelId: m.modelId, device: m.device || 'webgpu' });
+      return;
+    }
+    if (m.type === 'generate') {
+      if (!model || !tokenizer) {
+        send({ type: 'error', requestId, message: 'No model loaded' });
+        return;
+      }
+      const messages = m.messages || [];
+      const maxNewTokens = m.maxTokens || 512;
+      const inputs = tokenizer.apply_chat_template(messages, {
+        return_tensors: 'pt',
+        add_generation_prompt: true,
+      });
+      const promptLen = inputs.dims[1];
+      const t0 = performance.now();
+      const output = await model.generate({
+        input_ids: inputs,
+        max_new_tokens: maxNewTokens,
+        do_sample: false,
+      });
+      const generated = output.slice(null, [promptLen, null]);
+      const text = tokenizer.batch_decode(generated, { skip_special_tokens: true })[0];
+      const t1 = performance.now();
+      const newTokens = output.dims[1] - promptLen;
+      send({
+        type: 'reply',
+        requestId,
+        text,
+        usage: {
+          newTokens,
+          totalMs: Math.round(t1 - t0),
+          tokensPerSec: newTokens > 0 ? +(newTokens * 1000 / (t1 - t0)).toFixed(2) : 0,
+        },
+      });
+      return;
+    }
+    if (m.type === 'unload') {
+      try { if (model && model.dispose) await model.dispose(); } catch (_) {}
+      model = null; tokenizer = null;
+      send({ type: 'unloaded' });
+      return;
+    }
+  } catch (err) {
+    send({ type: 'error', requestId, message: String((err && err.message) || err) });
+  }
+});
+`;
+
+// Greedy {…} extractor for LLM output that wraps JSON in prose or markdown fences.
+function extractFirstJsonBlob(s) {
+  const start = s.indexOf('{');
+  if (start < 0) throw new Error('No JSON object in output');
+  let depth = 0;
+  for (let i = start; i < s.length; i++) {
+    if (s[i] === '{') depth++;
+    else if (s[i] === '}') {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  throw new Error('Unterminated JSON object in output');
+}
+
+class LocalMindAdapter extends LLM {
+  constructor(opts) {
+    super(opts);
+    this.providerId = opts.providerId;
+    this.provider = opts.provider;
+    this._worker = null;
+    this._modelId = null;
+    this._pending = new Map();   // requestId → { resolve, reject }
+    this._reqCounter = 0;
+    this._loadCallbacks = null;  // { resolve, reject, onProgress }
+  }
+
+  _initWorker() {
+    const blob = new Blob([LOCALMIND_WORKER_SOURCE], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    this._worker = new Worker(url, { type: 'module' });
+    this._worker.addEventListener('error', (e) => {
+      console.error('LocalMind worker error:', e && e.message, e);
+      if (this._loadCallbacks) {
+        this._loadCallbacks.reject(new Error('Worker error: ' + (e && e.message ? e.message : 'unknown')));
+        this._loadCallbacks = null;
+      }
+    });
+    this._worker.addEventListener('message', (e) => {
+      const m = e.data || {};
+      if (m.type === 'progress') {
+        if (this._loadCallbacks && this._loadCallbacks.onProgress) {
+          this._loadCallbacks.onProgress(m.stage, m.data);
+        }
+      } else if (m.type === 'ready') {
+        this._modelId = m.modelId;
+        this._loaded = true;
+        this._caps = {
+          text: true,
+          vision: false,
+          tools: false,
+          embedding: false, // separate model lands in v1.2 reconciliation
+          backend: m.device,
+          maxTokens: 0,
+        };
+        if (this._loadCallbacks) {
+          this._loadCallbacks.resolve({ modelId: m.modelId, device: m.device });
+          this._loadCallbacks = null;
+        }
+      } else if (m.type === 'unloaded') {
+        this._modelId = null; this._loaded = false; this._caps = null;
+      } else if (m.type === 'reply') {
+        const cb = this._pending.get(m.requestId);
+        if (cb) { this._pending.delete(m.requestId); cb.resolve({ text: m.text, usage: m.usage }); }
+      } else if (m.type === 'error') {
+        if (m.requestId && this._pending.has(m.requestId)) {
+          const cb = this._pending.get(m.requestId);
+          this._pending.delete(m.requestId);
+          cb.reject(new Error(m.message));
+        } else if (this._loadCallbacks) {
+          this._loadCallbacks.reject(new Error(m.message));
+          this._loadCallbacks = null;
+        } else {
+          console.error('LocalMind worker error:', m.message);
+        }
+      }
+    });
+  }
+
+  async loadModel(config = {}) {
+    const modelId = config.modelId || await getLocalModelId();
+    const entry = LOCAL_MODEL_REGISTRY[modelId];
+    if (!entry) throw new Error('Unknown local model: ' + modelId);
+    const backend = await detectAiBackend();
+    if (!this._worker) this._initWorker();
+    return new Promise((resolve, reject) => {
+      this._loadCallbacks = { resolve, reject, onProgress: config.onProgress };
+      this._worker.postMessage({
+        type: 'load',
+        modelId,
+        repo: entry.repo,
+        dtype: entry.dtype,
+        device: backend,
+      });
+    });
+  }
+
+  async _generateOnce(messages, options) {
+    const requestId = ++this._reqCounter;
+    return await new Promise((resolve, reject) => {
+      this._pending.set(requestId, { resolve, reject });
+      this._worker.postMessage({
+        type: 'generate',
+        requestId,
+        messages,
+        maxTokens: options.maxTokens,
+      });
+    });
+  }
+
+  async chat(messages, options = {}) {
+    if (!this._loaded) {
+      const err = new Error('No local model loaded. Click "Load model" in Settings → Smart Capture (AI).');
+      err.code = 'NotLoaded'; throw err;
+    }
+    let result = await this._generateOnce(messages, options);
+    if (!options.schema) return result.text;
+
+    // Local has no native grammar mode at v1.1. Per spec §5.6: try parse; on failure
+    // retry once with a stricter system prompt; on second failure throw BadJson and
+    // let the caller fall back (Stage 2 bill ingest shows raw OCR for manual copy).
+    const tryParse = (text) => {
+      try { return JSON.parse(text); } catch (_) {}
+      try { return JSON.parse(extractFirstJsonBlob(text)); } catch (_) {}
+      return null;
+    };
+    let parsed = tryParse(result.text);
+    if (parsed) return parsed;
+
+    const stricter = [
+      { role: 'system', content: 'You output ONLY a single valid JSON object. No prose, no markdown, no code fences. Just the JSON object that matches the schema you were given.' },
+      ...messages,
+    ];
+    result = await this._generateOnce(stricter, options);
+    parsed = tryParse(result.text);
+    if (parsed) return parsed;
+
+    const err = new Error('Local model output was not valid JSON after one retry. First 120 chars: ' + result.text.slice(0, 120));
+    err.code = 'BadJson';
+    throw err;
+  }
+
+  async embed(_texts) {
+    const err = new Error('LocalMind embedding (all-MiniLM-L6-v2) lands with v1.2 reconciliation. Stage 1D ships text-only.');
+    err.code = 'NotImplemented'; throw err;
+  }
+
+  async unload() {
+    if (this._worker) {
+      try {
+        await new Promise((resolve) => {
+          let done = false;
+          const onMsg = (e) => {
+            if (e.data && e.data.type === 'unloaded') {
+              this._worker.removeEventListener('message', onMsg);
+              done = true;
+              resolve();
+            }
+          };
+          this._worker.addEventListener('message', onMsg);
+          this._worker.postMessage({ type: 'unload' });
+          setTimeout(() => { if (!done) resolve(); }, 1500);
+        });
+      } catch (_) {}
+      try { this._worker.terminate(); } catch (_) {}
+      this._worker = null;
+    }
+    this._modelId = null;
+    this._loaded = false;
+    this._caps = null;
+    // Reject any in-flight requests
+    for (const [, cb] of this._pending) {
+      try { cb.reject(new Error('Worker unloaded')); } catch (_) {}
+    }
+    this._pending.clear();
+  }
+}
+
+// Adapter selection. Single call site for every AI feature in Bahi.
+//   const llm = await getActiveLLM();
+//   const draft = await llm.chat([...], { schema: ... });
+// The factory caches the active adapter; resetActiveLLM() invalidates it (called when
+// the user switches provider, clears a key, saves a config, or disables AI).
+let _activeLLM = null;
+async function getActiveLLM() {
+  if (_activeLLM) return _activeLLM;
+  if (!getAiEnabled()) {
+    const err = new Error('Smart Capture is disabled. Enable it in Settings → Smart Capture (AI).');
+    err.code = 'AiDisabled'; throw err;
+  }
+  const providerId = await getAiProvider();
+  const provider = AI_PROVIDERS[providerId] || AI_PROVIDERS[DEFAULT_AI_PROVIDER];
+  if (provider.kind === 'byok' || provider.kind === 'byok-custom') {
+    _activeLLM = new BYOKAdapter({ providerId, providerKind: provider.kind, provider });
+  } else if (provider.kind === 'local') {
+    _activeLLM = new LocalMindAdapter({ providerId, providerKind: provider.kind, provider });
+  } else {
+    _activeLLM = new LLM({ providerId, providerKind: provider.kind, provider });
+  }
+  return _activeLLM;
+}
+function resetActiveLLM() {
+  if (_activeLLM && typeof _activeLLM.unload === 'function') {
+    try { _activeLLM.unload(); } catch (_) {}
+  }
+  _activeLLM = null;
+}
+
+// === Stage 2 — Capture from bill (multi-file queue) ===
+// Module-scope queue holds in-flight bill drafts. Lives in memory only — never
+// persisted, never written to .khata, never logged. Reload = lose queue (the
+// simpler the state, the fewer the failure modes; user re-drops on the rare
+// reload event). Each item flows OCR → LLM extract → review → Post via the
+// existing posting bridge. One audit entry with actor='ai' per accepted draft.
+
+const CAPTURE_QUEUE_LIMIT = 10;
+const CAPTURE_FILE_LIMIT_BYTES = 10 * 1024 * 1024;
+const CAPTURE_ALLOWED_MIME = /^(application\/pdf|image\/(jpeg|jpg|png))$/i;
+
+// Item: { id, file, billUrl, billPreviewKind, status, error, ocrText, draft }
+// status: 'queued' | 'ocr' | 'extracting' | 'ready' | 'error' | 'done' | 'skipped'
+let CAPTURE_QUEUE = [];
+let _captureIdCounter = 0;
+
+const CAPTURE_STATUS_LABELS = {
+  queued:     'Queued',
+  ocr:        'Reading…',
+  extracting: 'Extracting…',
+  ready:      'Ready to review',
+  error:      'Error',
+  done:       'Posted',
+  skipped:    'Skipped',
+};
+
+function captureQueueAdd(files) {
+  const added = [];
+  for (const f of files) {
+    if (CAPTURE_QUEUE.length >= CAPTURE_QUEUE_LIMIT) {
+      toast(`Queue full (${CAPTURE_QUEUE_LIMIT} max). Post or remove some bills before adding more.`, 'err');
+      break;
+    }
+    if (!CAPTURE_ALLOWED_MIME.test(f.type)) {
+      toast(`Skipped ${f.name}: only PDF / JPG / PNG accepted.`, 'err');
+      continue;
+    }
+    if (f.size > CAPTURE_FILE_LIMIT_BYTES) {
+      toast(`Skipped ${f.name}: over 10 MB.`, 'err');
+      continue;
+    }
+    const item = {
+      id: ++_captureIdCounter,
+      file: f,
+      billUrl: URL.createObjectURL(f),
+      billPreviewKind: f.type === 'application/pdf' ? 'pdf' : 'image',
+      status: 'queued',
+      error: null,
+      ocrText: null,
+      draft: null,
+    };
+    CAPTURE_QUEUE.push(item);
+    added.push(item);
+  }
+  return added;
+}
+
+function captureQueueRemove(id) {
+  const idx = CAPTURE_QUEUE.findIndex(i => i.id === id);
+  if (idx < 0) return;
+  const it = CAPTURE_QUEUE[idx];
+  try { URL.revokeObjectURL(it.billUrl); } catch (_) {}
+  CAPTURE_QUEUE.splice(idx, 1);
+}
+
+function captureQueueClear() {
+  for (const it of CAPTURE_QUEUE) {
+    try { URL.revokeObjectURL(it.billUrl); } catch (_) {}
+  }
+  CAPTURE_QUEUE = [];
+  _captureIdCounter = 0;
+}
+
+function captureQueueNextReady() {
+  return CAPTURE_QUEUE.find(i => i.status === 'ready');
+}
+
+function captureQueuePending() {
+  return CAPTURE_QUEUE.filter(i => i.status === 'queued' || i.status === 'ocr' || i.status === 'extracting');
+}
+
+// === Stage 2B — OCR pipeline (Tesseract.js + PDF.js) ===
+// Tesseract.js for OCR — chosen over PaddleOCR per the spec §12 escalation: same
+// extracted-text output for our use, ~12 MB first-load vs ~30 MB for the full
+// Paddle stack (OpenCV.js + ONNX runtime + det/rec models). PDF.js renders PDF
+// page 1 to a canvas before Tesseract reads it (multi-page concatenation is a
+// follow-up). One worker shared for the session; processor is reentrancy-guarded
+// so adding more files mid-run just extends the queue.
+
+const TESSERACT_VERSION = '5';
+const TESSERACT_CDN = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
+const PDFJS_VERSION = '4.7.76';
+const PDFJS_CDN = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.min.mjs`;
+const PDFJS_WORKER_CDN = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
+
+let _tesseractWorker = null;
+let _tesseractWorkerPromise = null;
+async function loadTesseractWorker() {
+  if (_tesseractWorker) return _tesseractWorker;
+  if (_tesseractWorkerPromise) return _tesseractWorkerPromise;
+  _tesseractWorkerPromise = (async () => {
+    await loadScript(TESSERACT_CDN);
+    if (!window.Tesseract || !window.Tesseract.createWorker) {
+      throw new Error('Tesseract.js failed to load from CDN');
+    }
+    const w = await window.Tesseract.createWorker('eng');
+    _tesseractWorker = w;
+    return w;
+  })().catch(err => { _tesseractWorkerPromise = null; throw err; });
+  return _tesseractWorkerPromise;
+}
+
+let _pdfjsLib = null;
+let _pdfjsLoadPromise = null;
+async function loadPdfJs() {
+  if (_pdfjsLib) return _pdfjsLib;
+  if (_pdfjsLoadPromise) return _pdfjsLoadPromise;
+  _pdfjsLoadPromise = (async () => {
+    const mod = await import(PDFJS_CDN);
+    if (!mod.GlobalWorkerOptions || !mod.getDocument) {
+      throw new Error('PDF.js failed to load from CDN');
+    }
+    mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
+    _pdfjsLib = mod;
+    return mod;
+  })().catch(err => { _pdfjsLoadPromise = null; throw err; });
+  return _pdfjsLoadPromise;
+}
+
+async function captureFileToCanvas(file, kind) {
+  const canvas = document.createElement('canvas');
+  if (kind === 'pdf') {
+    const pdfjs = await loadPdfJs();
+    const buf = await file.arrayBuffer();
+    const doc = await pdfjs.getDocument({ data: buf }).promise;
+    const page = await doc.getPage(1);
+    const viewport = page.getViewport({ scale: 2 });
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    try { doc.destroy(); } catch (_) {}
+  } else {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  return canvas;
+}
+
+// === Stage 2B (cont) — PaddleOCR alternative, picked via Settings ===
+// Lifted from ScanLocal's loader. Heavier than Tesseract (~30 MB on first use vs
+// ~12 MB) but better at dense layouts and bounding-box output. User-pickable per
+// the spec §12 escalation outcome.
+const PADDLE_OCR_VERSION = '1.0.3';
+const PADDLE_OCR_BASE = `https://cdn.jsdelivr.net/npm/paddleocr-browser@${PADDLE_OCR_VERSION}/dist`;
+const ONNX_RUNTIME_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js';
+const OPENCV_URL       = 'https://docs.opencv.org/4.8.0/opencv.js';
+const ESEARCH_OCR_URL  = 'https://cdn.jsdelivr.net/npm/esearch-ocr@5.1.5/dist/esearch-ocr.js';
+
+const AI_OCR_ENGINES = {
+  tesseract: { name: 'Tesseract.js', sizeMB: 12, isDefault: true },
+  paddle:    { name: 'PaddleOCR (paddleocr-browser)', sizeMB: 30 },
+};
+const DEFAULT_AI_OCR_ENGINE = 'tesseract';
+
+async function getAiOcrEngine() {
+  const r = await idbGet(STORES.settings, 'ai.ocrEngine');
+  return (r && r.v) || DEFAULT_AI_OCR_ENGINE;
+}
+async function setAiOcrEngine(id) {
+  await idbPut(STORES.settings, { k: 'ai.ocrEngine', v: id });
+}
+
+let _paddleOcr = null;
+let _paddleOcrLoadPromise = null;
+let _openCvLoadPromise = null;
+function _isOpenCvReady() { return Boolean(window.cv && typeof window.cv.Mat === 'function'); }
+
+async function _ensureOpenCv() {
+  if (_isOpenCvReady()) return window.cv;
+  if (!_openCvLoadPromise) {
+    _openCvLoadPromise = (async () => {
+      await loadScript(OPENCV_URL);
+      if (_isOpenCvReady()) return window.cv;
+      await new Promise((res, rej) => {
+        const t = setTimeout(() => rej(new Error('OpenCV failed to initialize after 30 s')), 30000);
+        const watch = () => {
+          if (!window.cv) { setTimeout(watch, 50); return; }
+          if (typeof window.cv.Mat === 'function') { clearTimeout(t); res(); return; }
+          const prev = window.cv.onRuntimeInitialized;
+          window.cv.onRuntimeInitialized = () => {
+            if (typeof prev === 'function') { try { prev(); } catch (_) {} }
+            clearTimeout(t); res();
+          };
+        };
+        watch();
+      });
+      return window.cv;
+    })().catch(err => { _openCvLoadPromise = null; throw err; });
+  }
+  return _openCvLoadPromise;
+}
+
+async function loadPaddleOcr() {
+  if (_paddleOcr) return _paddleOcr;
+  if (_paddleOcrLoadPromise) return _paddleOcrLoadPromise;
+  _paddleOcrLoadPromise = (async () => {
+    await loadScript(ONNX_RUNTIME_URL);
+    await _ensureOpenCv();
+    const Paddle = await import(ESEARCH_OCR_URL);
+    const dictResp = await fetch(`${PADDLE_OCR_BASE}/dict_en.txt`);
+    if (!dictResp.ok) throw new Error('PaddleOCR dictionary fetch failed (HTTP ' + dictResp.status + ')');
+    const dictionary = await dictResp.text();
+    await Paddle.init({
+      detPath: `${PADDLE_OCR_BASE}/ppocr_det.onnx`,
+      recPath: `${PADDLE_OCR_BASE}/rec_en_PP-OCRv3_infer.onnx`,
+      dic: dictionary,
+      ort: window.ort,
+      node: false,
+      cv: window.cv,
+    });
+    _paddleOcr = Paddle;
+    return Paddle;
+  })().catch(err => { _paddleOcrLoadPromise = null; throw err; });
+  return _paddleOcrLoadPromise;
+}
+
+function _normalisePaddleResult(result) {
+  const lines = Array.isArray(result) ? result
+    : Array.isArray(result && result.data)    ? result.data
+    : Array.isArray(result && result.results) ? result.results
+    : [];
+  return (result && result.text)
+    || lines.map(e => (e && (e.text || e.label)) || (e && e[1] && e[1][0]) || '').filter(Boolean).join('\n')
+    || '';
+}
+
+// === Stage 2C — LLM extraction (strict JSON schema) + snap-to-master ===
+// Per spec §5.4 / §5.5. The schema is sent to the active LLM with OCR text.
+// BYOK uses the provider's native structured-output mechanism (Anthropic tool-use,
+// OpenAI json_schema). LocalMind has no native grammar mode at v1.1 — its chat()
+// uses prompt-and-parse with one-shot retry on bad JSON (already implemented in
+// LocalMindAdapter.chat).
+
+const BILL_EXTRACTION_SCHEMA = {
+  type: 'object',
+  required: ['vendor', 'bill', 'lines', 'totals'],
+  properties: {
+    vendor: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        gstin:     { type: ['string', 'null'] },
+        name:      { type: 'string' },
+        state_iso: { type: ['string', 'null'] },
+      },
+    },
+    bill: {
+      type: 'object',
+      required: ['number', 'date'],
+      properties: {
+        number:               { type: 'string' },
+        date:                 { type: 'string', description: 'YYYY-MM-DD' },
+        place_of_supply_iso:  { type: ['string', 'null'] },
+      },
+    },
+    lines: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['description', 'taxable_value_paise', 'gst_rate_pct'],
+        properties: {
+          description:           { type: 'string' },
+          hsn_or_sac:            { type: ['string', 'null'] },
+          qty:                   { type: ['number', 'null'] },
+          rate:                  { type: ['number', 'null'] },
+          taxable_value_paise:   { type: 'integer' },
+          gst_rate_pct:          { type: 'number' },
+          cgst_paise:            { type: 'integer' },
+          sgst_paise:            { type: 'integer' },
+          igst_paise:            { type: 'integer' },
+        },
+      },
+    },
+    totals: {
+      type: 'object',
+      required: ['taxable_paise', 'total_paise'],
+      properties: {
+        taxable_paise: { type: 'integer' },
+        cgst_paise:    { type: 'integer' },
+        sgst_paise:    { type: 'integer' },
+        igst_paise:    { type: 'integer' },
+        total_paise:   { type: 'integer' },
+      },
+    },
+    rcm_applicable: { type: ['boolean', 'null'] },
+  },
+};
+
+const BILL_EXTRACTION_SYSTEM_PROMPT = `You are a careful Indian-SMB bookkeeper extracting line items and totals from a vendor bill.
+
+Output a single JSON object matching the schema. No prose, no markdown, no code fences.
+
+Conventions:
+- All monetary fields suffixed "_paise" are INTEGERS (rupees x 100). Round half-up. Never include rupees as decimals in *_paise fields.
+- gst_rate_pct is a number like 18 (not 0.18, not "18%").
+- Dates are YYYY-MM-DD. If only month/year visible, leave the day as 01.
+- gstin is the 15-char alphanumeric registration number, uppercase. Null if not present.
+- state_iso is the 2-letter ISO 3166-2:IN code (e.g. MH, KA). Derive from GSTIN's first 2 digits if not printed (01=JK, 27=MH, 29=KA, etc.).
+- For each line: cgst_paise + sgst_paise for intra-state; igst_paise for inter-state. Set the unused side to 0.
+- rcm_applicable: true if "RCM" / "Reverse Charge" / "Section 9(3)" wording appears, else false.
+- If a field is genuinely unreadable, use null for nullable types or 0 for integer fields. Never invent values.`;
+
+async function runBillExtraction(ocrText) {
+  const llm = await getActiveLLM();
+  if (!llm._loaded) await llm.loadModel();
+  const messages = [
+    { role: 'system', content: BILL_EXTRACTION_SYSTEM_PROMPT },
+    { role: 'user',   content: 'Extract from this OCR of a vendor bill:\n\n' + ocrText },
+  ];
+  return await llm.chat(messages, {
+    schema: BILL_EXTRACTION_SCHEMA,
+    schemaName: 'extract_bill',
+    schemaDescription: 'Extracted vendor bill in normalized integer-paise form',
+    maxTokens: 2048,
+  });
+}
+
+// Snap-to-master per spec §5.5. Mutates the draft so the form pre-fills with
+// master values (not extracted ones). Returns flags for UI surfacing.
+function snapBillToMasters(draft, db) {
+  const flags = [];
+
+  // (1) GSTIN snap — vendor master always wins
+  if (draft && draft.vendor && draft.vendor.gstin) {
+    const gstin = String(draft.vendor.gstin).trim().toUpperCase();
+    if (gstin && db) {
+      try {
+        const r = db.exec('SELECT id, name, gstin, state FROM vendors WHERE archived=0 AND UPPER(gstin)=?', [gstin]);
+        if (r.length && r[0].values.length) {
+          const [vId, vName, vGstin, vState] = r[0].values[0];
+          const extracted = draft.vendor.name;
+          draft.vendor.id     = vId;
+          draft.vendor.name   = vName;
+          draft.vendor.gstin  = vGstin;
+          draft.vendor.state_iso = vState || draft.vendor.state_iso;
+          draft.vendor.matched_master_id = vId;
+          if (extracted && extracted !== vName) {
+            flags.push({ field: 'vendor.name', kind: 'snap-replaced', extracted, master: vName });
+          }
+        }
+      } catch (_) { /* swallow — extraction shouldn't fail because of master lookup */ }
+    }
+  }
+
+  // (2) State derivation from GSTIN (uses Bahi's existing STATE_BY_GSTIN map)
+  if (draft && draft.vendor && draft.vendor.gstin && !draft.vendor.state_iso) {
+    const prefix = String(draft.vendor.gstin).slice(0, 2);
+    if (typeof STATE_BY_GSTIN !== 'undefined' && STATE_BY_GSTIN.has(prefix)) {
+      draft.vendor.state_iso = STATE_BY_GSTIN.get(prefix)[0];
+    }
+  }
+  if (draft && draft.bill && !draft.bill.place_of_supply_iso) {
+    draft.bill.place_of_supply_iso = (draft.vendor && draft.vendor.state_iso) || null;
+  }
+
+  // (3) HSN normalisation — strip whitespace; if bundled dataset has the code,
+  //     prefer the canonical form; otherwise keep the trimmed form.
+  if (draft && Array.isArray(draft.lines)) {
+    for (const line of draft.lines) {
+      if (line.hsn_or_sac) {
+        const norm = String(line.hsn_or_sac).replace(/\s+/g, '');
+        if (typeof REF !== 'undefined' && REF.hsnCommon && Array.isArray(REF.hsnCommon.data)) {
+          const found = REF.hsnCommon.data.find(([c]) => c === norm)
+                     || (REF.sacCommon && Array.isArray(REF.sacCommon.data) && REF.sacCommon.data.find(([c]) => c === norm));
+          line.hsn_or_sac = found ? found[0] : norm;
+        } else {
+          line.hsn_or_sac = norm;
+        }
+      }
+    }
+  }
+
+  // (4) Integer paise enforcement — round + flag
+  const enforceInt = (obj, field) => {
+    if (obj && obj[field] != null && !Number.isInteger(obj[field])) {
+      const rounded = Math.round(obj[field]);
+      flags.push({ field, kind: 'rounded-paise', from: obj[field], to: rounded });
+      obj[field] = rounded;
+    }
+  };
+  if (draft && draft.totals) {
+    for (const k of ['taxable_paise', 'cgst_paise', 'sgst_paise', 'igst_paise', 'total_paise']) enforceInt(draft.totals, k);
+  }
+  if (draft && Array.isArray(draft.lines)) {
+    for (const line of draft.lines) {
+      for (const k of ['taxable_value_paise', 'cgst_paise', 'sgst_paise', 'igst_paise']) enforceInt(line, k);
+    }
+  }
+
+  // (5) GST tie-out — sum of line components vs totals; ±1 rupee tolerance
+  if (draft && Array.isArray(draft.lines) && draft.totals) {
+    const sum = draft.lines.reduce((a, l) => ({
+      taxable: a.taxable + (l.taxable_value_paise || 0),
+      cgst:    a.cgst    + (l.cgst_paise          || 0),
+      sgst:    a.sgst    + (l.sgst_paise          || 0),
+      igst:    a.igst    + (l.igst_paise          || 0),
+    }), { taxable: 0, cgst: 0, sgst: 0, igst: 0 });
+    const tol = 100;
+    if (Math.abs(sum.taxable - (draft.totals.taxable_paise || 0)) > tol) {
+      flags.push({ field: 'totals.taxable_paise', kind: 'tie-out-mismatch' });
+    }
+    const totalTax = sum.cgst + sum.sgst + sum.igst;
+    const totalsTax = (draft.totals.cgst_paise || 0) + (draft.totals.sgst_paise || 0) + (draft.totals.igst_paise || 0);
+    if (Math.abs(totalTax - totalsTax) > tol) {
+      flags.push({ field: 'totals.tax', kind: 'tie-out-mismatch' });
+    }
+  }
+
+  return { draft, flags };
+}
+
+// Engine dispatcher. Single call site for OCR; both loaders are independent so
+// switching back and forth between sessions is free.
+async function runOcr(canvas) {
+  const engineId = await getAiOcrEngine();
+  if (engineId === 'paddle') {
+    const Paddle = await loadPaddleOcr();
+    const raw = await Paddle.ocr(canvas);
+    return _normalisePaddleResult(raw);
+  }
+  const tess = await loadTesseractWorker();
+  const result = await tess.recognize(canvas);
+  return ((result && result.data && result.data.text) || '').trim();
+}
+
+let _captureProcessing = false;
+async function processCaptureQueue() {
+  if (_captureProcessing) return;
+  _captureProcessing = true;
+  const reRender = () => { if (location.hash === '#/purchase/capture') render(); };
+  try {
+    while (true) {
+      const item = CAPTURE_QUEUE.find(i => i.status === 'queued');
+      if (!item) break;
+      item.status = 'ocr';
+      reRender();
+      try {
+        const canvas = await captureFileToCanvas(item.file, item.billPreviewKind);
+        const ocrText = await runOcr(canvas);
+        item.ocrText = (ocrText || '').trim();
+        if (!item.ocrText) {
+          item.error = 'Empty OCR result. Image may be too low-resolution.';
+          item.status = 'error';
+          reRender();
+          continue;
+        }
+      } catch (e) {
+        item.error = String(e && e.message || e);
+        item.status = 'error';
+        console.error('OCR failed for ' + item.file.name + ':', e);
+        reRender();
+        continue;
+      }
+
+      // Stage 2C — LLM extraction + snap-to-master
+      item.status = 'extracting';
+      reRender();
+      try {
+        const rawDraft = await runBillExtraction(item.ocrText);
+        const { draft, flags } = snapBillToMasters(rawDraft, STATE.db);
+        item.draft = draft;
+        item.draftFlags = flags;
+        item.status = 'ready';
+      } catch (e) {
+        item.error = String(e && e.message || e);
+        item.status = 'error';
+        console.error('Extraction failed for ' + item.file.name + ':', e);
+      }
+      reRender();
+    }
+  } finally {
+    _captureProcessing = false;
+  }
 }
 
 //------------------------------------------------------------
@@ -2238,7 +3369,7 @@ async function verifyAuditChain(db) {
 // === Double-entry posting engine ===
 //------------------------------------------------------------
 
-async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lines, actor }) {
+async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lines, actor, aiAssisted }) {
   if (!Array.isArray(lines) || lines.length < 2) throw new Error('At least 2 lines required for double-entry');
   let totalDr = 0, totalCr = 0;
   for (const ln of lines) {
@@ -2279,11 +3410,16 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
     }
     lineStmt.free();
 
+    const auditPayload = { entryId, voucherType, voucherRef: voucherRef || null, postedAt, totalDr, lineCount: lines.length };
+    // Per khata-standard PR #22: when a CA accepts an AI-drafted entry, actor stays
+    // 'ca' and we mark aiAssisted: true on the payload to preserve AI provenance.
+    // For owner-mode AI accepts, actor === 'ai' is sufficient and aiAssisted is omitted.
+    if (aiAssisted && actor === 'ca') auditPayload.aiAssisted = true;
     await appendAuditEntry(db, {
       actor,
       action: 'entry.post',
       ref: `entry:${entryId}`,
-      payload: { entryId, voucherType, voucherRef: voucherRef || null, postedAt, totalDr, lineCount: lines.length },
+      payload: auditPayload,
     });
 
     db.run('COMMIT');
@@ -3618,7 +4754,7 @@ function getOutstandingByVendor(db) {
 //   Regular:  Dr Purchases (taxable) + Dr GST Input @ rate (tax) / Cr Sundry Creditors (total)
 //   RCM:      Dr Purchases (taxable) + Dr GST RCM Input @ rate (tax) / Cr Sundry Creditors (taxable)
 //                                                                    + Cr GST RCM Output @ rate (tax)
-async function postPurchaseToLedger(db, purchase, vendor, computedLines) {
+async function postPurchaseToLedger(db, purchase, vendor, computedLines, opts = {}) {
   const lines = [];
   lines.push({ accountId: getAccountIdByName(db, 'Purchases'), debit: purchase.subtotal, credit: 0 });
 
@@ -3662,7 +4798,8 @@ async function postPurchaseToLedger(db, purchase, vendor, computedLines) {
     voucherRef: purchase.internal_ref,
     narration: `Purchase ${purchase.internal_ref} (vendor bill ${purchase.bill_number}) from ${vendor.name}` + (purchase.reverse_charge ? ' [RCM]' : ''),
     postedAt: purchase.bill_date,
-    actor: auditActor(),
+    actor: auditActor(opts.aiAssisted),
+    aiAssisted: opts.aiAssisted,
     lines,
   });
   return result.entryId;
@@ -5511,11 +6648,18 @@ async function saveCaProfile(profile) {
   return rec;
 }
 
-// Returns 'ca' if mode is CA and a profile exists, else 'owner'.
-// Used by every appendAuditEntry call so the actor field naturally reflects who
-// performed the action without each call site having to know.
-function auditActor() {
-  return (STATE.mode === 'ca' && STATE.caProfile) ? 'ca' : 'owner';
+// Returns the audit actor enum value. Per the khata-standard actor enum (and the
+// Smart Capture v1.1 PR #22): owner | ca | system | ai. Backward-compatible — the
+// 21+ existing call sites that pass no args behave exactly as before.
+//
+//   - auditActor()              → 'ca' if CA mode + profile, else 'owner'
+//   - auditActor(true)          → 'ca' if CA mode + profile, else 'ai'
+//                                 (the CA-mode case keeps 'ca' so accountability stays
+//                                 on the human; the caller adds aiAssisted: true to
+//                                 the audit payload to preserve AI provenance)
+function auditActor(aiAssisted = false) {
+  if (STATE.mode === 'ca' && STATE.caProfile) return 'ca';
+  return aiAssisted ? 'ai' : 'owner';
 }
 
 // === Annotations ===
@@ -6374,7 +7518,48 @@ async function saveBankReconciliation(db, opts) {
   return id;
 }
 
-// === Layer 4 — export-time identity check ===
+// === Layer 4 — export-time identity check + BYOK key scrub ===
+
+// Walk every saved BYOK provider config in IDB and collect the API keys. Used by
+// scanExportForApiKeys to detect leakage. Returns an array of { provider, key }.
+// Empty keys are skipped.
+async function getStoredApiKeys() {
+  const out = [];
+  if (typeof AI_PROVIDERS === 'undefined') return out;
+  for (const id of Object.keys(AI_PROVIDERS)) {
+    if (AI_PROVIDERS[id].kind !== 'byok' && AI_PROVIDERS[id].kind !== 'byok-custom') continue;
+    try {
+      const cfg = await getAiProviderConfig(id);
+      if (cfg && cfg.apiKey && cfg.apiKey.length >= 8) {
+        out.push({ provider: id, key: cfg.apiKey });
+      }
+    } catch (_) {}
+  }
+  return out;
+}
+
+// Defense-in-depth scrub: scans an export blob/string for any saved BYOK API key.
+// The Smart Capture v1.1 spec (§10) hard-blocks exports that leak a key — keys
+// live in IndexedDB only and must never appear in `.khata`, backups, or any export.
+// Returns null on clean, or an error message identifying the leaking provider.
+async function scanExportForApiKeys(payload) {
+  if (payload == null) return null;
+  let text = '';
+  try {
+    if (typeof payload === 'string') text = payload;
+    else if (payload instanceof Blob) text = await payload.text();
+    else if (payload instanceof ArrayBuffer) text = new TextDecoder('utf-8', { fatal: false }).decode(payload);
+    else if (payload instanceof Uint8Array) text = new TextDecoder('utf-8', { fatal: false }).decode(payload);
+  } catch (_) { return null; }
+  if (!text) return null;
+  const keys = await getStoredApiKeys();
+  for (const { provider, key } of keys) {
+    if (text.indexOf(key) !== -1) {
+      return `Export blocked: BYOK API key for ${provider} appears in the export. Keys must never leave the browser. Remove the key from Settings → Smart Capture (AI) before exporting, or investigate where it leaked.`;
+    }
+  }
+  return null;
+}
 
 // Verify that the active workspace entry matches the file currently in STATE.
 // Returns null if everything matches, or an error message describing the mismatch.
@@ -6411,6 +7596,15 @@ async function withExportCheck(label, fn) {
     return false;
   }
   return await fn();
+}
+
+// Scrub an outgoing export blob/string for any saved BYOK API key. Single-line
+// pattern for call sites: `if (!(await scrubExportBlob(blob, 'GSTR-1 JSON'))) return;`
+// Returns true on clean (proceed), false on leak (caller bails after the toast).
+async function scrubExportBlob(blob, label) {
+  const leak = await scanExportForApiKeys(blob);
+  if (leak) { toast(`${label} ${leak}`, 'err'); return false; }
+  return true;
 }
 
 // === Reference data lazy-fetch from khata-standard CDN ===
@@ -8637,6 +9831,44 @@ function closeModal() {
   m.innerHTML = '';
 }
 
+// === v1.1 Smart Capture — first-enable confirmation ===
+// Shown the first time the user toggles Smart Capture on in Settings. Explains the
+// model-download size, that models stay on-device after first download, and that the
+// books never leave the computer unless the user explicitly configures a remote
+// provider. Returns true if the user confirms, false if they cancel.
+function showAiEnableConfirmModal() {
+  return new Promise(resolve => {
+    const wrap = $('modal');
+    wrap.innerHTML = '';
+    const m = h('div', { class: 'modal', style: 'max-width:560px' });
+    m.appendChild(h('div', { class: 'modal-h' }, ['Enable Smart Capture?']));
+    const body = h('div', { class: 'modal-b' });
+    body.innerHTML = `
+      <p style="font-size:13px;line-height:1.6">Smart Capture adds AI-drafted entry surfaces (bill ingest, text-to-entry, voice-to-entry) to Bahi. Drafts always pass through the existing voucher form for your review — <b>AI never auto-posts</b>.</p>
+      <ul style="font-size:12px;line-height:1.7;margin:10px 0 0 18px">
+        <li><b>On-device by default.</b> The first time you use a feature, a small AI model (Llama 3.2 1B, ~700 MB) is downloaded once and cached in browser storage. After that, inference runs offline.</li>
+        <li><b>Books stay on this computer</b> unless you explicitly add a remote provider key in Settings. With a remote provider configured, only the bill content / entry text you submit goes to that provider — never the whole .khata file.</li>
+        <li><b>Audit log unchanged.</b> AI-originated entries are logged with <code>actor='ai'</code> (or <code>actor='ca'</code> + <code>aiAssisted: true</code> in CA mode). The hash chain covers them like any other entry.</li>
+        <li><b>BYOK keys never leave the device.</b> API keys for remote providers live in IndexedDB only — never in <code>.khata</code>, never in any export, never in the audit log.</li>
+        <li><b>Off byte-for-byte.</b> Disabling Smart Capture later removes every AI affordance and unloads any cached model from memory. Bahi v1 returns exactly as it was.</li>
+      </ul>
+      <p style="font-size:11px;color:var(--ink-2);margin-top:12px">Provider configuration (LocalMind / BYOK Anthropic / OpenAI / Mistral / OpenRouter / Custom OpenAI-compatible) lands next in v1.1.0 plumbing.</p>
+    `;
+    m.appendChild(body);
+
+    const ftr = h('div', { class: 'modal-f' });
+    const cancel = h('button', {}, ['Cancel']);
+    cancel.onclick = () => { closeModal(); resolve(false); };
+    const ok = h('button', { class: 'primary' }, ['Enable']);
+    ok.onclick = () => { closeModal(); resolve(true); };
+    ftr.appendChild(cancel);
+    ftr.appendChild(ok);
+    m.appendChild(ftr);
+    wrap.appendChild(m);
+    wrap.classList.remove('hidden');
+  });
+}
+
 // First-run intro modal. Shows once per machine, never again.
 // Three-card layout (Create / Open / Restore) with a one-paragraph explainer.
 // Two explicit dismiss buttons: "Got it" (just close) and "Read README" (open + close).
@@ -9264,6 +10496,8 @@ function render() {
   else if (r === '#/vendors')      renderVendors(main);
   else if (r === '#/purchases')    renderPurchases(main);
   else if (r === '#/purchase/new') renderPurchaseForm(main);
+  else if (r === '#/purchase/capture') renderPurchaseCapture(main);
+  else if (r === '#/purchase/capture/review') renderPurchaseCaptureReview(main);
   else if (r === '#/credit-notes') renderCreditNotes(main);
   else if (r === '#/credit-note/new') renderCreditNoteForm(main);
   else if (r === '#/debit-notes')  renderDebitNotes(main);
@@ -11967,6 +13201,7 @@ function renderGSTR1(main) {
       try {
         const stripped = stripGSTR1Internals(data);
         const blob = new Blob([JSON.stringify(stripped, null, 2)], { type: 'application/json' });
+        if (!(await scrubExportBlob(blob, 'GSTR-1 JSON'))) return;
         const slug = slugify(STATE.manifest.company?.name || 'company');
         const handle = await window.showSaveFilePicker({
           suggestedName: `gstr1-${slug}-${data.gstin || 'no-gstin'}-${data.fp}.json`,
@@ -11985,6 +13220,7 @@ function renderGSTR1(main) {
       try {
         const csv = buildGSTR1CSV(data);
         const blob = new Blob([csv], { type: 'text/csv' });
+        if (!(await scrubExportBlob(blob, 'GSTR-1 CSV'))) return;
         const slug = slugify(STATE.manifest.company?.name || 'company');
         const handle = await window.showSaveFilePicker({
           suggestedName: `gstr1-summary-${slug}-${data.fp}.csv`,
@@ -12126,6 +13362,7 @@ function renderCmp08(main) {
       if (layer4Err) { toast(`CMP-08 export blocked: ${layer4Err}`, 'err'); return; }
       try {
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        if (!(await scrubExportBlob(blob, 'CMP-08 JSON'))) return;
         const handle = await window.showSaveFilePicker({
           suggestedName: `cmp08-${slugify(STATE.manifest.company?.name || 'co')}-${data.cmp_period}.json`,
           types: [{ description: 'CMP-08 JSON', accept: { 'application/json': ['.json'] } }],
@@ -12139,6 +13376,7 @@ function renderCmp08(main) {
       try {
         const csv = `Bahi CMP-08\nGSTIN,${data.gstin}\nQuarter,${data.cmp_period}\nPeriod,${data.period_start} to ${data.period_end}\nComposition type,${data.composition_type}\nComposition rate,${data.composition_rate_pct}%\nInvoices,${data.invoice_count}\nAggregate turnover,${data.aggregate_turnover}\nTax payable,${data.tax_payable}\n`;
         const blob = new Blob([csv], { type: 'text/csv' });
+        if (!(await scrubExportBlob(blob, 'CMP-08 CSV'))) return;
         const handle = await window.showSaveFilePicker({
           suggestedName: `cmp08-summary-${slugify(STATE.manifest.company?.name || 'co')}-${data.cmp_period}.csv`,
           types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
@@ -12379,15 +13617,337 @@ function renderPurchases(main) {
   main.appendChild(tbl);
 }
 
-function renderPurchaseForm(main) {
+// === Stage 2A — Capture from bill view ===
+// Drop zone + queue summary. OCR (Stage 2B) and LLM extraction (Stage 2C) populate
+// items as they finish. Review view (Stage 2D) walks the user through ready drafts
+// one at a time with the bill on the right.
+function renderPurchaseCapture(main) {
+  if (!requireFileOrPrompt(main, 'Capture from bill')) return;
+  if (!getAiEnabled()) {
+    main.appendChild(h('h1', {}, ['Capture from bill']));
+    const off = h('div', { class: 'error-screen' }, [
+      h('h3', {}, ['Smart Capture is off']),
+      h('p', {}, ['Enable Smart Capture in Settings → Smart Capture (AI) to use bill capture.']),
+    ]);
+    const openSettingsBtn = h('button', { class: 'primary' }, ['Open Settings']);
+    openSettingsBtn.onclick = () => nav('#/settings');
+    off.appendChild(openSettingsBtn);
+    main.appendChild(off);
+    return;
+  }
+
+  main.appendChild(h('h1', {}, ['Capture from bill']));
+
+  // Drop zone — always present so the user can add more bills mid-queue
+  const dropPanel = h('div', { class: 'panel' });
+  dropPanel.appendChild(h('div', { class: 'panel-h' }, ['Drop bills']));
+  const dropBody = h('div', { class: 'panel-b' });
+  const dropZone = h('div', {
+    style: 'border:2px dashed var(--rule);border-radius:6px;padding:30px 20px;text-align:center;background:var(--ash);cursor:pointer;transition:border-color .15s,background .15s',
+  });
+  dropZone.innerHTML = `
+    <div style="font-size:13px;color:var(--ink);margin-bottom:6px"><b>Drop bills here</b> or click to choose files</div>
+    <div style="font-size:11px;color:var(--ink-2)">PDF, JPG, PNG · up to ${CAPTURE_QUEUE_LIMIT} files in the queue · up to ${Math.round(CAPTURE_FILE_LIMIT_BYTES / 1024 / 1024)} MB each</div>
+  `;
+  const fileInput = h('input', {
+    type: 'file',
+    multiple: true,
+    accept: 'application/pdf,image/jpeg,image/png',
+    style: 'display:none',
+  });
+  const handleFiles = (files) => {
+    if (!files || !files.length) return;
+    const added = captureQueueAdd(Array.from(files));
+    if (added.length) {
+      toast(`Added ${added.length} file${added.length > 1 ? 's' : ''} to the queue.`, 'ok');
+      render();
+      processCaptureQueue();
+    }
+  };
+  dropZone.onclick = () => fileInput.click();
+  fileInput.onchange = () => { handleFiles(fileInput.files); fileInput.value = ''; };
+  dropZone.ondragover = (e) => {
+    e.preventDefault();
+    dropZone.style.borderColor = 'var(--saffron)';
+    dropZone.style.background  = 'var(--saffron-soft)';
+  };
+  dropZone.ondragleave = () => {
+    dropZone.style.borderColor = 'var(--rule)';
+    dropZone.style.background  = 'var(--ash)';
+  };
+  dropZone.ondrop = (e) => {
+    e.preventDefault();
+    dropZone.style.borderColor = 'var(--rule)';
+    dropZone.style.background  = 'var(--ash)';
+    handleFiles(e.dataTransfer && e.dataTransfer.files);
+  };
+  dropBody.appendChild(dropZone);
+  dropBody.appendChild(fileInput);
+  dropPanel.appendChild(dropBody);
+  main.appendChild(dropPanel);
+
+  if (!CAPTURE_QUEUE.length) {
+    main.appendChild(h('p', { class: 'help', style: 'margin-top:12px;font-size:11px;line-height:1.6' }, [
+      'Stage 2A (this build): drag-drop multi-file queue + state model. Drop one or many vendor bills (PDF / JPG / PNG); they queue up here. Stage 2B: PaddleOCR-WASM lazy-loads on first drop and reads each bill in the background. Stage 2C: the active LLM (LocalMind on-device by default, BYOK if configured) extracts vendor / bill / lines / totals to a strict JSON schema, then snap-to-master replaces extracted fields with master values when matches exist (GSTIN → vendor, HSN → canonical). Stage 2D: side-by-side review — pre-filled +New purchase form on the left, original bill on the right; you Post one bill at a time; the queue advances to the next ready draft. AI never auto-posts.',
+    ]));
+    return;
+  }
+
+  // Queue summary table
+  const summaryPanel = h('div', { class: 'panel' });
+  summaryPanel.appendChild(h('div', { class: 'panel-h' }, [`Queue (${CAPTURE_QUEUE.length})`]));
+  const summaryBody = h('div', { class: 'panel-b' });
+  const tbl = h('table', { class: 'dense' });
+  tbl.innerHTML = '<thead><tr><th>#</th><th>File</th><th class="num">Size</th><th>Type</th><th>Status</th><th>Preview</th><th></th></tr></thead>';
+  const tbody = h('tbody');
+  CAPTURE_QUEUE.forEach((it, i) => {
+    const tr = h('tr');
+    const badgeClass = it.status === 'ready' ? 'badge green'
+                     : it.status === 'done'  ? 'badge'
+                     : it.status === 'error' ? 'badge'
+                     : 'badge';
+    const badgeStyle = it.status === 'error' ? 'background:var(--alert-soft);color:var(--alert)'
+                     : it.status === 'done'  ? 'background:var(--green-soft);color:var(--green)'
+                     : '';
+    const ext = (it.file.type.split('/').pop() || '').toUpperCase();
+
+    // Draft preview cell — vendor + total when extraction is done
+    let previewHtml = '';
+    if (it.status === 'ready' && it.draft) {
+      const vendor = (it.draft.vendor && it.draft.vendor.name) || '?';
+      const totalP = it.draft.totals && it.draft.totals.total_paise;
+      const totalRup = (typeof totalP === 'number') ? `Rs ${(totalP / 100).toFixed(2)}` : '';
+      const flagCount = (it.draftFlags && it.draftFlags.length) || 0;
+      previewHtml = `<span style="font-size:11px"><b>${escapeHtml(vendor)}</b>${totalRup ? ' &middot; ' + totalRup : ''}${flagCount ? ` <span class="badge" style="background:var(--saffron-soft);color:var(--saffron-deep);font-size:9px">${flagCount} FLAG${flagCount > 1 ? 'S' : ''}</span>` : ''}</span>`;
+    } else if (it.status === 'extracting') {
+      previewHtml = '<span style="font-size:11px;color:var(--ink-2)">extracting&hellip;</span>';
+    } else if (it.status === 'ocr') {
+      previewHtml = '<span style="font-size:11px;color:var(--ink-2)">reading&hellip;</span>';
+    }
+
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td><code>${escapeHtml(it.file.name)}</code></td>
+      <td class="num">${(it.file.size / 1024).toFixed(0)} KB</td>
+      <td>${escapeHtml(ext)}</td>
+      <td><span class="${badgeClass}" style="${badgeStyle}">${escapeHtml(CAPTURE_STATUS_LABELS[it.status] || it.status)}</span>${it.error ? ` <span style="font-size:10px;color:var(--alert);margin-left:6px">${escapeHtml(String(it.error).slice(0, 80))}</span>` : ''}</td>
+      <td>${previewHtml}</td>
+    `;
+    const actionTd = h('td');
+    if (it.status === 'error') {
+      const retryBtn = h('button', { class: 'small' }, ['Retry']);
+      retryBtn.onclick = () => {
+        it.status = 'queued';
+        it.error = null;
+        render();
+        processCaptureQueue();
+      };
+      actionTd.appendChild(retryBtn);
+    }
+    if (it.status !== 'done') {
+      const removeBtn = h('button', { class: 'small danger' }, ['Remove']);
+      removeBtn.onclick = () => { captureQueueRemove(it.id); render(); };
+      actionTd.appendChild(removeBtn);
+    }
+    tr.appendChild(actionTd);
+    tbody.appendChild(tr);
+  });
+  tbl.appendChild(tbody);
+  summaryBody.appendChild(tbl);
+
+  // Queue-level actions
+  const actions = h('div', { style: 'display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap' });
+  const reviewBtn = h('button', { class: 'primary' }, ['Start review']);
+  const nextReady = captureQueueNextReady();
+  reviewBtn.disabled = !nextReady;
+  if (reviewBtn.disabled) reviewBtn.title = 'Wait for at least one bill to finish extracting';
+  reviewBtn.onclick = () => nav('#/purchase/capture/review');
+  actions.appendChild(reviewBtn);
+  const clearBtn = h('button', { class: 'danger' }, ['Clear queue']);
+  clearBtn.onclick = () => {
+    if (!confirm('Clear all queued bills? Posted bills stay in the books.')) return;
+    captureQueueClear();
+    toast('Queue cleared.', '');
+    render();
+  };
+  actions.appendChild(clearBtn);
+  const pendingCount = captureQueuePending().length;
+  if (pendingCount > 0) {
+    actions.appendChild(h('span', { style: 'font-size:11px;color:var(--ink-2);margin-left:6px' }, [
+      `${pendingCount} extracting in the background…`,
+    ]));
+  }
+  summaryBody.appendChild(actions);
+  summaryPanel.appendChild(summaryBody);
+  main.appendChild(summaryPanel);
+
+  // Stage breadcrumb
+  main.appendChild(h('p', { class: 'help', style: 'margin-top:12px;font-size:11px' }, [
+    'Stage 2A (this build): drop zone + queue model. Items sit in queued / ocr / extracting / ready / error / done / skipped. Stage 2B: PaddleOCR-WASM kicks off OCR on queued items in the background. Stage 2C: LLM extraction + snap-to-master. Stage 2D: two-column review with the bill on the right.',
+  ]));
+}
+
+// === Stage 2D — side-by-side review view ===
+// Walks the user through ready bill drafts one at a time. Left column: pre-filled
+// +New purchase form. Right column: original bill (image inline; PDF.js-rendered
+// pages for PDF). Top bar: position + Skip + Back-to-queue. Posting auto-advances
+// to the next ready draft via the form's onPosted callback.
+function renderPurchaseCaptureReview(main) {
+  if (!requireFileOrPrompt(main, 'Review captured bills')) return;
+  if (!getAiEnabled()) { nav('#/purchase/capture'); return; }
+
+  const ready   = CAPTURE_QUEUE.filter(i => i.status === 'ready');
+  const done    = CAPTURE_QUEUE.filter(i => i.status === 'done');
+  const skipped = CAPTURE_QUEUE.filter(i => i.status === 'skipped');
+  if (!ready.length) {
+    main.appendChild(h('h1', {}, ['Review captured bills']));
+    const empty = h('div', { class: 'empty' });
+    empty.innerHTML = `No bills ready to review yet. <a href="#/purchase/capture">Back to capture queue</a>`;
+    main.appendChild(empty);
+    return;
+  }
+
+  const item = ready[0];
+  const idx = CAPTURE_QUEUE.indexOf(item);
+
+  // Top bar
+  const topBar = h('div', { style: 'display:flex;align-items:center;gap:14px;margin-bottom:14px;padding:10px 14px;background:var(--ash);border:1px solid var(--rule);border-radius:4px;flex-wrap:wrap' });
+  topBar.appendChild(h('div', { style: 'font-size:13px;font-weight:600' }, [`Bill ${idx + 1} of ${CAPTURE_QUEUE.length}`]));
+  topBar.appendChild(h('span', { style: 'font-size:11px;color:var(--ink-2);font-family:monospace' }, [item.file.name]));
+  if (done.length)    topBar.appendChild(h('span', { class: 'badge', style: 'background:var(--green-soft);color:var(--green)' }, [`${done.length} POSTED`]));
+  if (skipped.length) topBar.appendChild(h('span', { class: 'badge' }, [`${skipped.length} SKIPPED`]));
+  topBar.appendChild(h('span', { style: 'flex:1' }));
+  const skipBtn = h('button', {}, ['Skip this bill']);
+  skipBtn.onclick = () => { item.status = 'skipped'; render(); };
+  topBar.appendChild(skipBtn);
+  const backBtn = h('button', {}, ['Back to queue']);
+  backBtn.onclick = () => nav('#/purchase/capture');
+  topBar.appendChild(backBtn);
+  main.appendChild(topBar);
+
+  // Two-column layout
+  const layout = h('div', { style: 'display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:16px;align-items:start' });
+  const formCol = h('div', { style: 'min-width:0' });
+  const billCol = h('div', { style: 'min-width:0;position:sticky;top:14px;max-height:calc(100vh - 80px);overflow:auto' });
+  layout.appendChild(formCol);
+  layout.appendChild(billCol);
+  main.appendChild(layout);
+
+  // Stage 2E — surface extraction flags above the form. GST tie-out gets its own
+  // prominent banner per spec §5.6; other flags collapse into a smaller note.
+  if (item.draftFlags && item.draftFlags.length) {
+    const tieOuts = item.draftFlags.filter(f => f.kind === 'tie-out-mismatch');
+    const others  = item.draftFlags.filter(f => f.kind !== 'tie-out-mismatch');
+    if (tieOuts.length) {
+      const tieBanner = h('div', {
+        style: 'margin-bottom:10px;padding:10px 12px;border-left:3px solid var(--alert);background:var(--alert-soft);font-size:12px;line-height:1.55;color:var(--ink);border-radius:0 3px 3px 0',
+      });
+      tieBanner.innerHTML = `<b>Tax totals don't add up.</b> The sum of line tax components doesn't match the totals block (${tieOuts.map(f => escapeHtml(f.field)).join(', ')}). Review before posting.`;
+      formCol.appendChild(tieBanner);
+    }
+    if (others.length) {
+      const flagsBox = h('div', {
+        style: 'margin-bottom:10px;padding:8px 10px;border-left:3px solid var(--saffron-deep);background:var(--saffron-soft);font-size:11px;line-height:1.55;color:var(--ink);border-radius:0 3px 3px 0',
+      });
+      flagsBox.innerHTML = `<b>Extraction flags (${others.length}):</b> ` +
+        others.map(f => `<code>${escapeHtml(f.field)}</code> &mdash; ${escapeHtml(f.kind)}`).join('; ');
+      formCol.appendChild(flagsBox);
+    }
+  }
+
+  // Render the form into the left column with pre-fill + AI-assist tag + post-success callback
+  renderPurchaseForm(main, {
+    target: formCol,
+    hideHeading: true,
+    draftPrefill: item.draft,
+    aiAssisted: true,
+    onPosted: () => {
+      item.status = 'done';
+      const next = CAPTURE_QUEUE.find(i => i.status === 'ready');
+      if (next) {
+        nav('#/purchase/capture/review');
+        render();
+      } else {
+        nav('#/purchase/capture');
+      }
+    },
+  });
+
+  // Render the bill preview into the right column
+  renderBillPreview(billCol, item);
+}
+
+async function renderBillPreview(target, item) {
+  target.innerHTML = '';
+  const headerRow = h('div', { style: 'padding:6px 0;display:flex;align-items:center;gap:8px' });
+  headerRow.appendChild(h('b', { style: 'font-size:12px' }, ['Original bill']));
+  headerRow.appendChild(h('span', { style: 'font-size:11px;color:var(--ink-2);font-family:monospace' }, [item.file.name]));
+  target.appendChild(headerRow);
+
+  if (item.billPreviewKind === 'image') {
+    const img = h('img', {
+      src: item.billUrl,
+      style: 'width:100%;border:1px solid var(--rule);border-radius:3px;background:#fff',
+    });
+    target.appendChild(img);
+    return;
+  }
+
+  // PDF: render up to 5 pages via PDF.js (already loaded for OCR)
+  const placeholder = h('div', { style: 'padding:20px;text-align:center;font-size:11px;color:var(--ink-2);border:1px dashed var(--rule);border-radius:3px' }, ['Loading PDF…']);
+  target.appendChild(placeholder);
+  try {
+    const pdfjs = await loadPdfJs();
+    const buf = await item.file.arrayBuffer();
+    const doc = await pdfjs.getDocument({ data: buf }).promise;
+    placeholder.innerHTML = '';
+    placeholder.style.cssText = '';
+    for (let pageNum = 1; pageNum <= Math.min(doc.numPages, 5); pageNum++) {
+      const page = await doc.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.cssText = 'width:100%;border:1px solid var(--rule);border-radius:3px;margin-bottom:8px;background:#fff';
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      placeholder.appendChild(canvas);
+    }
+    if (doc.numPages > 5) {
+      placeholder.appendChild(h('div', { style: 'font-size:11px;color:var(--ink-2);text-align:center;padding:6px' }, [`+${doc.numPages - 5} more pages…`]));
+    }
+    try { doc.destroy(); } catch (_) {}
+  } catch (e) {
+    placeholder.innerHTML = '';
+    placeholder.style.color = 'var(--alert)';
+    placeholder.textContent = 'Failed to render PDF: ' + (e.message || e);
+  }
+}
+
+function renderPurchaseForm(main, opts = {}) {
   if (!requireFileOrPrompt(main, 'New purchase')) return;
-  main.appendChild(h('h1', {}, ['New purchase']));
+  // Stage 2D: opts allows the form to render into a sub-div (target) and supports
+  // pre-fill from a Smart Capture draft + onPosted callback for queue auto-advance.
+  // When called with no opts, behaves identically to the original standalone form.
+  const target = opts.target || main;
+  if (!opts.hideHeading) target.appendChild(h('h1', {}, ['New purchase']));
+
+  // Stage 2E — entry point to Smart Capture from the +New purchase form. Visible only
+  // when (a) we're not already inside the capture review (hideHeading flags that),
+  // (b) AI is enabled, and (c) no draft is being pre-filled (we just came from capture).
+  if (!opts.hideHeading && !opts.draftPrefill && getAiEnabled()) {
+    const captureRow = h('div', { style: 'margin:-8px 0 14px 0;display:flex;justify-content:flex-end' });
+    const captureBtn = h('button', { style: 'font-size:12px' }, ['📎 Capture from bill']);
+    captureBtn.title = 'Drop one or more vendor bills (PDF/JPG/PNG); Smart Capture extracts and pre-fills this form';
+    captureBtn.onclick = () => nav('#/purchase/capture');
+    captureRow.appendChild(captureBtn);
+    target.appendChild(captureRow);
+  }
   const vR = STATE.db.exec('SELECT id, name, gstin, state, rcm_applicable FROM vendors WHERE archived=0 ORDER BY name');
   const vendors = vR.length ? vR[0].values.map(v => ({ id: v[0], name: v[1], gstin: v[2], state: v[3], rcm: v[4] })) : [];
   const iR = STATE.db.exec('SELECT id, name, hsn_sac, unit, default_rate, default_tax_rate, enable_inventory FROM items WHERE archived=0 ORDER BY name');
   const items = iR.length ? iR[0].values.map(v => ({ id: v[0], name: v[1], hsn_sac: v[2], unit: v[3], default_rate: v[4], default_tax_rate: v[5], enable_inventory: v[6] })) : [];
   if (!vendors.length) {
-    main.appendChild(h('div', { class: 'error-screen' }, [
+    target.appendChild(h('div', { class: 'error-screen' }, [
       h('h3', {}, ['No vendors yet']),
       h('p', {}, ['Add at least one vendor before posting a purchase.']),
     ]));
@@ -12405,6 +13965,48 @@ function renderPurchaseForm(main) {
     notes: '',
     lines: [{ itemId: '', description: '', hsnSac: '', quantity: '1', rate: '', tax_rate: 0.18 }],
   };
+
+  // Stage 2D — apply Smart Capture draft pre-fill into form state BEFORE the HTML
+  // template runs (template reads from form.* for default values).
+  if (opts.draftPrefill) {
+    const d = opts.draftPrefill;
+    if (d.vendor && d.vendor.matched_master_id) {
+      const v = vendors.find(x => x.id === d.vendor.matched_master_id);
+      if (v) {
+        form.vendorId      = v.id;
+        form.placeOfSupply = v.state || form.placeOfSupply;
+        form.reverseCharge = !!v.rcm;
+      }
+    }
+    if (d.bill && d.bill.number) form.billNumber = d.bill.number;
+    if (d.bill && d.bill.date)   form.billDate   = d.bill.date;
+    if (d.bill && d.bill.place_of_supply_iso) form.placeOfSupply = d.bill.place_of_supply_iso;
+    if (typeof d.rcm_applicable === 'boolean') form.reverseCharge = d.rcm_applicable;
+    if (Array.isArray(d.lines) && d.lines.length) {
+      form.lines = d.lines.map(line => {
+        // Try to match an existing item by case-insensitive description equality
+        let itemId = '';
+        if (line.description) {
+          const norm = line.description.toLowerCase().trim();
+          const match = items.find(it => it.name.toLowerCase().trim() === norm);
+          if (match) itemId = String(match.id);
+        }
+        const qty = (line.qty != null && line.qty > 0) ? line.qty : 1;
+        let rate = (line.rate != null && line.rate > 0) ? line.rate : 0;
+        if (!rate && line.taxable_value_paise && qty > 0) {
+          rate = line.taxable_value_paise / 100 / qty;
+        }
+        return {
+          itemId,
+          description: line.description || '',
+          hsnSac:      line.hsn_or_sac || '',
+          quantity:    String(qty),
+          rate:        rate ? rate.toFixed(2) : '',
+          tax_rate:    line.gst_rate_pct ? line.gst_rate_pct / 100 : 0.18,
+        };
+      });
+    }
+  }
 
   const panel = h('div', { class: 'panel' });
   panel.appendChild(h('div', { class: 'panel-h' }, ['Purchase details']));
@@ -12461,7 +14063,22 @@ function renderPurchaseForm(main) {
   body.appendChild(ctrls);
 
   panel.appendChild(body);
-  main.appendChild(panel);
+  target.appendChild(panel);
+
+  // Stage 2D — sync DOM with prefilled form state after the wiring setTimeout
+  if (opts.draftPrefill) {
+    setTimeout(() => {
+      const $set = (id, val) => { const el = document.getElementById(id); if (el != null && val != null) el.value = val; };
+      $set('pu-vendor', String(form.vendorId));
+      $set('pu-bill',   form.billNumber);
+      $set('pu-date',   form.billDate);
+      if (form.placeOfSupply && STATE_BY_ISO.has(form.placeOfSupply)) {
+        $set('pu-pos', stateLabel(STATE_BY_ISO.get(form.placeOfSupply)));
+      }
+      $set('pu-rcm', form.reverseCharge ? '1' : '0');
+      // Pre-filled lines were applied above; rerenderLines runs in the existing setTimeout.
+    }, 10);
+  }
 
   setTimeout(() => {
     $('pu-vendor').addEventListener('change', () => {
@@ -12677,7 +14294,7 @@ function renderPurchaseForm(main) {
           cgst: totals.cgst, sgst: totals.sgst, igst: totals.igst,
           total: totals.total,
           reverse_charge: rcm,
-        }, vendor, computedLines);
+        }, vendor, computedLines, { aiAssisted: !!opts.aiAssisted });
         STATE.db.run('UPDATE purchases SET ledger_entry_id = ? WHERE id = ?', [entryId, purchaseId]);
 
         // === Phase 4: stock effects (skipped for service-only items) ===
@@ -12694,7 +14311,13 @@ function renderPurchaseForm(main) {
         const ok = await persistKhata();
         if (!ok) { render(); return; }
         toast(`Purchase ${internalRefVal} posted (${fmtINR(totals.total)}) and saved`, 'ok');
-        nav('#/purchases');
+        // Stage 2D — let the caller decide where to go next (queue auto-advance)
+        if (typeof opts.onPosted === 'function') {
+          try { opts.onPosted({ internalRef: internalRefVal, total: totals.total, purchaseId }); }
+          catch (cbErr) { console.error('onPosted callback failed:', cbErr); nav('#/purchases'); }
+        } else {
+          nav('#/purchases');
+        }
       } catch (e) {
         try { STATE.db.run('ROLLBACK'); } catch (_) {}
         throw e;
@@ -13111,6 +14734,7 @@ function renderGSTR3B(main) {
       if (layer4Err) { toast(`GSTR-3B export blocked: ${layer4Err}`, 'err'); return; }
       try {
         const blob = new Blob([JSON.stringify(sum, null, 2)], { type: 'application/json' });
+        if (!(await scrubExportBlob(blob, 'GSTR-3B JSON'))) return;
         const handle = await window.showSaveFilePicker({
           suggestedName: `gstr3b-${slugify(STATE.manifest.company?.name || 'co')}-${m}.json`,
           types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
@@ -13135,6 +14759,7 @@ function renderGSTR3B(main) {
           `Net liability,,${paiseToRs(Math.max(0,liab.cgst))},${paiseToRs(Math.max(0,liab.sgst))},${paiseToRs(Math.max(0,liab.igst))}`,
         ].join('\n');
         const blob = new Blob([csv], { type: 'text/csv' });
+        if (!(await scrubExportBlob(blob, 'GSTR-3B CSV'))) return;
         const handle = await window.showSaveFilePicker({
           suggestedName: `gstr3b-summary-${slugify(STATE.manifest.company?.name || 'co')}-${m}.csv`,
           types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
@@ -14694,6 +16319,7 @@ function openEwayBillDetail(ewbId) {
     try {
       const json = buildEwayBillJson(STATE.db, ewbId);
       const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+      if (!(await scrubExportBlob(blob, 'E-way bill JSON'))) return;
       const handle = await window.showSaveFilePicker({
         suggestedName: `ewb-${slugify(STATE.manifest.company?.name || 'co')}-${ewb.source_ref.replace(/[^a-z0-9]/gi, '-')}.json`,
         types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
@@ -17042,6 +18668,7 @@ function renderForm26Q(main) {
         try {
           const csv = exportForm26QCsv(data);
           const blob = new Blob([csv], { type: 'text/csv' });
+          if (!(await scrubExportBlob(blob, 'Form 26Q'))) return false;
           const handle = await window.showSaveFilePicker({
             suggestedName: `26Q-${slugify(STATE.manifest.company?.name || 'co')}-Q${q}-FY${y}-${(y + 1).toString().slice(2, 4)}.csv`,
             types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
@@ -17273,6 +18900,7 @@ function renderForm27EQ(main) {
         try {
           const csv = exportForm27EQCsv(data);
           const blob = new Blob([csv], { type: 'text/csv' });
+          if (!(await scrubExportBlob(blob, 'Form 27EQ'))) return false;
           const handle = await window.showSaveFilePicker({
             suggestedName: `27EQ-${slugify(STATE.manifest.company?.name || 'co')}-Q${q}-FY${y}-${(y + 1).toString().slice(2, 4)}.csv`,
             types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
@@ -18361,6 +19989,381 @@ function renderSettings(main) {
   refPanel.appendChild(refBody);
   main.appendChild(refPanel);
 
+  // === v1.1 Smart Capture — AI master toggle ===
+  // Off by default. When off, no AI runtime code loads anywhere — Bahi v1 byte-for-byte.
+  // When on, expanded provider configuration (LocalMind / BYOK Anthropic / OpenAI /
+  // Mistral / OpenRouter / Custom) lands in v1.1.0 plumbing — this panel is the
+  // master gate.
+  const aiPanel = h('div', { class: 'panel' });
+  aiPanel.appendChild(h('div', { class: 'panel-h' }, ['Smart Capture (AI)']));
+  const aiBody = h('div', { class: 'panel-b' });
+  const aiOn = getAiEnabled();
+
+  const aiToggleRow = h('div', { style: 'display:flex;align-items:center;gap:14px;padding:6px 0 4px' });
+  const aiToggleLabel = h('label', { style: 'display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600' });
+  const aiToggleInput = h('input', { type: 'checkbox', style: 'transform:scale(1.2);cursor:pointer' });
+  aiToggleInput.checked = aiOn;
+  aiToggleLabel.appendChild(aiToggleInput);
+  aiToggleLabel.appendChild(document.createTextNode(aiOn ? 'Smart Capture is on' : 'Smart Capture is off'));
+  aiToggleRow.appendChild(aiToggleLabel);
+  const aiBadge = h('span', {
+    class: 'badge',
+    style: aiOn ? 'background:var(--green-soft);color:var(--green)' : 'background:var(--ash-2);color:var(--ink-2)'
+  }, [aiOn ? 'ACTIVE' : 'OFF']);
+  aiToggleRow.appendChild(aiBadge);
+  aiBody.appendChild(aiToggleRow);
+
+  if (aiOn) {
+    // Provider picker + per-provider configuration. Reads from IDB asynchronously,
+    // populates inline. Skeleton appears immediately; real fields arrive on next tick.
+    const providerSection = h('div', { id: 'ai-provider-section', style: 'margin-top:12px' });
+    providerSection.innerHTML = `<p class="help" style="margin:0">Loading provider configuration…</p>`;
+    aiBody.appendChild(providerSection);
+
+    (async () => {
+      try {
+        const activeProviderId = await getAiProvider();
+        providerSection.innerHTML = '';
+
+        // OCR engine picker — applies to bill capture regardless of provider
+        const ocrEngineId = await getAiOcrEngine();
+        const ocrRow = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap' });
+        ocrRow.appendChild(h('label', { for: 'ai-ocr-engine-select', style: 'font-size:12px;font-weight:600;min-width:80px' }, ['OCR engine']));
+        const ocrSelect = h('select', { id: 'ai-ocr-engine-select', style: 'padding:6px 8px;font-size:12px;min-width:240px;font-family:inherit' });
+        for (const [id, eng] of Object.entries(AI_OCR_ENGINES)) {
+          const opt = h('option', { value: id }, [`${eng.name} (~${eng.sizeMB} MB${eng.isDefault ? ', default' : ''})`]);
+          if (id === ocrEngineId) opt.selected = true;
+          ocrSelect.appendChild(opt);
+        }
+        ocrSelect.onchange = async () => {
+          await setAiOcrEngine(ocrSelect.value);
+          toast('OCR engine: ' + AI_OCR_ENGINES[ocrSelect.value].name, '');
+        };
+        ocrRow.appendChild(ocrSelect);
+        providerSection.appendChild(ocrRow);
+
+        // Provider dropdown
+        const pickerRow = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap' });
+        pickerRow.appendChild(h('label', { for: 'ai-provider-select', style: 'font-size:12px;font-weight:600;min-width:80px' }, ['Provider']));
+        const select = h('select', { id: 'ai-provider-select', style: 'padding:6px 8px;font-size:12px;min-width:240px;font-family:inherit' });
+        for (const [id, p] of Object.entries(AI_PROVIDERS)) {
+          const opt = h('option', { value: id }, [p.name]);
+          if (id === activeProviderId) opt.selected = true;
+          select.appendChild(opt);
+        }
+        pickerRow.appendChild(select);
+        providerSection.appendChild(pickerRow);
+
+        // Per-provider config block (rebuilt on selection change)
+        const configBlock = h('div', { id: 'ai-provider-config' });
+        providerSection.appendChild(configBlock);
+
+        const renderConfig = async () => {
+          const id = select.value;
+          const provider = AI_PROVIDERS[id];
+          configBlock.innerHTML = '';
+
+          if (provider.kind === 'local') {
+            // === Stage 1D LocalMind config block ===
+            // Model picker
+            const modelRow = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap' });
+            modelRow.appendChild(h('label', { style: 'font-size:12px;font-weight:600;min-width:80px' }, ['Model']));
+            const modelSelect = h('select', { style: 'padding:6px 8px;font-size:12px;min-width:240px;font-family:inherit' });
+            const activeLocalModelId = await getLocalModelId();
+            for (const [mid, mentry] of Object.entries(LOCAL_MODEL_REGISTRY)) {
+              if (mentry.role !== 'text') continue;
+              const sizeMB = Math.round(mentry.sizeBytes / 1024 / 1024);
+              const opt = h('option', { value: mid }, [`${mentry.displayName} (~${sizeMB} MB)${mentry.isDefault ? ' — default' : ''}`]);
+              if (mid === activeLocalModelId) opt.selected = true;
+              modelSelect.appendChild(opt);
+            }
+            modelRow.appendChild(modelSelect);
+            configBlock.appendChild(modelRow);
+
+            // Backend readout (async — feature-tests WebGPU)
+            const backendRow = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;flex-wrap:wrap' });
+            backendRow.appendChild(h('span', { style: 'font-weight:600;min-width:80px' }, ['Backend']));
+            const backendValue = h('span', { id: 'ai-backend-readout' }, ['Detecting…']);
+            backendRow.appendChild(backendValue);
+            configBlock.appendChild(backendRow);
+            const wasmBanner = h('div', {
+              id: 'ai-wasm-banner',
+              style: 'margin-top:8px;padding:8px 10px;border-left:3px solid var(--saffron-deep);background:var(--saffron-soft);font-size:11px;line-height:1.5;color:var(--ink);border-radius:0 3px 3px 0;display:none',
+            }, ['WebGPU is unavailable in this browser. LocalMind will run on WASM (CPU) — inference will be noticeably slower. WebGPU requires a recent Chromium.']);
+            configBlock.appendChild(wasmBanner);
+            detectAiBackend().then(b => {
+              backendValue.textContent = b === 'webgpu' ? 'WebGPU (accelerated)' : 'WASM (CPU fallback — slower)';
+              if (b === 'wasm') wasmBanner.style.display = 'block';
+            });
+
+            // Progress display (used during model load)
+            const progressBox = h('div', {
+              style: 'margin-top:10px;padding:10px;border:1px solid var(--rule);background:var(--ash);border-radius:3px;display:none;font-size:11px',
+            });
+            const progressText = h('div', { style: 'color:var(--ink-2);margin-bottom:6px;font-family:monospace' }, ['Preparing…']);
+            const progressBar = h('div', { style: 'height:6px;background:var(--ash-2);border-radius:3px;overflow:hidden' });
+            const progressFill = h('div', { style: 'height:100%;background:var(--saffron);width:0%;transition:width .15s' });
+            progressBar.appendChild(progressFill);
+            progressBox.appendChild(progressText);
+            progressBox.appendChild(progressBar);
+
+            // Status row + Load/Unload buttons
+            const statusRow = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap' });
+            const isLocalLoaded = _activeLLM && _activeLLM instanceof LocalMindAdapter && _activeLLM._loaded;
+            if (isLocalLoaded) {
+              statusRow.appendChild(h('span', { class: 'badge', style: 'background:var(--green-soft);color:var(--green)' }, ['LOADED']));
+              const entry = LOCAL_MODEL_REGISTRY[_activeLLM._modelId];
+              statusRow.appendChild(h('span', { style: 'font-size:11px;color:var(--ink-2)' }, [
+                (entry && entry.displayName) || _activeLLM._modelId,
+              ]));
+              const unloadBtn = h('button', { class: 'danger small' }, ['Unload model']);
+              unloadBtn.onclick = async () => {
+                unloadBtn.disabled = true;
+                unloadBtn.textContent = 'Unloading…';
+                try {
+                  if (_activeLLM) await _activeLLM.unload();
+                  resetActiveLLM();
+                  toast('LocalMind model unloaded.', '');
+                  render();
+                } catch (e) {
+                  toast('Unload failed: ' + e.message, 'err');
+                  unloadBtn.disabled = false;
+                  unloadBtn.textContent = 'Unload model';
+                }
+              };
+              statusRow.appendChild(unloadBtn);
+            } else {
+              statusRow.appendChild(h('span', { class: 'badge', style: 'background:var(--ash-2);color:var(--ink-2)' }, ['NOT LOADED']));
+              const loadBtn = h('button', { class: 'primary' }, ['Load model']);
+              loadBtn.onclick = async () => {
+                await setLocalModelId(modelSelect.value);
+                resetActiveLLM();
+                loadBtn.disabled = true;
+                loadBtn.textContent = 'Loading…';
+                progressBox.style.display = 'block';
+                progressFill.style.background = 'var(--saffron)';
+                progressFill.style.width = '0%';
+                progressText.textContent = 'Initialising worker…';
+                try {
+                  const llm = await getActiveLLM();
+                  await llm.loadModel({
+                    modelId: modelSelect.value,
+                    onProgress: (stage, p) => {
+                      if (p && typeof p.progress === 'number' && typeof p.total === 'number' && p.total > 0) {
+                        const pct = Math.min(100, Math.round((p.progress / p.total) * 100));
+                        progressFill.style.width = pct + '%';
+                        const fileName = (p.file || '').split('/').pop();
+                        progressText.textContent = `${stage} — ${p.status || 'progress'}: ${fileName} ${pct}%`;
+                      } else if (p && p.status) {
+                        progressText.textContent = `${stage} — ${p.status}${p.file ? ' ' + p.file : ''}`;
+                      }
+                    },
+                  });
+                  toast('LocalMind model loaded.', 'ok');
+                  render();
+                } catch (e) {
+                  console.error('LocalMind load failed:', e);
+                  toast('Load failed: ' + e.message, 'err');
+                  progressText.textContent = 'Load failed: ' + e.message;
+                  progressFill.style.background = 'var(--alert)';
+                  loadBtn.disabled = false;
+                  loadBtn.textContent = 'Load model';
+                }
+              };
+              statusRow.appendChild(loadBtn);
+            }
+            configBlock.appendChild(statusRow);
+            configBlock.appendChild(progressBox);
+
+            // Capability badges (real values once loaded; placeholder otherwise)
+            const badgeRow = h('div', { style: 'display:flex;gap:6px;margin-top:12px;flex-wrap:wrap' });
+            const liveCaps = (_activeLLM && _activeLLM.capabilities && _activeLLM._loaded) ? _activeLLM.capabilities() : null;
+            for (const cap of ['text', 'vision', 'tools', 'embedding']) {
+              const has = liveCaps && liveCaps[cap];
+              badgeRow.appendChild(h('span', {
+                class: 'badge',
+                style: has
+                  ? 'background:var(--green-soft);color:var(--green);font-size:10px'
+                  : 'background:var(--ash-2);color:var(--ink-2);font-size:10px',
+              }, [cap + (has ? '' : (liveCaps ? ' (no)' : ' (pending)'))]));
+            }
+            configBlock.appendChild(badgeRow);
+
+            // Help text
+            configBlock.appendChild(h('p', { class: 'help', style: 'margin-top:12px;font-size:11px' }, [
+              'Default: Llama 3.2 1B Instruct (q4, ~700 MB). Alternate: Qwen 2.5 1.5B Instruct (q4, ~900 MB) — pick if Llama struggles with strict-JSON output on your bills. PaddleOCR (~50 MB) bundles with bill capture (Stage 2). Distil-Whisper Small (~150 MB) bundles with voice (Stage v1.1.2). all-MiniLM-L6-v2 (~22 MB) loads only for v1.2 reconciliation. Models lazy-fetch from huggingface.co on first load and cache in browser storage; subsequent loads are instant and offline.',
+            ]));
+          } else if (provider.kind === 'byok' || provider.kind === 'byok-custom') {
+            const cfg = await getAiProviderConfig(id);
+
+            // API key row
+            const keyRow = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap' });
+            keyRow.appendChild(h('label', { style: 'font-size:12px;font-weight:600;min-width:80px' }, ['API key']));
+            const keyInput = h('input', {
+              type: 'password',
+              placeholder: 'Paste key',
+              style: 'padding:6px 8px;font-size:12px;flex:1;min-width:200px;font-family:monospace;background:var(--white);color:var(--ink);border:1px solid var(--rule);border-radius:3px',
+            });
+            keyInput.value = cfg.apiKey || '';
+            keyRow.appendChild(keyInput);
+            const eyeBtn = h('button', { class: 'small' }, ['Show']);
+            eyeBtn.onclick = (e) => {
+              e.preventDefault();
+              const reveal = keyInput.type === 'password';
+              keyInput.type = reveal ? 'text' : 'password';
+              eyeBtn.textContent = reveal ? 'Hide' : 'Show';
+            };
+            keyRow.appendChild(eyeBtn);
+            configBlock.appendChild(keyRow);
+
+            // Model name row
+            const modelRow = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap' });
+            modelRow.appendChild(h('label', { style: 'font-size:12px;font-weight:600;min-width:80px' }, ['Model']));
+            const modelInput = h('input', {
+              type: 'text',
+              placeholder: provider.defaultModel || 'Model name',
+              style: 'padding:6px 8px;font-size:12px;flex:1;min-width:200px;font-family:monospace;background:var(--white);color:var(--ink);border:1px solid var(--rule);border-radius:3px',
+            });
+            modelInput.value = cfg.model || '';
+            modelRow.appendChild(modelInput);
+            configBlock.appendChild(modelRow);
+
+            // Base URL row — only for Custom
+            let baseUrlInput = null;
+            if (provider.kind === 'byok-custom') {
+              const urlRow = h('div', { style: 'display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap' });
+              urlRow.appendChild(h('label', { style: 'font-size:12px;font-weight:600;min-width:80px' }, ['Base URL']));
+              baseUrlInput = h('input', {
+                type: 'text',
+                placeholder: 'https://api.example.com/v1/',
+                style: 'padding:6px 8px;font-size:12px;flex:1;min-width:200px;font-family:monospace;background:var(--white);color:var(--ink);border:1px solid var(--rule);border-radius:3px',
+              });
+              baseUrlInput.value = cfg.baseUrl || '';
+              urlRow.appendChild(baseUrlInput);
+              configBlock.appendChild(urlRow);
+            }
+
+            // Save / Test / Clear actions
+            const actionRow = h('div', { style: 'display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap' });
+            const saveBtn = h('button', { class: 'primary' }, ['Save']);
+            saveBtn.onclick = async () => {
+              const newCfg = {
+                apiKey: keyInput.value || undefined,
+                model: modelInput.value || provider.defaultModel,
+              };
+              if (provider.kind === 'byok-custom') newCfg.baseUrl = baseUrlInput.value || undefined;
+              await setAiProviderConfig(id, newCfg);
+              resetActiveLLM();
+              toast(`${provider.name} configuration saved.`, 'ok');
+            };
+            actionRow.appendChild(saveBtn);
+            const testBtn = h('button', {}, ['Test connection']);
+            testBtn.onclick = async () => {
+              const original = testBtn.textContent;
+              testBtn.disabled = true;
+              testBtn.textContent = 'Testing…';
+              try {
+                // Save current form values first so the test exercises what's on screen,
+                // not stale IDB. This also seeds the IDB so Save+Test is a one-click flow.
+                const newCfg = {
+                  apiKey: keyInput.value || undefined,
+                  model:  modelInput.value || provider.defaultModel,
+                };
+                if (provider.kind === 'byok-custom') newCfg.baseUrl = baseUrlInput.value || undefined;
+                await setAiProviderConfig(id, newCfg);
+                resetActiveLLM();
+                const llm = await getActiveLLM();
+                const reply = await llm.chat(
+                  [{ role: 'user', content: 'ping' }],
+                  { maxTokens: 16 }
+                );
+                const preview = (typeof reply === 'string' ? reply : JSON.stringify(reply || '')).slice(0, 80);
+                toast(`${provider.name}: connected. Reply: ${preview || '(empty)'}`, 'ok');
+              } catch (e) {
+                const codeMap = {
+                  Unauthorized: `Key rejected by ${provider.name}. Check the key and try again.`,
+                  RateLimited:  `${provider.name} rate limit hit. Wait a minute or switch provider.`,
+                  Timeout:      `${provider.name} timed out. Check your network and try again.`,
+                  NoKey:        `No API key configured for ${provider.name}.`,
+                  NoModel:      `No model configured for ${provider.name}.`,
+                  NoBaseUrl:    `No base URL configured for ${provider.name}.`,
+                };
+                toast(codeMap[e.code] || `${provider.name} test failed: ${e.message}`, 'err');
+                console.error('BYOK test failed:', e);
+              } finally {
+                testBtn.disabled = false;
+                testBtn.textContent = original;
+              }
+            };
+            actionRow.appendChild(testBtn);
+            if (cfg.apiKey) {
+              const clearBtn = h('button', { class: 'danger' }, ['Clear key']);
+              clearBtn.onclick = async () => {
+                if (!confirm(`Remove the saved API key for ${provider.name}? The key will be erased from this device's IndexedDB. The model name and any other settings stay.`)) return;
+                await clearAiProviderKey(id);
+                resetActiveLLM();
+                toast(provider.name + ' key removed.', '');
+                render();
+              };
+              actionRow.appendChild(clearBtn);
+            }
+            configBlock.appendChild(actionRow);
+
+            // Persistent privacy banner — required for any remote provider
+            const banner = h('div', {
+              style: 'margin-top:12px;padding:8px 10px;border-left:3px solid var(--saffron);background:var(--saffron-soft);font-size:11px;line-height:1.55;color:var(--ink);border-radius:0 3px 3px 0',
+            });
+            banner.innerHTML = `<b>Privacy notice.</b> When ${provider.name} is the active provider, the bill content and entry text you submit to Smart Capture are sent to ${provider.name} for that request. Your full <code>.khata</code> file never leaves the browser. The API key is stored in IndexedDB on this device only — never in <code>.khata</code>, never in any export, never in the audit log.`;
+            configBlock.appendChild(banner);
+          }
+        };
+
+        select.onchange = async () => {
+          await setAiProvider(select.value);
+          resetActiveLLM();
+          toast('Active provider: ' + AI_PROVIDERS[select.value].name, '');
+          await renderConfig();
+        };
+
+        await renderConfig();
+
+        // Stage breadcrumb
+        providerSection.appendChild(h('p', { class: 'help', style: 'margin-top:14px;font-size:11px' }, [
+          'Stage 1B (this build): provider picker + per-provider config storage in IndexedDB. Stage 1C: BYOK adapter (working Test connection + chat). Stage 1D: LocalMind on-device adapter (Transformers.js + WebGPU/WASM + OPFS model cache + SHA-256 verify). Stage 2: "Capture from bill" button on the +New purchase form.',
+        ]));
+      } catch (e) {
+        console.error('AI panel render error:', e);
+        providerSection.innerHTML = `<p class="help" style="color:var(--alert)">Failed to load provider configuration: ${escapeHtml(e.message)}</p>`;
+      }
+    })();
+  } else {
+    const aiHelp = h('p', { class: 'help', style: 'margin-top:8px' });
+    aiHelp.innerHTML = `Optional. Enable to draft purchase entries from uploaded bills, compose vouchers from natural-language input, or transcribe spoken entries. Models run on this device by default (Llama 3.2 1B, ~700 MB, downloaded once and cached). Bring-your-own-key for Anthropic / OpenAI / Mistral / OpenRouter is optional. Off by default; AI never auto-posts; AI prompts are never logged; BYOK keys never enter the <code>.khata</code> file.`;
+    aiBody.appendChild(aiHelp);
+  }
+
+  aiToggleInput.onchange = async () => {
+    if (aiToggleInput.checked) {
+      let introSeen = false;
+      try { introSeen = localStorage.getItem(AI_INTRO_LS_KEY) === '1'; } catch (_) {}
+      if (!introSeen) {
+        aiToggleInput.checked = false;
+        const confirmed = await showAiEnableConfirmModal();
+        if (!confirmed) { render(); return; }
+        try { localStorage.setItem(AI_INTRO_LS_KEY, '1'); } catch (_) {}
+      }
+      setAiEnabled(true);
+      toast('Smart Capture enabled. Provider configuration arrives next in v1.1.0 plumbing.', 'ok');
+    } else {
+      setAiEnabled(false);
+      toast('Smart Capture disabled.', '');
+    }
+    render();
+  };
+
+  aiPanel.appendChild(aiBody);
+  main.appendChild(aiPanel);
+
   // OPFS crash-recovery panel — only shown when an orphan staging file was detected
   if (STATE.pendingStagingRecovery) {
     const recoveryPanel = h('div', { class: 'panel' });
@@ -18598,6 +20601,11 @@ async function backupNow() {
       'You can also extract the .khata file directly and open it normally.\n');
 
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    // Stage 3 — Layer 4 BYOK key scrub. Defense-in-depth: keys live in IndexedDB
+    // and should never reach the .khata or any export. Hard-block if a saved key
+    // appears anywhere in the backup blob.
+    const keyLeak = await scanExportForApiKeys(blob);
+    if (keyLeak) { toast(keyLeak, 'err'); return; }
     const slug = slugify(STATE.manifest.company?.name || 'bahi');
     const gstin = STATE.manifest.company?.gstin || '';
     const date = nowIso().slice(0, 10);

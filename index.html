@@ -1647,7 +1647,23 @@ function parseRupees(s) {
   return Math.round(n * 100);
 }
 
+// GST rate (stored as a decimal, e.g. 0.18) → percent string with trailing zeros
+// trimmed: 0.18 → "18", 0.025 → "2.5". Avoids toFixed(0) printing 2.5% as "3%".
+const fmtRatePct = (rate) => String(+(((rate || 0) * 100).toFixed(2)));
+
 const escapeHtml = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// CSV cell with spreadsheet formula-injection neutralization. A cell beginning with
+// = + - @ (or tab/CR) is executed as a formula by Excel/Sheets, so user text like a
+// vendor name "=HYPERLINK(...)" would run when a CA opens the export. Prefix such cells
+// with ' unless the value is a plain number (so negative amounts like -500.00 stay
+// numeric). Then quote per RFC 4180 when the value contains a comma/quote/newline/prefix.
+function csvCell(v) {
+  if (v == null) return '';
+  let s = String(v);
+  if (/^[=+\-@\t\r]/.test(s) && !/^[-+]?\d+(\.\d+)?$/.test(s)) s = "'" + s;
+  return (/[",\n\r]/.test(s) || s.charAt(0) === "'") ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
 
 // Stable JSON for hashing — keys sorted recursively.
 function canonicalJson(obj) {
@@ -3397,7 +3413,11 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
     }
   }
 
-  db.run('BEGIN');
+  // Savepoint (not BEGIN) so postEntry composes when a caller already holds a
+  // transaction — e.g. the Tally importer wraps the whole import in one BEGIN and
+  // calls postEntry per voucher. SAVEPOINT also opens an implicit transaction when
+  // there is no outer one, so standalone callers behave exactly as BEGIN/COMMIT did.
+  db.run('SAVEPOINT bahi_postentry');
   try {
     db.run(
       'INSERT INTO entries (posted_at, voucher_type, voucher_ref, narration, created_by, created_at) VALUES (?,?,?,?,?,?)',
@@ -3422,7 +3442,7 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
       payload: auditPayload,
     });
 
-    db.run('COMMIT');
+    db.run('RELEASE bahi_postentry');
 
     // Phase 7 — push onto the session-scoped undo stack. Only "user" actors get
     // pushed (system actions like FY closing entries shouldn't be undone via Ctrl+Z).
@@ -3434,7 +3454,7 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
 
     return { entryId };
   } catch (e) {
-    try { db.run('ROLLBACK'); } catch (_) {}
+    try { db.run('ROLLBACK TO bahi_postentry'); db.run('RELEASE bahi_postentry'); } catch (_) {}
     throw e;
   }
 }
@@ -4199,7 +4219,10 @@ function nextInvoiceNumber(db, seriesName) {
   const fy = String(y).slice(-2) + '-' + String(y + 1).slice(-2);
 
   // Find the highest existing counter in this series (and FY if reset_on_fy)
-  const r = db.exec('SELECT invoice_number FROM invoices WHERE series = ? ORDER BY id DESC LIMIT 50', [seriesName]);
+  // Scan ALL invoices in the series (no LIMIT): the FY filter is applied per-row below,
+  // so a window like LIMIT 50 could miss the current-FY max once a series grows and
+  // silently reset the counter, reissuing a duplicate tax-invoice number.
+  const r = db.exec('SELECT invoice_number FROM invoices WHERE series = ?', [seriesName]);
   let nextN = starting;
   if (r.length && r[0].values.length) {
     const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -4330,6 +4353,13 @@ async function postAdvanceToLedger(db, advance, customer, bankAcc, isInterState)
 // Updates advances.adjusted_amount + remaining_balance + status, plus inserts the
 // advance_adjustments row.
 async function postAdvanceAdjustment(db, advance, invoice, adjustGross, customer) {
+  // Never adjust more than the advance has left (guards a caller bug / double-apply).
+  const remainingBefore = (advance.remaining_balance != null)
+    ? advance.remaining_balance
+    : (advance.amount - (advance.adjusted_amount || 0));
+  if (adjustGross > remainingBefore) {
+    throw new Error(`Adjustment ₹${(adjustGross / 100).toFixed(2)} exceeds the advance's remaining ₹${(remainingBefore / 100).toFixed(2)}.`);
+  }
   // Compute the taxable + tax split of this adjustment, proportional to the advance's structure
   const ratio = adjustGross / advance.amount;
   const adjTaxable = Math.round(advance.taxable * ratio);
@@ -4362,9 +4392,18 @@ async function postAdvanceAdjustment(db, advance, invoice, adjustGross, customer
     'INSERT INTO advance_adjustments (advance_id, invoice_id, amount, ledger_entry_id, advance_number_snapshot, invoice_number_snapshot, adjusted_at) VALUES (?,?,?,?,?,?,?)',
     [advance.id, invoice.id, adjGross, result.entryId, advance.advance_number, invoice.invoice_number, nowIso()]
   );
-  const newAdjusted = (advance.adjusted_amount || 0) + adjGross;
-  const newRemaining = advance.amount - newAdjusted;
-  const newStatus = newRemaining <= 0 ? 'fully-adjusted' : 'open';
+  // If this adjustment consumes the remaining principal, snap to exactly zero so the
+  // paise-level drift from the proportional rounding above can't strand it at 'open'.
+  let newAdjusted, newRemaining, newStatus;
+  if (adjustGross >= remainingBefore) {
+    newAdjusted = advance.amount;
+    newRemaining = 0;
+    newStatus = 'fully-adjusted';
+  } else {
+    newAdjusted = (advance.adjusted_amount || 0) + adjGross;
+    newRemaining = advance.amount - newAdjusted;
+    newStatus = newRemaining <= 0 ? 'fully-adjusted' : 'open';
+  }
   db.run(
     'UPDATE advances SET adjusted_amount = ?, remaining_balance = ?, status = ? WHERE id = ?',
     [newAdjusted, newRemaining, newStatus, advance.id]
@@ -4485,16 +4524,17 @@ function getBankAccounts(db) {
 function getCustomerOutstanding(db, customerId) {
   const r = db.exec(`
     SELECT i.id, i.invoice_number, i.invoice_date, i.total,
-      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated
+      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated,
+      COALESCE((SELECT SUM(amount) FROM advance_adjustments WHERE invoice_id = i.id), 0) AS adjusted
     FROM invoices i
     WHERE i.customer_id = ? AND i.status = 'posted'
     ORDER BY i.invoice_date, i.id
   `, [customerId]);
   if (!r.length || !r[0].values.length) return [];
   return r[0].values
-    .map(([id, num, date, total, allocated]) => ({
-      id, invoice_number: num, invoice_date: date, total, allocated,
-      balance: total - allocated,
+    .map(([id, num, date, total, allocated, adjusted]) => ({
+      id, invoice_number: num, invoice_date: date, total, allocated, adjusted,
+      balance: total - allocated - adjusted,
     }))
     .filter(row => row.balance > 0);
 }
@@ -4504,7 +4544,9 @@ function getCustomerOutstanding(db, customerId) {
 function getOutstandingByCustomer(db) {
   const r = db.exec(`
     SELECT i.customer_id,
-      SUM(i.total - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0)) AS outstanding
+      SUM(i.total
+        - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0)
+        - COALESCE((SELECT SUM(amount) FROM advance_adjustments WHERE invoice_id = i.id), 0)) AS outstanding
     FROM invoices i
     WHERE i.status = 'posted'
     GROUP BY i.customer_id
@@ -4548,7 +4590,8 @@ function getReceivablesAging(db, asOfIso) {
   const asOf = (asOfIso || nowIso()).slice(0, 10);
   const r = db.exec(`
     SELECT i.id, i.invoice_date, i.total,
-      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated
+      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated,
+      COALESCE((SELECT SUM(amount) FROM advance_adjustments WHERE invoice_id = i.id), 0) AS adjusted
     FROM invoices i
     WHERE i.status = 'posted'
   `);
@@ -4561,8 +4604,8 @@ function getReceivablesAging(db, asOfIso) {
   let total = 0;
   if (r.length && r[0].values.length) {
     const asOfTs = new Date(asOf).getTime();
-    for (const [id, dateStr, totalAmt, allocated] of r[0].values) {
-      const balance = (totalAmt || 0) - (allocated || 0);
+    for (const [id, dateStr, totalAmt, allocated, adjusted] of r[0].values) {
+      const balance = (totalAmt || 0) - (allocated || 0) - (adjusted || 0);
       if (balance <= 0) continue;
       const invTs = new Date(dateStr).getTime();
       const days = Math.floor((asOfTs - invTs) / 86400000);
@@ -4675,7 +4718,9 @@ function getTopCustomersByOutstanding(db, n) {
   n = n || 5;
   const r = db.exec(`
     SELECT c.id, c.name,
-      SUM(i.total - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0)) AS outstanding,
+      SUM(i.total
+        - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0)
+        - COALESCE((SELECT SUM(amount) FROM advance_adjustments WHERE invoice_id = i.id), 0)) AS outstanding,
       COUNT(*) AS invoice_count
     FROM customers c
     JOIN invoices i ON i.customer_id = c.id
@@ -4735,18 +4780,26 @@ function nextDebitNoteNumber(db) {
 
 // Per-vendor outstanding payable balance (mirror of getOutstandingByCustomer).
 function getOutstandingByVendor(db) {
-  // For each vendor: SUM(purchase total) - SUM(payment_allocation amount where payment is to vendor)
-  // For Phase 3 simplification: payments is shared between customer + vendor flows; we
-  // distinguish via the customer_id vs vendor_id on the payment row (vendor payments use
-  // a separate flag — see postVendorPayment below). For now compute purchases.total -
-  // already-paid via a join on payments where customer_id IS NULL (vendor payments).
-  const r = db.exec(`
-    SELECT vendor_id, COALESCE(SUM(total), 0) AS total_billed
+  // Per-vendor payable = SUM(posted purchase totals) − SUM(posted vendor-payment amounts).
+  // Vendor payments are `payments` rows with payment_direction='out'; their `amount` is the
+  // gross that clears Sundry Creditors (any TDS withheld is already inside that gross, so
+  // it is not subtracted twice).
+  const billed = db.exec(`
+    SELECT vendor_id, COALESCE(SUM(total), 0)
     FROM purchases WHERE status = 'posted'
     GROUP BY vendor_id
   `);
+  const paid = db.exec(`
+    SELECT vendor_id, COALESCE(SUM(amount), 0)
+    FROM payments WHERE payment_direction = 'out' AND status = 'posted' AND vendor_id IS NOT NULL
+    GROUP BY vendor_id
+  `);
+  const paidByVendor = new Map();
+  if (paid.length) for (const [vid, amt] of paid[0].values) paidByVendor.set(vid, amt);
   const out = new Map();
-  if (r.length) for (const [vid, billed] of r[0].values) out.set(vid, billed);
+  if (billed.length) for (const [vid, total] of billed[0].values) {
+    out.set(vid, total - (paidByVendor.get(vid) || 0));
+  }
   return out;
 }
 
@@ -7328,7 +7381,7 @@ function exportForm26QCsv(data) {
     `# Generated: ${nowIso()}`,
     '',
   ].join('\n');
-  return meta + '\n' + headers.join(',') + '\n' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  return meta + '\n' + headers.join(',') + '\n' + rows.map(r => r.map(csvCell).join(',')).join('\n');
 }
 
 function exportForm27EQCsv(data) {
@@ -7347,7 +7400,7 @@ function exportForm27EQCsv(data) {
     `# Generated: ${nowIso()}`,
     '',
   ].join('\n');
-  return meta + '\n' + headers.join(',') + '\n' + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  return meta + '\n' + headers.join(',') + '\n' + rows.map(r => r.map(csvCell).join(',')).join('\n');
 }
 
 // Form 27D TDS certificate (PDF per vendor for one quarter).
@@ -7840,6 +7893,11 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
   for (const inv of invoices) {
     const lines = linesByInvoice.get(inv.id) || [];
     if (!inv.posIso) validation.warnings.push(`${inv.num}: missing place of supply`);
+    // Compensation cess is captured only at the invoice level (invoices.cess); invoice_lines
+    // has no per-line cess column, so GSTR-1's per-line/aggregate csamt cannot be populated
+    // correctly yet. Warn rather than silently dropping it. The full fix needs a per-line
+    // cess column (schema migration) — tracked as H8 in plan/workplan.md.
+    if (inv.cess > 0) validation.warnings.push(`${inv.num}: ₹${(inv.cess / 100).toFixed(2)} compensation cess is NOT included in this GSTR-1 export (per-line cess tracking is not yet implemented).`);
     const posGstin = isoToGstinCode(inv.posIso);
     const isInterState = inv.posIso !== supplierStateIso;
 
@@ -8107,11 +8165,7 @@ function stripGSTR1Internals(data) {
 function buildGSTR1CSV(data) {
   const lines = [];
   function row(...cells) {
-    lines.push(cells.map(c => {
-      if (c == null) return '';
-      const s = String(c);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    }).join(','));
+    lines.push(cells.map(csvCell).join(','));
   }
 
   row('Bahi GSTR-1 export');
@@ -8432,7 +8486,7 @@ async function generateInvoicePDF(invoiceId) {
       qty: String(qty),
       rate: fmtINRpdf(rate, useRupeeGlyph),
       taxable: fmtINRpdf(taxable, useRupeeGlyph),
-      taxpct: ((taxRate || 0) * 100).toFixed(0) + '%',
+      taxpct: fmtRatePct(taxRate) + '%',
       taxamt: fmtINRpdf(taxAmt, useRupeeGlyph),
     };
     for (const c of cols) {
@@ -10976,7 +11030,7 @@ function renderItems(main) {
       <td><code>${escapeHtml(hsnSac || '—')}</code></td>
       <td>${escapeHtml(unit || '—')}</td>
       <td class="num">${rate ? fmtINR(rate) : '—'}</td>
-      <td class="num">${(taxRate * 100).toFixed(0)}%</td>
+      <td class="num">${fmtRatePct(taxRate)}%</td>
     `;
     const td = h('td');
     const editBtn = h('button', { class: 'small' }, ['Edit']);
@@ -11682,7 +11736,8 @@ function renderInvoices(main) {
   const r = STATE.db.exec(`
     SELECT i.id, i.invoice_number, i.invoice_date, i.customer_snapshot, c.name, c.gstin,
       i.subtotal, i.cgst, i.sgst, i.igst, i.total, i.status,
-      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated
+      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated,
+      COALESCE((SELECT SUM(amount) FROM advance_adjustments WHERE invoice_id = i.id), 0) AS adjusted
     FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
     ORDER BY i.id DESC LIMIT 200
   `);
@@ -11696,14 +11751,14 @@ function renderInvoices(main) {
   for (const row of r[0].values) {
     totalCount++;
     totalAmt += row[10] || 0;
-    totalOutstanding += (row[10] || 0) - (row[12] || 0);
+    totalOutstanding += (row[10] || 0) - (row[12] || 0) - (row[13] || 0);
   }
   main.appendChild(h('p', { class: 'help' }, [`${totalCount} invoice(s) totalling ${fmtINR(totalAmt)} · outstanding ${fmtINR(totalOutstanding)}`]));
 
   const tbl = h('table', { class: 'dense' });
   tbl.innerHTML = '<thead><tr><th>#</th><th>Date</th><th>Customer</th><th>GSTIN</th><th class="num">Subtotal</th><th class="num">CGST</th><th class="num">SGST</th><th class="num">IGST</th><th class="num">Total</th><th>Paid</th><th></th></tr></thead>';
   const tbody = h('tbody');
-  for (const [id, num, date, custSnapJson, liveName, liveGstin, sub, cgst, sgst, igst, total, status, allocated] of r[0].values) {
+  for (const [id, num, date, custSnapJson, liveName, liveGstin, sub, cgst, sgst, igst, total, status, allocated, adjusted] of r[0].values) {
     let name = liveName, gstin = liveGstin, isLegacy = true;
     if (custSnapJson) {
       try {
@@ -11713,9 +11768,10 @@ function renderInvoices(main) {
         isLegacy = false;
       } catch (_) {}
     }
-    const paidBadge = allocated >= total
+    const settled = (allocated || 0) + (adjusted || 0);
+    const paidBadge = settled >= total
       ? '<span class="badge green">PAID</span>'
-      : allocated > 0
+      : settled > 0
       ? `<span class="badge saffron">PARTIAL</span>`
       : '<span class="badge alert">DUE</span>';
     const tr = h('tr');
@@ -11813,7 +11869,7 @@ function showInvoiceLinesModal(invoiceId, invoiceNumber) {
     for (const [lno, desc, hsn, hsnDesc, qty, rate, taxable, taxRate, lcgst, lsgst, ligst, ltotal] of r[0].values) {
       const tr = h('tr');
       const hsnCell = hsn ? `<code title="${escapeHtml(hsnDesc || '')}">${escapeHtml(hsn)}</code>${hsnDesc ? `<div style="font-size:10px;color:var(--ink-2)">${escapeHtml(hsnDesc)}</div>` : ''}` : '—';
-      tr.innerHTML = `<td>${lno}</td><td>${escapeHtml(desc)}</td><td>${hsnCell}</td><td class="num">${qty}</td><td class="num">${fmtINR(rate)}</td><td class="num">${(taxRate * 100).toFixed(0)}%</td><td class="num">${fmtINR(ltotal)}</td>`;
+      tr.innerHTML = `<td>${lno}</td><td>${escapeHtml(desc)}</td><td>${hsnCell}</td><td class="num">${qty}</td><td class="num">${fmtINR(rate)}</td><td class="num">${fmtRatePct(taxRate)}%</td><td class="num">${fmtINR(ltotal)}</td>`;
       tbody.appendChild(tr);
     }
     tbl.appendChild(tbody);
@@ -16564,7 +16620,7 @@ async function exportNotePdf(db, type, noteId) {
     doc.text(String(ln.hsn_sac || '—'), 95, y);
     doc.text(String(ln.quantity), 120, y, { align: 'right' });
     doc.text(((ln.rate || 0) / 100).toFixed(2), 145, y, { align: 'right' });
-    doc.text(((ln.tax_rate || 0) * 100).toFixed(0) + '%', 165, y, { align: 'right' });
+    doc.text(fmtRatePct(ln.tax_rate) + '%', 165, y, { align: 'right' });
     doc.text(((ln.taxable || 0) / 100).toFixed(2), 195, y, { align: 'right' });
     y += Math.max(4, descLines.length * 4);
   }
@@ -17027,6 +17083,9 @@ function renderStockTransferIn(main) {
       if (payload.format !== 'bahi-stock-transfer/1.0') {
         toast('Not a Bahi stock transfer JSON', 'err'); return;
       }
+      if (!payload.from || !payload.to || !payload.totals || !Array.isArray(payload.lines)) {
+        toast('Stock transfer file is missing required fields (from/to/totals/lines).', 'err'); return;
+      }
       const myGstin = STATE.manifest.company?.gstin || '';
       if (myGstin && payload.to.gstin !== myGstin) {
         if (!confirm(`This transfer is addressed to ${payload.to.gstin}, but this file is ${myGstin}. Import anyway?`)) return;
@@ -17048,7 +17107,7 @@ function renderStockTransferIn(main) {
       const tbody = h('tbody');
       for (const ln of payload.lines) {
         const tr = h('tr');
-        tr.innerHTML = `<td>${escapeHtml(ln.item_name)}</td><td>${escapeHtml(ln.hsn_sac || '—')}</td><td class="num">${ln.quantity}</td><td class="num">${fmtINR(ln.rate)}</td><td class="num">${fmtINR(ln.taxable)}</td><td class="num">${fmtINR(ln.igst)}</td>`;
+        tr.innerHTML = `<td>${escapeHtml(ln.item_name)}</td><td>${escapeHtml(ln.hsn_sac || '—')}</td><td class="num">${escapeHtml(String(ln.quantity))}</td><td class="num">${fmtINR(ln.rate)}</td><td class="num">${fmtINR(ln.taxable)}</td><td class="num">${fmtINR(ln.igst)}</td>`;
         tbody.appendChild(tr);
       }
       tbl.appendChild(tbody);
@@ -19796,6 +19855,16 @@ function runSql(q, outEl) {
   outEl.innerHTML = '';
   const trimmed = (q || '').trim().replace(/;\s*$/, '');
   if (!trimmed) return;
+  // sql.js exec() runs EVERY ;-separated statement, and a WITH/CTE prefix can wrap a
+  // DELETE/UPDATE/INSERT — so a keyword prefix alone can't keep this console read-only.
+  if (trimmed.includes(';')) {
+    outEl.innerHTML = '<div class="error-screen">Read-only console — run one statement at a time (no semicolons).</div>';
+    return;
+  }
+  if (/\b(insert|update|delete|drop|alter|create|replace|attach|detach|vacuum|reindex|truncate)\b/i.test(trimmed)) {
+    outEl.innerHTML = '<div class="error-screen">Read-only console — data-modifying statements are blocked.</div>';
+    return;
+  }
   if (!/^\s*(select|pragma|explain|with)\b/i.test(trimmed)) {
     outEl.innerHTML = '<div class="error-screen">Read-only console — only SELECT / PRAGMA / EXPLAIN / WITH allowed.</div>';
     return;
@@ -20566,7 +20635,7 @@ async function backupNow() {
     let csv = 'id,ts,actor,action,ref,origin,prev_hash,hash,signature\n';
     if (r.length) {
       for (const row of r[0].values) {
-        csv += row.map(v => v == null ? '' : `"${String(v).replace(/"/g, '""')}"`).join(',') + '\n';
+        csv += row.map(csvCell).join(',') + '\n';
       }
     }
 

@@ -5914,6 +5914,21 @@ function parseTallyXml(xmlText) {
     errors: [],
   };
 
+  // Guard an untrusted file against resource exhaustion / entity-expansion: cap input
+  // size and reject DTD/ENTITY declarations (Tally exports use neither). DOMParser does
+  // not resolve external entities, but a huge file or an internal-entity bomb can still
+  // freeze the tab walking the DOM.
+  const MAX_XML_CHARS = 64 * 1024 * 1024;
+  if (typeof xmlText !== 'string') xmlText = String(xmlText || '');
+  if (xmlText.length > MAX_XML_CHARS) {
+    result.errors.push(`File too large (${(xmlText.length / 1048576).toFixed(0)} MB) — Tally exports above ${MAX_XML_CHARS / 1048576} MB are not supported.`);
+    return result;
+  }
+  if (/<!DOCTYPE/i.test(xmlText) || /<!ENTITY/i.test(xmlText)) {
+    result.errors.push('XML contains a DOCTYPE/ENTITY declaration (Tally exports use neither) — refusing to parse for entity-expansion safety.');
+    return result;
+  }
+
   let doc;
   try {
     doc = new DOMParser().parseFromString(xmlText, 'text/xml');
@@ -5992,7 +6007,7 @@ function parseTallyXml(xmlText) {
       openingQty,
       openingValue: tallyAmount(openingValueText),
       openingRate: tallyAmount(openingRateText),
-      gstRate: parseFloat(tallyText(s, 'GSTOVRDNRATE') || tallyText(s, 'GSTAPPLICABLERATE') || '0') / 100,
+      gstRate: (parseFloat(tallyText(s, 'GSTOVRDNRATE') || tallyText(s, 'GSTAPPLICABLERATE') || '0') || 0) / 100,
     });
   }
 
@@ -6402,9 +6417,12 @@ async function importTallyInvoice(db, voucher, parsed, mapping, mode, ctx) {
   for (const il of invLines) {
     const itemRow = db.exec('SELECT id FROM items WHERE LOWER(name) = LOWER(?) LIMIT 1', [il.itemName]);
     const itemId = (itemRow.length && itemRow[0].values.length) ? itemRow[0].values[0][0] : null;
-    const qty = il.itemQty || 1;
-    const rate = il.itemRate || 0;
-    const taxable = Math.round(qty * rate) || il.amount;
+    const qty = (Number.isFinite(il.itemQty) && il.itemQty > 0) ? il.itemQty : 1;
+    const rate = Number.isFinite(il.itemRate) ? il.itemRate : 0;
+    // Prefer Tally's authoritative per-line AMOUNT (il.amount); fall back to qty*rate only
+    // when AMOUNT is absent. (The old `qty*rate || il.amount` used the line amount only when
+    // the product happened to round to 0 — backwards — and `itemQty||1` turned a 0 qty into 1.)
+    const taxable = (il.amount > 0) ? il.amount : Math.round(qty * rate);
     subtotal += taxable;
     computedLines.push({
       line_no: computedLines.length + 1,
@@ -6504,9 +6522,12 @@ async function importTallyPurchase(db, voucher, parsed, mapping, mode, ctx) {
   for (const il of invLines) {
     const itemRow = db.exec('SELECT id FROM items WHERE LOWER(name) = LOWER(?) LIMIT 1', [il.itemName]);
     const itemId = (itemRow.length && itemRow[0].values.length) ? itemRow[0].values[0][0] : null;
-    const qty = il.itemQty || 1;
-    const rate = il.itemRate || 0;
-    const taxable = Math.round(qty * rate) || il.amount;
+    const qty = (Number.isFinite(il.itemQty) && il.itemQty > 0) ? il.itemQty : 1;
+    const rate = Number.isFinite(il.itemRate) ? il.itemRate : 0;
+    // Prefer Tally's authoritative per-line AMOUNT (il.amount); fall back to qty*rate only
+    // when AMOUNT is absent. (The old `qty*rate || il.amount` used the line amount only when
+    // the product happened to round to 0 — backwards — and `itemQty||1` turned a 0 qty into 1.)
+    const taxable = (il.amount > 0) ? il.amount : Math.round(qty * rate);
     subtotal += taxable;
     computedLines.push({
       line_no: computedLines.length + 1,

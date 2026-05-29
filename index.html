@@ -3392,7 +3392,7 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
   let totalDr = 0, totalCr = 0;
   for (const ln of lines) {
     if (!ln.accountId) throw new Error('Each line needs an account');
-    const dr = ln.debit | 0, cr = ln.credit | 0;
+    const dr = Math.round(ln.debit) || 0, cr = Math.round(ln.credit) || 0;
     if ((dr > 0 && cr > 0) || (dr === 0 && cr === 0)) throw new Error('Each line must have exactly one of debit/credit > 0');
     totalDr += dr; totalCr += cr;
   }
@@ -3428,7 +3428,7 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
     const entryId = lastInsertId(db);
     const lineStmt = db.prepare('INSERT INTO entry_lines (entry_id, account_id, debit, credit, account_name) VALUES (?,?,?,?,?)');
     for (const ln of lines) {
-      lineStmt.run([entryId, ln.accountId, ln.debit | 0, ln.credit | 0, accountNameById.get(ln.accountId)]);
+      lineStmt.run([entryId, ln.accountId, Math.round(ln.debit) || 0, Math.round(ln.credit) || 0, accountNameById.get(ln.accountId)]);
     }
     lineStmt.free();
 
@@ -3772,24 +3772,6 @@ async function exportShortcutCheatSheetPdf() {
         rightGroups.push(k);
       }
     }
-    function drawColumn(groups, x, startY) {
-      let yy = startY;
-      for (const g of groups) {
-        doc.setFont('helvetica', 'bold').setFontSize(10);
-        doc.text(g, x, yy); yy += 5;
-        doc.setFont('helvetica', 'normal').setFontSize(8);
-        for (const sc of groups[g] || []) {
-          doc.setFont('helvetica', 'bold');
-          doc.text(sc.label, x, yy);
-          doc.setFont('helvetica', 'normal');
-          doc.text(String(sc.action).slice(0, 50), x + 28, yy);
-          yy += 4;
-        }
-        yy += 3;
-      }
-      return yy;
-    }
-    // Hack: drawColumn expects { g: [items] } shape, so adapt
     function drawCol(keys, x, startY) {
       let yy = startY;
       for (const g of keys) {
@@ -3853,8 +3835,8 @@ async function undoLast() {
   }
   const swapped = r[0].values.map(([accId, dr, cr]) => ({
     accountId: accId,
-    debit: cr | 0,    // swap
-    credit: dr | 0,
+    debit: Math.round(cr) || 0,    // swap
+    credit: Math.round(dr) || 0,
   }));
   try {
     const result = await postEntry(STATE.db, {
@@ -4150,9 +4132,11 @@ function inrInWords(rupees) {
 }
 function amountInWords(paise) {
   paise = Math.round(paise || 0);
+  const neg = paise < 0;
+  paise = Math.abs(paise);
   const rupees = Math.floor(paise / 100);
   const p = paise % 100;
-  let s = 'Rupees ' + inrInWords(rupees);
+  let s = (neg ? 'Minus Rupees ' : 'Rupees ') + inrInWords(rupees);
   if (p > 0) s += ' and ' + _twoDigitW(p) + ' Paise';
   s += ' Only';
   return s;
@@ -6000,9 +5984,7 @@ function parseTallyXml(xmlText) {
     const openingQty = qtyMatch ? Math.round(parseFloat(qtyMatch[1])) : 0;
     result.stockItems.push({
       name,
-      hsn: tallyText(s, 'GSTAPPLICABLE') === 'Applicable'
-        ? (tallyText(s, 'HSNCODE') || tallyText(s, 'HSN'))
-        : (tallyText(s, 'HSNCODE') || tallyText(s, 'HSN')),
+      hsn: tallyText(s, 'HSNCODE') || tallyText(s, 'HSN'),
       unit: tallyText(s, 'BASEUNITS') || tallyText(s, 'UNIT'),
       openingQty,
       openingValue: tallyAmount(openingValueText),
@@ -6289,7 +6271,7 @@ function getOrCreateImportedAccount(db, ledgerName, parsed, mapping) {
   const ledger = parsed.ledgers.find(l => l.name === ledgerName);
   if (!ledger) {
     // Unknown ledger — create as miscellaneous indirect expense as a safe default
-    db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, NULL, "expense", 0)', [ledgerName]);
+    db.run("INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, NULL, 'expense', 0)", [ledgerName]);
     return lastInsertId(db);
   }
   // Resolve parent group → Bahi account
@@ -7280,40 +7262,6 @@ function getOrCreateTcsPayableAccount(db, section) {
   const parentId = (parent.length && parent[0].values.length) ? parent[0].values[0][0] : null;
   db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, "liability", 0)', [subName, parentId]);
   return lastInsertId(db);
-}
-
-// Record a TDS deduction. Inserts into tds_deductions, captures the vendor's PAN
-// at deduction time (snapshot pattern), and posts a journal entry that moves the
-// vendor's payable into TDS Payable. Called from the payment form's vendor branch
-// after the main payment row has been inserted.
-async function recordTdsDeduction(db, opts) {
-  const { paymentId, vendorId, section, rate, taxableAmount, tdsAmount, paymentDate } = opts;
-  if (!vendorId || !section || tdsAmount <= 0) return null;
-  // Capture vendor PAN + name as snapshot
-  const vR = db.exec('SELECT name, pan FROM vendors WHERE id = ?', [vendorId]);
-  const vendorName = (vR.length && vR[0].values.length) ? vR[0].values[0][0] : null;
-  const vendorPan = (vR.length && vR[0].values.length) ? vR[0].values[0][1] : null;
-
-  db.run(
-    'INSERT INTO tds_deductions (payment_id, vendor_id, section, rate, taxable_amount, tds_amount, payment_date, vendor_pan, vendor_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-    [paymentId || null, vendorId, section, rate, taxableAmount, tdsAmount, paymentDate, vendorPan, vendorName, nowIso()]
-  );
-  const tdsId = lastInsertId(db);
-
-  // Post the GL effect: Dr Sundry Creditors / Cr TDS Payable @ section
-  // (the bank-side leg is posted by the payment form via postEntry separately)
-  await postEntry(db, {
-    voucherType: 'tds-deduction',
-    voucherRef: `TDS-${section}-${nowIso().slice(0, 10)}`,
-    narration: `TDS deducted on payment to ${vendorName || 'vendor'} (${section}, ${(rate * 100).toFixed(2)}% on ${fmtINR(taxableAmount)})`,
-    postedAt: paymentDate || nowIso(),
-    actor: auditActor(),
-    lines: [
-      { accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: tdsAmount, credit: 0 },
-      { accountId: getOrCreateTdsPayableAccount(db, section), debit: 0, credit: tdsAmount },
-    ],
-  });
-  return tdsId;
 }
 
 // Record a TCS collection. Same shape as TDS but for the customer side.
@@ -10361,7 +10309,6 @@ function promptNewCompany() {
             const cp = document.getElementById('nc-copy-from');
             if (cp) cp.onclick = () => {
               if (!$('nc-name').value.trim()) $('nc-name').value = m.name || '';
-              if (!$('nc-trade').value.trim() && m.stateName) $('nc-trade').value = '';
               toast(`Pre-filled name from ${m.name}. Customers / items / chart of accounts copy is a Phase 3 feature.`, 'ok');
             };
           } else {
@@ -18696,8 +18643,8 @@ function renderVendorPaymentForm(main) {
 
         // Record the TDS deduction row separately for Form 26Q
         if (tdsAmount > 0 && tdsSection) {
-          // recordTdsDeduction posts its OWN journal — we don't want that since we already
-          // posted the full effect above. Instead, just insert the tds_deductions row directly.
+          // The full GL effect (Dr Creditors / Cr Bank / Cr TDS Payable) is already posted
+          // inline above, so just insert the tds_deductions row here for Form 26Q.
           const vR2 = STATE.db.exec('SELECT name, pan FROM vendors WHERE id = ?', [vendor.id]);
           const [vName2, vPan2] = (vR2.length && vR2[0].values.length) ? vR2[0].values[0] : [null, null];
           STATE.db.run(
@@ -19842,7 +19789,7 @@ function showLinesModal(entryId) {
     const tbody = h('tbody');
     let dr = 0, cr = 0;
     for (const [name, debit, credit] of r[0].values) {
-      dr += debit | 0; cr += credit | 0;
+      dr += debit || 0; cr += credit || 0;
       const tr = h('tr');
       tr.innerHTML = `<td>${escapeHtml(name)}</td><td class="num">${debit ? fmtINR(debit) : '—'}</td><td class="num">${credit ? fmtINR(credit) : '—'}</td>`;
       tbody.appendChild(tr);
@@ -19897,7 +19844,7 @@ function buildAuditPanel() {
         <td>${escapeHtml(actor)}</td>
         <td><span class="badge">${escapeHtml(action)}</span></td>
         <td>${escapeHtml(ref || '—')}</td>
-        <td title="${escapeHtml(origin || '')}"><code class="${originDiff ? '' : ''}" style="${originDiff ? 'color:var(--saffron-deep);font-weight:600' : ''}">${escapeHtml(origin || '—')}</code></td>
+        <td title="${escapeHtml(origin || '')}"><code style="${originDiff ? 'color:var(--saffron-deep);font-weight:600' : ''}">${escapeHtml(origin || '—')}</code></td>
         <td title="${escapeHtml(hash)}"><code>${escapeHtml(hash.slice(0, 12))}…</code></td>
         <td>${sig ? '<span class="badge green">✓</span>' : '<span class="badge alert">none</span>'}</td>
       `;

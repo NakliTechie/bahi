@@ -516,8 +516,10 @@ function pruneSnapshots(manifestSnapshots, snapshotBytes) {
     if (found) keep.add(found.filename);
   }
 
-  // Drop snapshots not in the keep set
-  const survivors = manifestSnapshots.filter(s => keep.has(s.filename));
+  // Drop snapshots not in the keep set. Also reconcile metadata vs bytes: never keep a
+  // manifest entry whose bytes are absent (e.g. a truncated prior load) — it would be
+  // written as a phantom snapshot offering a "Restore" that fails with "missing".
+  const survivors = manifestSnapshots.filter(s => keep.has(s.filename) && (!snapshotBytes || snapshotBytes[s.filename]));
   const dropped = manifestSnapshots.filter(s => !keep.has(s.filename));
   for (const d of dropped) {
     if (snapshotBytes && snapshotBytes[d.filename]) delete snapshotBytes[d.filename];
@@ -8661,12 +8663,16 @@ async function persistKhata() {
     // STATE.snapshots already holds prior snapshots (carried since open + any added by
     // earlier saves this session). We mutate it here and let the build pick it up.
     let snapshotCaptured = null;
-    if (STATE.diskAuditHead != null) {
+    // Always re-read the on-disk file (when possible) so we can BOTH run the concurrency
+    // check AND capture the previous state as a recovery snapshot. The snapshot is no
+    // longer gated on diskAuditHead, so a first/legacy save still gets a pre-overwrite copy.
+    {
       try {
         const freshFile = await STATE.fileHandle.getFile();
         const freshParsed = await readKhata(freshFile);
         const freshHead = freshParsed.manifest?.integrity?.auditHead || null;
-        if (freshHead !== STATE.diskAuditHead) {
+        // Conflict only when we have a baseline head to compare against.
+        if (STATE.diskAuditHead != null && freshHead !== STATE.diskAuditHead) {
           // Build the blob WITHOUT snapshot capture so handleSaveConflict has something to write.
           setSaveStatus('error');
           const conflictBlob = await buildKhata({ manifest: STATE.manifest, dbBytes, snapshots: STATE.snapshots });
@@ -8733,6 +8739,25 @@ async function persistKhata() {
     const writable = await STATE.fileHandle.createWritable();
     await writable.write(blob);
     await writable.close();
+
+    // Verify-after-write: re-read the file and confirm the books bytes match what we
+    // wrote. A close() that resolves does not guarantee durably-correct bytes (bad
+    // sector, quota race, AV scan, USB yank). On a definite mismatch we keep the staging
+    // copy (we throw before clearStaging below) and fail loudly rather than report a
+    // corrupt save as success. If the read-back itself can't run, fall through — the
+    // write's close() already resolved, and blocking on a transient read error is worse.
+    let writeMismatch = false;
+    try {
+      const writtenFile = await STATE.fileHandle.getFile();
+      const writtenParsed = await readKhata(writtenFile);
+      const writtenHash = await sha256Bytes(writtenParsed.dbBytes);
+      writeMismatch = (writtenHash !== booksHash);
+    } catch (e) {
+      console.warn('Post-write verification could not run:', e.message);
+    }
+    if (writeMismatch) {
+      throw new Error('Post-write verification failed — the saved file does not match what was written. Your in-flight copy was kept for recovery; retry the save or reconnect the file.');
+    }
 
     // We are now the freshest writer — bump our notion of disk head to match what we just wrote.
     STATE.diskAuditHead = STATE.manifest.integrity.auditHead;
@@ -8852,7 +8877,10 @@ function showCorruptionRecovery(handle, manifest, snapList, snapshotBytes, audit
             render();
             resolve(true);
           } catch (e) {
-            if (e.name !== 'AbortError') toast('Recovery failed: ' + e.message, 'err');
+            if (e.name === 'AbortError') return; // Save As cancelled — keep the modal open to retry
+            toast('Recovery failed: ' + e.message, 'err');
+            closeModal();
+            resolve(false); // don't leave the awaiting caller hanging on a real failure
           }
         };
         td.appendChild(btn);
@@ -8930,7 +8958,10 @@ function showCorruptionRecovery(handle, manifest, snapList, snapshotBytes, audit
           render();
           resolve(true);
         } catch (e) {
-          if (e.name !== 'AbortError') toast('Replay failed: ' + e.message, 'err');
+          if (e.name === 'AbortError') return; // Save As cancelled — keep the modal open to retry
+          toast('Replay failed: ' + e.message, 'err');
+          closeModal();
+          resolve(false); // don't leave the awaiting caller hanging on a real failure
         }
       };
       body.appendChild(replayBtn);

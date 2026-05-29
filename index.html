@@ -5333,7 +5333,11 @@ function postStockOut(db, opts) {
       throw new Error(`Insufficient stock for ${meta.name}: need ${qty}, have ${wac.qty_balance}`);
     }
     const wacRate = wac.qty_balance > 0 ? Math.round(wac.value_balance / wac.qty_balance) : 0;
-    const value = Math.round(qty * wacRate);
+    // Take value PROPORTIONALLY (not qty * round(avg)) so the running average doesn't
+    // drift and the pool zeroes cleanly when the last unit leaves.
+    const value = (qty >= wac.qty_balance)
+      ? wac.value_balance
+      : Math.round(wac.value_balance * qty / wac.qty_balance);
     db.run(
       'UPDATE batches SET qty_out = qty_out + ?, qty_balance = qty_balance - ?, value_out = value_out + ?, value_balance = value_balance - ? WHERE id = ?',
       [qty, qty, value, value, wac.id]
@@ -5400,8 +5404,15 @@ function reverseStockIn(db, opts) {
   const value = Math.round(qty * rate);
   if (meta.valuationMethod === 'wac') {
     const wac = getOrCreateWacBatch(db, itemId, godownId);
-    const newQty = Math.max(0, wac.qty_balance - qty);
-    const newValue = Math.max(0, wac.value_balance - value);
+    // Zero cleanly when reversing the whole pool; otherwise subtract qty + the reversed
+    // value together (don't clamp qty and value independently → avoids average drift).
+    let newQty, newValue;
+    if (qty >= wac.qty_balance) {
+      newQty = 0; newValue = 0;
+    } else {
+      newQty = wac.qty_balance - qty;
+      newValue = Math.max(0, wac.value_balance - value);
+    }
     const newRate = newQty > 0 ? Math.round(newValue / newQty) : 0;
     db.run(
       'UPDATE batches SET qty_balance = ?, value_balance = ?, rate = ? WHERE id = ?',
@@ -5411,6 +5422,39 @@ function reverseStockIn(db, opts) {
       'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       [itemId, godownId, wac.id, 'adjust', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), -qty, rate, -value, meta.name, meta.unit, gName, nowIso()]
     );
+  } else {
+    // FIFO / batch-tracked: reduce open batches oldest-first (mirrors postStockOut's
+    // dequeue) so a purchase return actually removes stock instead of being a no-op.
+    // Don't throw on a shortfall — record the remainder as a negative adjust at the
+    // passed rate so the reversal is still reflected (stock can legitimately reach 0).
+    const r = db.exec(
+      "SELECT id, qty_balance, rate FROM batches WHERE item_id=? AND godown_id=? AND status='open' AND qty_balance > 0 ORDER BY created_at, id",
+      [itemId, godownId]
+    );
+    let remaining = qty;
+    if (r.length && r[0].values.length) {
+      for (const [bid, balance, bRate] of r[0].values) {
+        if (remaining <= 0) break;
+        const take = Math.min(remaining, balance);
+        const takeValue = Math.round(take * bRate);
+        db.run(
+          'UPDATE batches SET qty_out = qty_out + ?, qty_balance = qty_balance - ?, value_out = value_out + ?, value_balance = value_balance - ?, status = CASE WHEN qty_balance - ? <= 0 THEN ? ELSE status END WHERE id = ?',
+          [take, take, takeValue, takeValue, take, 'exhausted', bid]
+        );
+        db.run(
+          'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [itemId, godownId, bid, 'adjust', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), -take, bRate, -takeValue, meta.name, meta.unit, gName, nowIso()]
+        );
+        remaining -= take;
+      }
+    }
+    if (remaining > 0) {
+      const remValue = Math.round(remaining * rate);
+      db.run(
+        'INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [itemId, godownId, null, 'adjust', voucherType, voucherId || null, voucherRef || null, postedAt || nowIso(), -remaining, rate, -remValue, meta.name, meta.unit, gName, nowIso()]
+      );
+    }
   }
 }
 
@@ -5646,7 +5690,9 @@ async function postDebitNoteStockEffects(db, dn, originalPurchaseId, ratio) {
 // Post the stock effects of a delivery challan (NO general ledger entry).
 function postChallanStockEffects(db, challan, computedLines) {
   const godownId = challan.godown_id || getDefaultGodownId(db);
-  const isOutward = (challan.challan_type || '').startsWith('outward');
+  const ctype = challan.challan_type || '';
+  const isOutward = ctype.startsWith('outward');
+  const isInward = ctype.startsWith('inward');
   for (const ln of (computedLines || [])) {
     if (!ln.item_id) continue;
     const meta = getItemInventoryMeta(db, ln.item_id);
@@ -5657,7 +5703,7 @@ function postChallanStockEffects(db, challan, computedLines) {
         voucherType: 'delivery-challan', voucherId: challan.id, voucherRef: challan.challan_number,
         postedAt: challan.challan_date,
       });
-    } else {
+    } else if (isInward) {
       // Inward return — bring goods back at last-known rate (use a notional rate of 0 if no history)
       const histR = db.exec(
         "SELECT rate FROM stock_movements WHERE item_id=? AND movement_type='in' ORDER BY id DESC LIMIT 1",
@@ -5670,6 +5716,9 @@ function postChallanStockEffects(db, challan, computedLines) {
         postedAt: challan.challan_date,
         batchHint: `DC-${challan.challan_number}`,
       });
+    } else {
+      // Unknown/typo challan_type — do NOT default to inward (which would silently ADD stock).
+      console.warn('Unknown challan_type, no stock effect applied:', ctype);
     }
   }
 }

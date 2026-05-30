@@ -445,8 +445,9 @@ const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Fil
 //   v8 → Phase 6: CA mode — annotations + review_markers tables
 //   v9 → Phase 8A: payments.vendor_id + payment_direction + tds_amount + tds_section,
 //        bank_reconciliations table
+//   v10 → H1: audit_log.hash_version (versioned, all-field tamper-evident audit hash)
 // The runner is in runSchemaMigrations() below.
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 // Snapshot retention policy (spec §9.3):
 //   - Last N saves: keep the most recent N auto snapshots regardless of date
@@ -597,7 +598,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
   payload TEXT,
   prev_hash TEXT NOT NULL,
   hash TEXT NOT NULL,
-  signature TEXT
+  signature TEXT,
+  hash_version INTEGER   -- H1: 2 = all-field hash; NULL/absent = legacy v1 (origin+payload only)
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -3290,6 +3292,14 @@ function runSchemaMigrations(db) {
     db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '9')");
   }
 
+  // === Migration 9 → 10: H1 — versioned tamper-evident audit hash ===
+  // Adds audit_log.hash_version. Existing rows stay NULL and are verified as legacy v1;
+  // new appends write version 2 (hash covers ts/actor/action/ref/origin/payload).
+  if (currentVersion < 10) {
+    tryAddColumn('audit_log', 'hash_version INTEGER');
+    db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '10')");
+  }
+
   // Future migrations land here as `if (currentVersion < N) { ... }` blocks.
 }
 
@@ -3374,33 +3384,68 @@ function getAuditHead(db) {
   if (!r.length || !r[0].values.length) return GENESIS_PREV;
   return r[0].values[0][0];
 }
+// === H1: versioned, all-field tamper-evident audit hash ===
+const AUDIT_HASH_VERSION = 2;
+// Shared preimage so appendAuditEntry and verifyAuditChain can NEVER drift. v2 covers every
+// semantic field; v1 (legacy) hashed only prevHash+origin+payload — so actor/action/ref/ts were
+// editable without breaking the chain (the gap H1 closes). canonicalJson's quoting keeps field
+// boundaries unambiguous.
+function auditPreimageV2(prevHash, ts, actor, action, ref, origin, payloadStr) {
+  return canonicalJson({ v: 2, prev: prevHash, ts, actor, action, ref: ref == null ? null : ref, origin, payload: payloadStr });
+}
 async function appendAuditEntry(db, { actor, action, ref, payload }) {
   const ts = nowIso();
   const origin = CURRENT_ORIGIN;
   const prevHash = getAuditHead(db);
   const payloadStr = canonicalJson(payload || {});
-  // Hash includes origin so cross-origin tampering is tamper-evident.
-  const hash = await sha256(prevHash + origin + payloadStr);
+  // v2 hash covers EVERY field + the chain link, so none can be altered without breaking the
+  // chain; the ECDSA signature over this hash makes the chain non-forgeable without the private
+  // key. (Legacy v1 rows still validate via verifyAuditChain's version branch.)
+  const hash = await sha256(auditPreimageV2(prevHash, ts, actor, action, ref || null, origin, payloadStr));
   const sig = STATE.privateKey ? await signHashHex(STATE.privateKey, hash) : null;
   db.run(
-    'INSERT INTO audit_log (ts, actor, action, ref, origin, payload, prev_hash, hash, signature) VALUES (?,?,?,?,?,?,?,?,?)',
-    [ts, actor, action, ref || null, origin, payloadStr, prevHash, hash, sig]
+    'INSERT INTO audit_log (ts, actor, action, ref, origin, payload, prev_hash, hash, signature, hash_version) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    [ts, actor, action, ref || null, origin, payloadStr, prevHash, hash, sig, AUDIT_HASH_VERSION]
   );
   return { ts, hash, origin };
 }
-async function verifyAuditChain(db) {
-  const r = db.exec('SELECT id, origin, payload, prev_hash, hash FROM audit_log ORDER BY id ASC');
-  if (!r.length) return { ok: true, count: 0, badCount: 0 };
+// Verify the append-only chain. `ok` = chain integrity (hashes recompute + link). When the
+// file's signing JWK (manifest.integrity.signedBy) is passed, also verifies each row's ECDSA
+// signature and reports sigOk/sigBad/sigUnchecked separately — a sig failure means tampering OR
+// a different signing machine, so it is surfaced as a signal, not folded into `ok` (which would
+// false-alarm on legitimately multi-key files).
+async function verifyAuditChain(db, publicJwk = null) {
+  // Tolerate a pre-migration db (no hash_version column) by falling back to the legacy columns.
+  let r, hasVersion = true;
+  try { r = db.exec('SELECT id, ts, actor, action, ref, origin, payload, prev_hash, hash, signature, hash_version FROM audit_log ORDER BY id ASC'); }
+  catch (_) { hasVersion = false; r = db.exec('SELECT id, ts, actor, action, ref, origin, payload, prev_hash, hash, signature FROM audit_log ORDER BY id ASC'); }
+  if (!r.length) return { ok: true, count: 0, badCount: 0, sigOk: 0, sigBad: 0, sigUnchecked: 0 };
   const rows = r[0].values;
   let prev = GENESIS_PREV;
-  let bad = 0;
-  for (const [id, origin, payload, prevHash, hash] of rows) {
+  let bad = 0, sigOk = 0, sigBad = 0, sigUnchecked = 0;
+  let verifyKey = null;
+  if (publicJwk) {
+    try { verifyKey = await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']); } catch (_) {}
+  }
+  for (const row of rows) {
+    const [id, ts, actor, action, ref, origin, payload, prevHash, hash, signature] = row;
+    const hv = hasVersion ? row[10] : null;
     if (prevHash !== prev) { bad++; prev = hash; continue; }
-    const computed = await sha256(prev + (origin || '') + payload);
-    if (computed !== hash) { bad++; }
+    // Recompute with the row's hash version (v2 = all fields; legacy = origin+payload only).
+    const computed = (hv === 2 || hv === '2')
+      ? await sha256(auditPreimageV2(prevHash, ts, actor, action, ref, origin, payload))
+      : await sha256(prevHash + (origin || '') + payload);
+    if (computed !== hash) { bad++; prev = hash; continue; }
+    if (verifyKey && signature) {
+      let okSig = false;
+      try { okSig = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifyKey, b64decode(signature), hexToBytes(hash)); } catch (_) {}
+      okSig ? sigOk++ : sigBad++;
+    } else {
+      sigUnchecked++;
+    }
     prev = hash;
   }
-  return { ok: bad === 0, count: rows.length, badCount: bad };
+  return { ok: bad === 0, count: rows.length, badCount: bad, sigOk, sigBad, sigUnchecked };
 }
 
 //------------------------------------------------------------
@@ -4107,7 +4152,7 @@ async function checkRateChangeResilience(db) {
 // runAllIntegrityChecks — convenience wrapper for the Debug Console panel.
 async function runAllIntegrityChecks(db) {
   const out = [];
-  out.push({ name: 'Audit log chain', result: await verifyAuditChain(db) });
+  out.push({ name: 'Audit log chain', result: await verifyAuditChain(db, STATE.manifest?.integrity?.signedBy) });
   out.push({ name: 'Transaction snapshots (Inv 1, 3, 4, 6)', result: checkTransactionSnapshots(db) });
   out.push({ name: 'Entry line account names (Inv 7)', result: checkEntryLineAccountNames(db) });
   out.push({ name: 'Company edit resilience (Inv 1)', result: await checkCompanyEditResilience(db) });
@@ -9402,9 +9447,10 @@ async function openHandle(handle, existingWsId) {
     return null;
   }
 
-  // Audit chain check
-  const chain = await verifyAuditChain(db);
+  // Audit chain check (+ ECDSA signature verification against the file's signing key)
+  const chain = await verifyAuditChain(db, manifest?.integrity?.signedBy);
   if (!chain.ok) toast(`Audit chain: ${chain.badCount}/${chain.count} entries failed verification`, 'err');
+  else if (chain.sigBad > 0) toast(`Audit log: ${chain.sigBad}/${chain.count} entries have a signature that doesn't match this file's key — possible tampering or a different signing machine.`, 'err');
 
   // Cheap historical-integrity checks (Invariants 1, 3, 6, 7). Surface as a warning toast,
   // not a hard block — old v1 invoices legitimately have null snapshots and need a one-time
@@ -19850,10 +19896,13 @@ function buildAuditPanel() {
 
   const verifyDiv = h('div', { id: 'audit-verify' }, ['Verifying chain…']);
   body.appendChild(verifyDiv);
-  verifyAuditChain(STATE.db).then(v => {
+  verifyAuditChain(STATE.db, STATE.manifest?.integrity?.signedBy).then(v => {
+    const sig = v.sigBad > 0
+      ? ` · <span class="badge alert">${v.sigBad} BAD SIG</span>`
+      : (v.sigOk > 0 ? ` · <span class="badge green">${v.sigOk} sig verified</span>` : '');
     verifyDiv.innerHTML = v.ok
-      ? `<span class="badge green">CHAIN OK</span> ${v.count} entries verified · current origin <code>${escapeHtml(CURRENT_ORIGIN)}</code>`
-      : `<span class="badge alert">CHAIN FAILED</span> ${v.badCount}/${v.count} entries failed verification`;
+      ? `<span class="badge green">CHAIN OK</span> ${v.count} entries verified${sig} · current origin <code>${escapeHtml(CURRENT_ORIGIN)}</code>`
+      : `<span class="badge alert">CHAIN FAILED</span> ${v.badCount}/${v.count} entries failed verification${sig}`;
   }).catch(e => {
     verifyDiv.innerHTML = `<span class="badge alert">VERIFY ERROR</span> ${escapeHtml(e.message)}`;
   });
@@ -20038,7 +20087,7 @@ async function runRoundTrip(outEl) {
     }
     step(`Entry counts match: ${afterCount} entries, max id ${afterMax}`);
 
-    const chain = await verifyAuditChain(db2);
+    const chain = await verifyAuditChain(db2, STATE.manifest?.integrity?.signedBy);
     db2.close();
     if (!chain.ok) { step(`Audit chain: ${chain.badCount}/${chain.count} bad`, false); writeOut(false); return; }
     step(`Audit chain verified: ${chain.count} entries`);

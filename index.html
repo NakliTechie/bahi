@@ -3757,6 +3757,11 @@ function handleShortcutKey(e) {
   // Native shortcuts (Enter/Esc) handled elsewhere
   if (e.key === 'Enter' || e.key === 'Escape') return;
 
+  // macOS: shortcutMatches treats Cmd as Ctrl for Tally-parity shortcuts, so without this a
+  // Ctrl+<letter> shortcut would hijack the browser-reserved Cmd+<letter> combos (select-all /
+  // copy / paste / cut / undo). Let those through to the browser (physical Ctrl still fires the app).
+  if (e.metaKey && !e.ctrlKey && /^[acvxz]$/i.test(e.key)) return;
+
   // Don't fire character-key shortcuts when typing into a text input/textarea.
   // Function keys (F1-F12) and Alt-combo shortcuts still fire because they're not
   // text input. This prevents F8 from accidentally jumping to the invoice form
@@ -5408,7 +5413,7 @@ function postStockIn(db, opts) {
     batchId = wac.id;
   } else {
     // FIFO or batch-tracked: each inward gets its own batch row
-    const batchNo = batchHint || (meta.trackBatches ? null : `B-${nowIso().slice(0, 10)}-${Math.floor(Math.random() * 9999)}`);
+    const batchNo = batchHint || (meta.trackBatches ? null : `B-${nowIso().slice(0, 10)}-${Date.now().toString(36)}`);
     db.run(
       'INSERT INTO batches (item_id, godown_id, batch_no, mfg_date, expiry_date, source_purchase_id, source_purchase_line_id, qty_in, qty_out, qty_balance, rate, value_in, value_out, value_balance, is_wac_synthetic, status, created_at) VALUES (?,?,?,?,?,?,?,?,0,?,?,?,0,?,0,?, ?)',
       [itemId, godownId, batchNo, mfgDate || null, expiryDate || null, sourcePurchaseId || null, sourcePurchaseLineId || null, qty, qty, rate, value, value, 'open', nowIso()]
@@ -18102,12 +18107,9 @@ function renderAnnotations(main) {
     ctrl.appendChild(b);
   }
   if (STATE.mode === 'ca') {
-    const addBtn = h('button', { style: 'margin-left:auto' }, ['+ Add annotation']);
-    addBtn.onclick = () => {
-      // Quick-add — pick a target later via the entry detail
-      toast('To add an annotation, open the entry from CA Review and click + Note', 'ok');
-    };
-    ctrl.appendChild(addBtn);
+    // Annotations are created from CA Review (open an entry → + Note). Show a hint here
+    // rather than a button that only told you to go there.
+    ctrl.appendChild(h('span', { class: 'help', style: 'margin-left:auto;align-self:center;font-size:11px' }, ['Add via CA Review → open an entry → + Note']));
   }
   main.appendChild(ctrl);
 

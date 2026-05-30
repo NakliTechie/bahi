@@ -11711,7 +11711,8 @@ function renderInvoiceForm(main) {
       // Composition mode: zero out the tax rate so the engine produces no GST output
       tax_rate: form.isComposition ? 0 : ln.tax_rate,
       taxable: computeLineTaxable(ln),
-      cess: computeLineCess(ln),
+      // Composition dealers cannot levy compensation cess either — zero it with the tax rate.
+      cess: form.isComposition ? 0 : computeLineCess(ln),
     }));
     const totals = computeInvoiceTax({
       companyStateIso: companyState,
@@ -11748,20 +11749,28 @@ function renderInvoiceForm(main) {
       if (!customer) { toast('Pick a customer', 'err'); return; }
       const invoiceDateForLookup = $('iv-date').value || nowIso();
       const computedLines = form.lines
-        .map((ln, i) => ({
-          line_no: i + 1,
-          item_id: ln.itemId ? parseInt(ln.itemId, 10) : null,
-          description: ln.description || '',
-          hsn_sac: ln.hsnSac || null,
-          quantity: parseFloat(ln.quantity) || 0,
-          rate: parseRupees(ln.rate),
-          discount: parseRupees(ln.discount),
-          taxable: computeLineTaxable(ln),
-          tax_rate: ln.tax_rate || 0,
-          // Forensic key. Resolved against REF.gstRates as of the invoice date so
-          // backdated invoices get the correct historical rateId.
-          rate_id: rateIdForDecimal(ln.tax_rate || 0, invoiceDateForLookup),
-        }))
+        .map((ln, i) => {
+          // Composition dealers collect neither GST nor cess (Bill of Supply) — zero both,
+          // matching the live preview in recomputeTotals. (Previously doPostInvoice did NOT
+          // zero the rate under composition, and the cess field was missing entirely so a
+          // typed cess never persisted.)
+          const effRate = form.isComposition ? 0 : (ln.tax_rate || 0);
+          return {
+            line_no: i + 1,
+            item_id: ln.itemId ? parseInt(ln.itemId, 10) : null,
+            description: ln.description || '',
+            hsn_sac: ln.hsnSac || null,
+            quantity: parseFloat(ln.quantity) || 0,
+            rate: parseRupees(ln.rate),
+            discount: parseRupees(ln.discount),
+            taxable: computeLineTaxable(ln),
+            tax_rate: effRate,
+            cess: form.isComposition ? 0 : computeLineCess(ln),
+            // Forensic key. Resolved against REF.gstRates as of the invoice date so
+            // backdated invoices get the correct historical rateId.
+            rate_id: rateIdForDecimal(effRate, invoiceDateForLookup),
+          };
+        })
         .filter(ln => ln.taxable > 0 && ln.description);
       if (!computedLines.length) { toast('Add at least one valid line (description + qty + rate)', 'err'); return; }
 

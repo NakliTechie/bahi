@@ -1346,6 +1346,103 @@ class KhataBuilder:
             "address": v.address,
         })
 
+    # ----- Stock / batch engine (mirror of postStockIn / postStockOut in index.html) -----
+    # The app reads stock-on-hand, valuation and aging from the `batches` table, so the generator
+    # must maintain it: WAC keeps one synthetic batch per (item, godown); FIFO opens a layer per
+    # inward and dequeues the oldest on outward. The Stock-in-Hand ledger stays consistent because
+    # COGS is taken from the same batch consumption that drives value_balance.
+
+    def _get_or_create_wac_batch(self, item_id: int, godown_id: int) -> Dict[str, int]:
+        row = self.cur.execute(
+            "SELECT id, qty_balance, value_balance FROM batches WHERE item_id=? AND godown_id=? AND is_wac_synthetic=1 LIMIT 1",
+            (item_id, godown_id),
+        ).fetchone()
+        if row:
+            return {"id": row[0], "qty_balance": row[1] or 0, "value_balance": row[2] or 0}
+        self.cur.execute(
+            "INSERT INTO batches (item_id, godown_id, batch_no, qty_in, qty_out, qty_balance, rate, value_in, value_out, value_balance, is_wac_synthetic, status, created_at) VALUES (?,?,NULL,0,0,0,0,0,0,0,1,?,?)",
+            (item_id, godown_id, "open", self._now()),
+        )
+        return {"id": self.cur.lastrowid, "qty_balance": 0, "value_balance": 0}
+
+    def post_stock_in(self, *, item: "Item", godown_id: int, qty: int, rate: int,
+                      voucher_type: str, voucher_id: Optional[int], voucher_ref: Optional[str],
+                      posted_at: str, source_purchase_id: Optional[int] = None) -> Optional[int]:
+        if qty <= 0:
+            return None
+        value = round(qty * rate)
+        if item.valuation_method == "wac":
+            wac = self._get_or_create_wac_batch(item.id, godown_id)
+            new_qty = wac["qty_balance"] + qty
+            new_value = wac["value_balance"] + value
+            new_rate = round(new_value / new_qty) if new_qty > 0 else 0
+            self.cur.execute(
+                "UPDATE batches SET qty_in = qty_in + ?, qty_balance = ?, value_in = value_in + ?, value_balance = ?, rate = ? WHERE id = ?",
+                (qty, new_qty, value, new_value, new_rate, wac["id"]),
+            )
+            batch_id = wac["id"]
+        else:  # fifo — one layer per inward
+            batch_no = f"B-{posted_at[:10]}-{item.id}-{voucher_id or 0}"
+            self.cur.execute(
+                "INSERT INTO batches (item_id, godown_id, batch_no, mfg_date, expiry_date, source_purchase_id, source_purchase_line_id, qty_in, qty_out, qty_balance, rate, value_in, value_out, value_balance, is_wac_synthetic, status, created_at) VALUES (?,?,?,?,?,?,?,?,0,?,?,?,0,?,0,?,?)",
+                (item.id, godown_id, batch_no, None, None, source_purchase_id, None, qty, qty, rate, value, value, "open", self._now()),
+            )
+            batch_id = self.cur.lastrowid
+        self.cur.execute(
+            "INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (item.id, godown_id, batch_id, "in", voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item.name, item.unit, "Main", self._now()),
+        )
+        return batch_id
+
+    def post_stock_out(self, *, item: "Item", godown_id: int, qty: int,
+                       voucher_type: str, voucher_id: Optional[int], voucher_ref: Optional[str],
+                       posted_at: str) -> Optional[int]:
+        """Returns COGS, or None if stock is insufficient (caller then skips the COGS posting —
+        same 'never short' behaviour as before, now batch-backed)."""
+        if qty <= 0:
+            return 0
+        if item.valuation_method == "wac":
+            wac = self._get_or_create_wac_batch(item.id, godown_id)
+            if wac["qty_balance"] < qty:
+                return None
+            wac_rate = round(wac["value_balance"] / wac["qty_balance"]) if wac["qty_balance"] > 0 else 0
+            value = wac["value_balance"] if qty >= wac["qty_balance"] else round(wac["value_balance"] * qty / wac["qty_balance"])
+            self.cur.execute(
+                "UPDATE batches SET qty_out = qty_out + ?, qty_balance = qty_balance - ?, value_out = value_out + ?, value_balance = value_balance - ? WHERE id = ?",
+                (qty, qty, value, value, wac["id"]),
+            )
+            self.cur.execute(
+                "INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item.id, godown_id, wac["id"], "out", voucher_type, voucher_id, voucher_ref, posted_at, -qty, wac_rate, -value, item.name, item.unit, "Main", self._now()),
+            )
+            return value
+        # fifo — dequeue oldest open layers
+        rows = self.cur.execute(
+            "SELECT id, qty_balance, rate FROM batches WHERE item_id=? AND godown_id=? AND status='open' AND qty_balance > 0 ORDER BY created_at, id",
+            (item.id, godown_id),
+        ).fetchall()
+        if sum(r[1] for r in rows) < qty:
+            return None
+        remaining = qty
+        total_cogs = 0
+        for (bid, balance, rate) in rows:
+            if remaining <= 0:
+                break
+            take = min(remaining, balance)
+            value = round(take * rate)
+            new_balance = balance - take
+            self.cur.execute(
+                "UPDATE batches SET qty_out = qty_out + ?, qty_balance = ?, value_out = value_out + ?, value_balance = value_balance - ?, status = ? WHERE id = ?",
+                (take, new_balance, value, value, "exhausted" if new_balance <= 0 else "open", bid),
+            )
+            self.cur.execute(
+                "INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item.id, godown_id, bid, "out", voucher_type, voucher_id, voucher_ref, posted_at, -take, rate, -value, item.name, item.unit, "Main", self._now()),
+            )
+            total_cogs += value
+            remaining -= take
+        return total_cogs
+
     def post_invoice(self, *, customer: Customer, date_iso: str, line_specs: List[Dict[str, Any]],
                      series: str = "Domestic", notes: Optional[str] = None) -> int:
         """
@@ -1455,26 +1552,19 @@ class KhataBuilder:
         )
         self.cur.execute("UPDATE invoices SET ledger_entry_id = ? WHERE id = ?", (entry_id, invoice_id))
 
-        # Stock effect for goods items
+        # Stock effect for goods items — consume batches (WAC / FIFO); COGS comes from the result.
         for spec in line_specs:
             it: Item = spec["item"]
             if not it.enable_inventory:
                 continue
-            stock = self.stock.setdefault(it.id, {"qty": 0, "value": 0})
             qty = spec["quantity"]
-            if stock["qty"] < qty:
-                # Skip stock posting if insufficient — generator should ensure purchases happen first.
-                continue
-            avg_rate = stock["value"] // stock["qty"] if stock["qty"] > 0 else 0
-            cogs_value = avg_rate * qty
-            stock["qty"] -= qty
-            stock["value"] -= cogs_value
-            # Stock movement row
-            self.cur.execute(
-                "INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (it.id, 1, None, "out", "invoice", invoice_id, invoice_number, date_iso,
-                 -qty, avg_rate, -cogs_value, it.name, it.unit, "Main", self._now()),
+            cogs_value = self.post_stock_out(
+                item=it, godown_id=1, qty=qty,
+                voucher_type="invoice", voucher_id=invoice_id, voucher_ref=invoice_number,
+                posted_at=date_iso,
             )
+            if cogs_value is None:
+                continue  # insufficient stock — nothing posted (same 'never short' skip as before)
             # COGS posting: Dr COGS / Cr Stock-in-Hand
             if cogs_value > 0:
                 self.post_entry(
@@ -1595,20 +1685,17 @@ class KhataBuilder:
         )
         self.cur.execute("UPDATE purchases SET ledger_entry_id = ? WHERE id = ?", (entry_id, purchase_id))
 
-        # Stock effect for goods items: increment running stock + WAC value
+        # Stock effect for goods items — create / update batch (WAC synthetic or FIFO layer).
         for spec in line_specs:
             it: Item = spec["item"]
             if not it.enable_inventory:
                 continue
             qty = spec["quantity"]
             rate = spec["rate"]
-            stock = self.stock.setdefault(it.id, {"qty": 0, "value": 0})
-            stock["qty"] += qty
-            stock["value"] += qty * rate
-            self.cur.execute(
-                "INSERT INTO stock_movements (item_id, godown_id, batch_id, movement_type, voucher_type, voucher_id, voucher_ref, posted_at, qty, rate, value, item_name_snapshot, unit_snapshot, godown_name_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (it.id, 1, None, "in", "purchase", purchase_id, internal_ref, date_iso,
-                 qty, rate, qty * rate, it.name, it.unit, "Main", self._now()),
+            self.post_stock_in(
+                item=it, godown_id=1, qty=qty, rate=rate,
+                voucher_type="purchase", voucher_id=purchase_id, voucher_ref=internal_ref,
+                posted_at=date_iso, source_purchase_id=purchase_id,
             )
             # Inventory value posting: Dr Stock-in-Hand / Cr Purchases (for the goods value)
             self.post_entry(
@@ -1741,7 +1828,7 @@ class KhataBuilder:
             "items", "invoices", "invoice_lines", "purchases", "purchase_lines",
             "payments", "payment_allocations", "advances", "advance_adjustments",
             "credit_notes", "credit_note_lines", "debit_notes", "debit_note_lines",
-            "tds_deductions", "tcs_collections", "stock_movements", "godowns",
+            "tds_deductions", "tcs_collections", "stock_movements", "batches", "godowns",
             "invoice_series",
         ]
         out = {}

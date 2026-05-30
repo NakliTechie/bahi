@@ -17,7 +17,7 @@ All audit log entries carry `origin = 'local-file://generator.py'` so they're ea
 - **GSTIN**: `27AABCV1234A1Z5`  ·  **PAN**: `AABCV1234A`  ·  **TAN**: `MUMB12345A`
 - **State**: Maharashtra (MH, GST code 27)
 - **UI tier**: `goods`  ·  **FY start**: 2021-04-01
-- **File size**: 3,415,359 bytes
+- **File size**: 3,430,515 bytes
 
 ### Row counts
 
@@ -44,22 +44,23 @@ All audit log entries carry `origin = 'local-file://generator.py'` so they're ea
 | debit_note_lines | 0 |
 | tds_deductions | 399 |
 | tcs_collections | 0 |
-| stock_movements | 4,420 |
+| stock_movements | 4,438 |
+| batches | 156 |
 | godowns | 1 |
 | invoice_series | 5 |
 
 ### Trial balance
 
-- **Sum of debits**: ₹257,944,061.77
-- **Sum of credits**: ₹257,944,061.77
+- **Sum of debits**: ₹257,947,161.27
+- **Sum of credits**: ₹257,947,161.27
 - **Difference**: 0 paise → TIES
 
 By account type:
 
 | Type | Debit | Credit | Net |
 | --- | ---: | ---: | ---: |
-| asset | ₹74,509,618.10 | ₹196,163,722.21 | ₹-121,654,104.11 |
-| expense | ₹14,378,376.01 | ₹10,412,681.71 | ₹3,965,694.30 |
+| asset | ₹74,509,618.10 | ₹196,166,821.71 | ₹-121,657,203.61 |
+| expense | ₹14,381,475.51 | ₹10,412,681.71 | ₹3,968,793.80 |
 | income | ₹8,940.91 | ₹29,834,450.20 | ₹-29,825,509.29 |
 | liability | ₹169,047,126.75 | ₹21,533,207.65 | ₹147,513,919.10 |
 
@@ -67,15 +68,15 @@ By account type:
 
 - **Length**: 9,186 entries
 - **Bad rows**: 0
-- **Final hash**: `819a94e8ed04bfa8bb585fcb8937a9a0329b7a0d673dbb421fa3334a1ba92b57`
+- **Final hash**: `09344672f62ac287289965b762f87b455966e9552ab7418576401e99c88129e8`
 - **Final signature verify**: ok
 
 ### Validation
 
 - **PRAGMA integrity_check**: `ok`
 - **Manifest workspaceId**: `46c080f8-2adb-4344-9516-e2858053eb97`
-- **Manifest auditHead**: `819a94e8ed04bfa8bb585fcb8937a9a0329b7a0d673dbb421fa3334a1ba92b57`
-- **Manifest booksHash**: `efdf7b5aa51360e1499ae9e7f5b78e5b9e2028c464a2e30fb0c1a69cb455f39f`
+- **Manifest auditHead**: `09344672f62ac287289965b762f87b455966e9552ab7418576401e99c88129e8`
+- **Manifest booksHash**: `93c0d3636db6a1a993d2ec018ab50aa279a092e0954148556e8fd0d08be177e9`
 
 ---
 
@@ -85,7 +86,7 @@ By account type:
 - **GSTIN**: `24AAACS5678B1Z3`  ·  **PAN**: `AAACS5678B`  ·  **TAN**: `AHMS67890B`
 - **State**: Gujarat (GJ, GST code 24)
 - **UI tier**: `goods`  ·  **FY start**: 2021-04-01
-- **File size**: 2,046,268 bytes
+- **File size**: 2,048,355 bytes
 
 ### Row counts
 
@@ -113,21 +114,22 @@ By account type:
 | tds_deductions | 180 |
 | tcs_collections | 0 |
 | stock_movements | 2,407 |
+| batches | 20 |
 | godowns | 1 |
 | invoice_series | 5 |
 
 ### Trial balance
 
-- **Sum of debits**: ₹7,516,530,008.92
-- **Sum of credits**: ₹7,516,530,008.92
+- **Sum of debits**: ₹7,516,530,025.52
+- **Sum of credits**: ₹7,516,530,025.52
 - **Difference**: 0 paise → TIES
 
 By account type:
 
 | Type | Debit | Credit | Net |
 | --- | ---: | ---: | ---: |
-| asset | ₹4,319,392,226.78 | ₹2,767,265,263.16 | ₹1,552,126,963.62 |
-| expense | ₹2,401,924,224.75 | ₹1,442,427,109.47 | ₹959,497,115.28 |
+| asset | ₹4,319,392,226.78 | ₹2,767,265,279.76 | ₹1,552,126,947.02 |
+| expense | ₹2,401,924,241.35 | ₹1,442,427,109.47 | ₹959,497,131.88 |
 | income | ₹0.00 | ₹1,349,186,285.15 | ₹-1,349,186,285.15 |
 | liability | ₹795,213,557.39 | ₹1,957,651,351.14 | ₹-1,162,437,793.75 |
 
@@ -135,15 +137,15 @@ By account type:
 
 - **Length**: 5,470 entries
 - **Bad rows**: 0
-- **Final hash**: `20c19c53aec737bd7dfda61f614c1e0b9161b96b37877848aebe85b000abb00c`
+- **Final hash**: `6b74dbb3e904cb36cc36830429807a1c4dae74c47e5adeb176c5cad6c4f9c5bd`
 - **Final signature verify**: ok
 
 ### Validation
 
 - **PRAGMA integrity_check**: `ok`
 - **Manifest workspaceId**: `c3066c8e-1055-460c-a886-26136aab7c64`
-- **Manifest auditHead**: `20c19c53aec737bd7dfda61f614c1e0b9161b96b37877848aebe85b000abb00c`
-- **Manifest booksHash**: `73df5ddfce676cbbfc036bc14511ead75d0f5aeec92d430298eb7c8051d666be`
+- **Manifest auditHead**: `6b74dbb3e904cb36cc36830429807a1c4dae74c47e5adeb176c5cad6c4f9c5bd`
+- **Manifest booksHash**: `ea617c9c2833ad684271db62501d69f3cee8a0cacc101d202aa258bbb595b169`
 
 ---
 
@@ -153,7 +155,7 @@ By account type:
 - **GSTIN**: `29AAEFA9012C1Z7`  ·  **PAN**: `AAEFA9012C`  ·  **TAN**: `BLRA90123C`
 - **State**: Karnataka (KA, GST code 29)
 - **UI tier**: `service`  ·  **FY start**: 2021-04-01
-- **File size**: 420,495 bytes
+- **File size**: 420,501 bytes
 
 ### Row counts
 
@@ -181,6 +183,7 @@ By account type:
 | tds_deductions | 50 |
 | tcs_collections | 0 |
 | stock_movements | 0 |
+| batches | 0 |
 | godowns | 1 |
 | invoice_series | 5 |
 
@@ -202,15 +205,15 @@ By account type:
 
 - **Length**: 1,029 entries
 - **Bad rows**: 0
-- **Final hash**: `b9003dd4d31dbad9c8bd6925f2f0e2a7aa4f7d8d8525af61613b63dfd46da8e8`
+- **Final hash**: `b1a984c62b7eb44f8454844ac31b7157b7ee6d37f7fa6937ba96949e328c2d6a`
 - **Final signature verify**: ok
 
 ### Validation
 
 - **PRAGMA integrity_check**: `ok`
 - **Manifest workspaceId**: `51a95604-29bd-4951-b357-836221330c2d`
-- **Manifest auditHead**: `b9003dd4d31dbad9c8bd6925f2f0e2a7aa4f7d8d8525af61613b63dfd46da8e8`
-- **Manifest booksHash**: `19d2c4587555d6dde5756fabaa9d69a126b55844d8039f49f05fd5cca160ecb2`
+- **Manifest auditHead**: `b1a984c62b7eb44f8454844ac31b7157b7ee6d37f7fa6937ba96949e328c2d6a`
+- **Manifest booksHash**: `b3c3cd99bc9b24f46d0c16c7967ca787bc3a7f6b4ac53961ce82b511070515d4`
 
 ---
 

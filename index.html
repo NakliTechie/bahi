@@ -2828,16 +2828,16 @@ async function captureFileToCanvas(file, kind) {
     await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
     try { doc.destroy(); } catch (_) {}
   } else {
-    const url = URL.createObjectURL(file);
+    // createImageBitmap decodes the blob directly. Unlike <img>.decode(), it works even when the
+    // tab is backgrounded — Chrome defers <img> decoding for hidden tabs, which would hang OCR if a
+    // user drops bills and switches away (the queue is meant to read "in the background").
+    const bitmap = await createImageBitmap(file);
     try {
-      const img = new Image();
-      img.src = url;
-      await img.decode();
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      canvas.getContext('2d').drawImage(img, 0, 0);
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      canvas.getContext('2d').drawImage(bitmap, 0, 0);
     } finally {
-      URL.revokeObjectURL(url);
+      bitmap.close();
     }
   }
   return canvas;

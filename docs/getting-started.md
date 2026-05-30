@@ -4,6 +4,12 @@ Bahi is a browser-native, local-first accounting application for Indian SMBs. Yo
 
 This guide walks you from a blank slate to your first invoice in about 10 minutes.
 
+**Just want to look around first?** Download a pre-built sample book and open it in Bahi (**Workspace → Open existing .khata**) — each carries five financial years of realistic activity:
+
+- [`consulting.khata`](../sample-data/consulting.khata) — Arjun Rao Advisory LLP, a services LLP in Karnataka (professional-services invoicing, TDS 194J, receivables aging).
+- [`pharma.khata`](../sample-data/pharma.khata) — Vaidya Life Sciences, a goods company in Maharashtra with inventory and **compensation cess** (incl. the 2025-09-22 GST 2.0 cut-over).
+- [`manufacturing.khata`](../sample-data/manufacturing.khata) — Shree Krishna Steel, a Gujarat manufacturer with reverse-charge purchases and **specific cess on coal**.
+
 ---
 
 ## Before you start

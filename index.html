@@ -10171,7 +10171,7 @@ function showAiEnableConfirmModal() {
 
 // First-run intro modal. Shows once per machine, never again.
 // Three-card layout (Create / Open / Restore) with a one-paragraph explainer.
-// Two explicit dismiss buttons: "Got it" (just close) and "Read README" (open + close).
+// Footer: "Got it" dismisses; "What is Bahi?" opens the themed explainer in a new tab (modal stays up).
 // Phase 6: now also includes a mode picker (Owner / CA) at the top — selected once and
 // remembered in localStorage. The mode is the first thing the user sees because it
 // changes the rest of the workspace UX.
@@ -10241,13 +10241,12 @@ function showIntroModal() {
   }, 30);
 
   const ftr = h('div', { class: 'modal-f' });
-  const readme = h('button', {}, ['Read the README']);
-  readme.onclick = () => {
-    window.open('https://github.com/NakliTechie/bahi', '_blank');
-    persistMode();
-    try { localStorage.setItem(INTRO_LS_KEY, '1'); } catch (_) {}
-    closeModal();
-    finishIntroSetup();
+  const explain = h('button', {}, ['What is Bahi? →']);
+  // Opens the themed CA-facing explainer in a new tab; leaves the welcome modal up so the
+  // reader comes back here to choose Create / Open. (Replaces the old "Read the README" link,
+  // which dropped a non-technical reader straight into the GitHub repo.)
+  explain.onclick = () => {
+    window.open('explainer.html', '_blank');
   };
   const ok = h('button', { class: 'primary' }, ['Got it — let me see the workspace']);
   ok.onclick = () => {
@@ -10256,7 +10255,7 @@ function showIntroModal() {
     closeModal();
     finishIntroSetup();
   };
-  ftr.appendChild(readme);
+  ftr.appendChild(explain);
   ftr.appendChild(ok);
   m.appendChild(ftr);
 

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bahi — accounting that lives in a file</title>
+<style>
+  :root{
+    --bg:#f9f9f8; --white:#ffffff; --ink:#1c1815; --ink-2:#6b6b66;
+    --saffron:#8b3a1f; --saffron-soft:#fbeae3; --saffron-deep:#5c2310;
+    --green:#4a6b2a; --green-soft:#e6efd6; --navy:#1a2b4a; --navy-hover:#0d1a33;
+    --ash:#f1f1ee; --rule:#dcdcd6; --alert:#a8201f;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    color:var(--ink); background:var(--bg); line-height:1.55;
+    -webkit-font-smoothing:antialiased; font-size:16px;
+  }
+  a{color:var(--saffron); text-decoration:none}
+  a:hover{color:var(--saffron-deep); text-decoration:underline}
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px}
+  .rule-top{height:4px; background:var(--saffron)}
+
+  header{padding:56px 0 40px; border-bottom:1px solid var(--rule); background:var(--saffron-soft)}
+  .brand{display:flex; align-items:baseline; gap:12px}
+  .wordmark{font-size:40px; font-weight:800; color:var(--saffron-deep); letter-spacing:.5px}
+  .deva{font-size:26px; color:var(--saffron); font-weight:600}
+  .tag{font-size:11px; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--white);
+       background:var(--saffron); padding:3px 8px; border-radius:3px; align-self:center}
+  h1{font-size:34px; line-height:1.2; margin:22px 0 12px; max-width:18ch; color:var(--ink)}
+  .lede{font-size:18px; color:var(--ink-2); max-width:60ch}
+  .cta-row{margin-top:26px; display:flex; gap:12px; flex-wrap:wrap}
+  .btn{display:inline-block; padding:11px 20px; border-radius:6px; font-weight:600; font-size:15px; border:1px solid transparent}
+  .btn-primary{background:var(--navy); color:#fff}
+  .btn-primary:hover{background:var(--navy-hover); color:#fff; text-decoration:none}
+  .btn-ghost{background:var(--white); color:var(--ink); border-color:var(--rule)}
+  .btn-ghost:hover{border-color:var(--saffron); color:var(--saffron-deep); text-decoration:none}
+
+  section{padding:48px 0; border-bottom:1px solid var(--rule)}
+  h2{font-size:13px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--saffron); margin-bottom:22px}
+  .grid{display:grid; grid-template-columns:repeat(2,1fr); gap:20px}
+  @media(max-width:680px){.grid{grid-template-columns:1fr} body{font-size:15px} h1{font-size:28px}}
+  .card{background:var(--white); border:1px solid var(--rule); border-radius:8px; padding:22px}
+  .card h3{font-size:17px; margin-bottom:8px; color:var(--ink)}
+  .card p{font-size:14.5px; color:var(--ink-2)}
+  .card .mark{display:inline-block; width:30px; height:30px; border-radius:6px; background:var(--saffron-soft);
+       color:var(--saffron-deep); font-weight:800; text-align:center; line-height:30px; margin-bottom:12px; font-size:15px}
+
+  .how{display:grid; grid-template-columns:1fr 1fr; gap:28px; align-items:start}
+  @media(max-width:680px){.how{grid-template-columns:1fr}}
+  .how p{color:var(--ink-2); margin-bottom:12px; font-size:15px}
+  .filebox{background:var(--ink); color:#e9e7e3; border-radius:8px; padding:20px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; line-height:1.7}
+  .filebox .c{color:#9a978f}
+  .filebox b{color:var(--white)}
+
+  .samples{display:grid; grid-template-columns:repeat(3,1fr); gap:18px}
+  @media(max-width:680px){.samples{grid-template-columns:1fr}}
+  .sample{background:var(--white); border:1px solid var(--rule); border-radius:8px; padding:20px; display:flex; flex-direction:column}
+  .sample .who{font-weight:700; color:var(--ink); font-size:16px}
+  .sample .meta{font-size:12px; color:var(--ink-2); margin:4px 0 10px; text-transform:uppercase; letter-spacing:.5px}
+  .sample p{font-size:13.5px; color:var(--ink-2); flex:1; margin-bottom:14px}
+  .sample .dl{font-weight:600; font-size:14px}
+  .steps{counter-reset:s; margin-top:8px}
+  .steps li{list-style:none; position:relative; padding-left:38px; margin-bottom:12px; color:var(--ink-2); font-size:15px}
+  .steps li::before{counter-increment:s; content:counter(s); position:absolute; left:0; top:-1px; width:24px; height:24px;
+       background:var(--saffron); color:#fff; border-radius:50%; text-align:center; line-height:24px; font-size:13px; font-weight:700}
+
+  footer{padding:40px 0 60px; color:var(--ink-2); font-size:13.5px}
+  footer a{font-weight:600}
+  .pill{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.5px; color:var(--green);
+       background:var(--green-soft); padding:2px 8px; border-radius:20px; margin-left:8px; vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="rule-top"></div>
+
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <span class="wordmark">Bahi</span>
+      <span class="deva">बही</span>
+      <span class="tag">for chartered accountants</span>
+    </div>
+    <h1>Accounting that lives in a file, not on someone's server.</h1>
+    <p class="lede">Every client's complete books — invoices, purchases, ledger, GST, audit trail — in a single
+      <code>.khata</code> file on a disk you control. No server. No account. No subscription. Nothing leaves the client's machine.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/NakliTechie/bahi/blob/main/docs/getting-started.md" target="_blank" rel="noopener">Read the 10-minute guide →</a>
+      <a class="btn btn-ghost" href="#try">Try a sample file</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Why CAs use it</h2>
+    <div class="grid">
+      <div class="card"><span class="mark">1</span>
+        <h3>The client's data stays the client's</h3>
+        <p>The books live in a <code>.khata</code> file on disk and are read and written locally in the browser. Nothing is uploaded; there is no cloud copy to subpoena, breach, or hold hostage. You review a file the client hands you.</p></div>
+      <div class="card"><span class="mark">2</span>
+        <h3>GST &amp; TDS, generated — not re-keyed</h3>
+        <p>GSTR-1, GSTR-3B, CMP-08, Form 26Q / 27EQ / 27D, e-way bills, RCM, ITC eligibility and compensation cess all flow from the same double-entry ledger. Portal-ready JSON and NSDL-compatible CSV out of the box.</p></div>
+      <div class="card"><span class="mark">3</span>
+        <h3>Tamper-evident by construction</h3>
+        <p>Every state-changing action is recorded in an append-only, SHA-256 hash-chained, digitally-signed audit log. You can see exactly what the owner did since the last hand-off — and a single edited row breaks the chain visibly.</p></div>
+      <div class="card"><span class="mark">4</span>
+        <h3>A review mode that's actually yours</h3>
+        <p>Open in CA mode and your annotations, adjustment vouchers and review report are tagged to you and your ICAI membership — layered on top of the owner's books without ever altering their entries.</p></div>
+      <div class="card"><span class="mark">5</span>
+        <h3>Bring the old books with you</h3>
+        <p>Import Tally Prime and Tally ERP 9 XML — masters and vouchers — through a guided, dry-run-first wizard. Snapshots freeze each posting's identity and rates so reprints stay correct forever.</p></div>
+      <div class="card"><span class="mark">6</span>
+        <h3>An open format — no lock-in</h3>
+        <p>The <code>.khata</code> file is just a zip of a SQLite ledger plus a manifest and audit log. The format is a <a href="https://github.com/NakliTechie/khata-standard" target="_blank" rel="noopener">published open standard</a>; any tool can read it. Bahi is one implementation, not a walled garden.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>How it works</h2>
+    <div class="how">
+      <div>
+        <p>A <code>.khata</code> file <b>is</b> a company's books — there's nothing else to set up. It opens in any Chromium browser (Chrome, Edge, Brave, Arc); the browser is the entire application. No install, no login, no telemetry.</p>
+        <p>One file per client. You decide where it lives — a client folder, an encrypted drive, wherever your engagement requires. Hand it back when you're done; the audit log carries your review with it.</p>
+        <p>Open the file and <code>unzip</code> it any time: it's a plain SQLite double-entry ledger plus a JSON manifest. Your client's records outlive any single app.</p>
+      </div>
+      <div class="filebox">
+        <span class="c"># inside every .khata file</span><br>
+        mybooks.khata<br>
+        ├── <b>manifest.json</b><span class="c">    &nbsp;identity · integrity hashes</span><br>
+        ├── <b>books.sqlite</b><span class="c">    &nbsp;the double-entry ledger</span><br>
+        │ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="c">+ the signed audit log</span><br>
+        ├── <b>snapshots/</b><span class="c">      &nbsp;crash / corruption recovery</span><br>
+        └── <b>attachments/</b><span class="c">    &nbsp;scanned bills, etc.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="try">
+  <div class="wrap">
+    <h2>Try it now <span class="pill">no signup</span></h2>
+    <ol class="steps">
+      <li>Download one of the realistic sample files below — each carries <b>five financial years</b> of activity for a different kind of business.</li>
+      <li>Open <b>Bahi</b> in a Chromium browser, choose <b>Chartered accountant</b>, then <b>Open existing&nbsp;.khata</b> and pick the file.</li>
+      <li>Explore the dashboard, GST returns, the ledger and the audit log — it's a complete book of accounts, not an empty demo.</li>
+    </ol>
+    <div class="samples">
+      <div class="sample">
+        <span class="who">Arjun Rao Advisory LLP</span>
+        <span class="meta">Services · Karnataka · ~0.4 MB</span>
+        <p>A consulting LLP: professional-services invoicing, TDS under 194J, receivables aging. The simplest place to start.</p>
+        <a class="dl" href="https://github.com/NakliTechie/bahi/raw/main/sample-data/consulting.khata">Download consulting.khata →</a>
+      </div>
+      <div class="sample">
+        <span class="who">Vaidya Life Sciences</span>
+        <span class="meta">Goods · Maharashtra · ~3.4 MB</span>
+        <p>A pharma trader with inventory, batches and an aerated-beverage line carrying <b>compensation cess</b> — including the 2025-09-22 GST&nbsp;2.0 cut-over.</p>
+        <a class="dl" href="https://github.com/NakliTechie/bahi/raw/main/sample-data/pharma.khata">Download pharma.khata →</a>
+      </div>
+      <div class="sample">
+        <span class="who">Shree Krishna Steel</span>
+        <span class="meta">Manufacturing · Gujarat · ~2 MB</span>
+        <p>A steel manufacturer with reverse-charge purchases and <b>specific cess on coal</b> (₹400/tonne) — heavier inter-state activity.</p>
+        <a class="dl" href="https://github.com/NakliTechie/bahi/raw/main/sample-data/manufacturing.khata">Download manufacturing.khata →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Go deeper</h2>
+    <div class="grid">
+      <div class="card"><h3>Getting started</h3>
+        <p>Blank slate to first invoice in ten minutes. <a href="https://github.com/NakliTechie/bahi/blob/main/docs/getting-started.md" target="_blank" rel="noopener">Read the guide →</a></p></div>
+      <div class="card"><h3>The CA workflow</h3>
+        <p>Review mode, adjustments, annotations and the multi-client hand-off. <a href="https://github.com/NakliTechie/bahi/blob/main/docs/ca-guide.md" target="_blank" rel="noopener">Read the CA guide →</a></p></div>
+      <div class="card"><h3>Coming from Tally?</h3>
+        <p>Map and import Tally Prime / ERP 9 exports. <a href="https://github.com/NakliTechie/bahi/blob/main/docs/tally-migration.md" target="_blank" rel="noopener">Read the migration guide →</a></p></div>
+      <div class="card"><h3>The open standard</h3>
+        <p>The <code>.khata</code> format and reference data, published for anyone to implement. <a href="https://github.com/NakliTechie/khata-standard" target="_blank" rel="noopener">khata-standard →</a></p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p><b style="color:var(--saffron-deep)">Bahi</b> is an alpha, browser-native accounting app for Indian SMBs and the CAs who serve them.
+       The <code>.khata</code> format spec is open (MIT); reference data is CC-BY 4.0.
+       &nbsp;·&nbsp; <a href="https://github.com/NakliTechie/bahi" target="_blank" rel="noopener">Source on GitHub</a></p>
+  </div>
+</footer>
+</body>
+</html>

@@ -5220,7 +5220,11 @@ async function postFYClosingEntry(db, fyStart, fyEnd) {
 // Trial Balance: every account with its closing balance.
 function getTrialBalance(db, asOfDate) {
   const params = asOfDate ? [asOfDate] : [];
-  const dateClause = asOfDate ? 'WHERE e.posted_at <= ?' : '';
+  // The date filter must merge into the single WHERE below. Injecting a second "WHERE" after the
+  // JOIN produced two WHERE clauses → SQL syntax error (Trial Balance + Balance Sheet both dead
+  // whenever an as-of date was set, which the view always does). `OR e.id IS NULL` preserves the
+  // LEFT JOIN: accounts whose lines all fall after the as-of date (or have no lines) still appear.
+  const dateCond = asOfDate ? 'AND (e.posted_at <= ? OR e.id IS NULL)' : '';
   const r = db.exec(`
     SELECT
       a.id, a.name, a.type,
@@ -5228,8 +5232,8 @@ function getTrialBalance(db, asOfDate) {
       COALESCE(SUM(l.credit), 0) AS total_cr
     FROM accounts a
     LEFT JOIN entry_lines l ON l.account_id = a.id
-    LEFT JOIN entries e ON e.id = l.entry_id ${dateClause}
-    WHERE a.archived = 0
+    LEFT JOIN entries e ON e.id = l.entry_id
+    WHERE a.archived = 0 ${dateCond}
     GROUP BY a.id, a.name, a.type
     HAVING total_dr > 0 OR total_cr > 0
     ORDER BY a.type, a.name
@@ -5741,8 +5745,10 @@ function getStockAging(db) {
     WHERE b.qty_balance > 0 AND b.is_wac_synthetic = 0
     ORDER BY b.created_at
   `);
-  if (!r.length || !r[0].values.length) return [];
+  // Return the consistent bucket shape even when empty — the caller reads buckets.d030.length etc.,
+  // so returning [] here made renderStockAging throw on `[].d030.length` for no-batch-stock files.
   const buckets = { d030: [], d3160: [], d6190: [], d90plus: [] };
+  if (!r.length || !r[0].values.length) return buckets;
   for (const [bid, iid, iname, unit, qty, value, createdAt] of r[0].values) {
     const days = Math.floor((today - new Date(createdAt)) / 86400000);
     const row = { batch_id: bid, item_id: iid, item_name: iname, unit, qty, value, age_days: days };

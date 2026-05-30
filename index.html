@@ -8416,10 +8416,10 @@ async function generateInvoicePDF(invoiceId) {
   // === Read everything from FROZEN snapshot columns ===
   const head = STATE.db.exec(`
     SELECT invoice_number, invoice_date, place_of_supply, place_of_supply_name,
-           subtotal, cgst, sgst, igst, total, notes, company_snapshot, customer_snapshot, reverse_charge
+           subtotal, cgst, sgst, igst, cess, total, notes, company_snapshot, customer_snapshot, reverse_charge
     FROM invoices WHERE id = ?`, [invoiceId]);
   if (!head.length || !head[0].values.length) throw new Error('Invoice not found');
-  const [num, date, posIso, posName, subtotal, cgst, sgst, igst, total, notes,
+  const [num, date, posIso, posName, subtotal, cgst, sgst, igst, cess, total, notes,
          companySnapJson, customerSnapJson, reverseCharge] = head[0].values[0];
 
   let company = {}, customer = {};
@@ -8656,6 +8656,7 @@ async function generateInvoicePDF(invoiceId) {
   if (cgst) totalRow('CGST', fmtINRpdf(cgst, useRupeeGlyph));
   if (sgst) totalRow('SGST', fmtINRpdf(sgst, useRupeeGlyph));
   if (igst) totalRow('IGST', fmtINRpdf(igst, useRupeeGlyph));
+  if (cess) totalRow('Compensation cess', fmtINRpdf(cess, useRupeeGlyph));
   doc.setLineWidth(0.4);
   doc.line(labelX - 5, y - 1, totalsX, y - 1);
   doc.setFontSize(11);
@@ -11483,6 +11484,7 @@ function renderInvoiceForm(main) {
       <th class="num" style="width:8%">Qty</th>
       <th class="num" style="width:14%">Rate</th>
       <th class="num" style="width:9%">Tax</th>
+      <th class="num" style="width:10%">Cess (₹)</th>
       <th class="num" style="width:14%">Amount</th>
       <th></th>
     </tr></thead>
@@ -11664,6 +11666,13 @@ function renderInvoiceForm(main) {
       taxSel.onchange = (e) => { ln.tax_rate = parseFloat(e.target.value); recomputeTotals(); };
       const tdTax = h('td', { class: 'num' }); tdTax.appendChild(taxSel); tr.appendChild(tdTax);
 
+      // Compensation cess (₹). Manual entry; the placeholder auto-suggests from the HSN cess
+      // table (cessForLine — 0 until CESS_RATES is seeded). Blank = use the auto value.
+      const autoCess = cessForLine(ln.hsnSac || null, computeLineTaxable(ln), parseFloat(ln.quantity) || 0, form.invoiceDate || nowIso());
+      const cessInp = h('input', { type: 'text', value: ln.cess || '', placeholder: autoCess > 0 ? (autoCess / 100).toFixed(2) : '0.00', style: 'width:100%;text-align:right' });
+      cessInp.oninput = (e) => { ln.cess = e.target.value; recomputeTotals(); };
+      const tdCess = h('td', { class: 'num' }); tdCess.appendChild(cessInp); tr.appendChild(tdCess);
+
       // Computed amount cell — read-only display
       const taxableCell = h('td', { class: 'num' }, [fmtINR(computeLineTaxable(ln))]);
       tr.appendChild(taxableCell);
@@ -11687,6 +11696,12 @@ function renderInvoiceForm(main) {
     const disc = parseRupees(ln.discount);
     return Math.max(0, Math.round(qty * rate - disc));
   }
+  // Per-line compensation cess in paise. Manual entry (any non-empty value) wins; otherwise
+  // auto from the HSN cess table (cessForLine — 0 until CESS_RATES is seeded).
+  function computeLineCess(ln) {
+    if (ln.cess != null && String(ln.cess).trim() !== '') return Math.max(0, parseRupees(ln.cess));
+    return cessForLine(ln.hsnSac || null, computeLineTaxable(ln), parseFloat(ln.quantity) || 0, form.invoiceDate || nowIso());
+  }
 
   function recomputeTotals() {
     const customer = customers.find(c => c.id === form.customerId);
@@ -11696,6 +11711,7 @@ function renderInvoiceForm(main) {
       // Composition mode: zero out the tax rate so the engine produces no GST output
       tax_rate: form.isComposition ? 0 : ln.tax_rate,
       taxable: computeLineTaxable(ln),
+      cess: computeLineCess(ln),
     }));
     const totals = computeInvoiceTax({
       companyStateIso: companyState,
@@ -11717,6 +11733,7 @@ function renderInvoiceForm(main) {
       ${totals.cgst ? `<div>CGST: <b>${fmtINR(totals.cgst)}</b></div>` : ''}
       ${totals.sgst ? `<div>SGST: <b>${fmtINR(totals.sgst)}</b></div>` : ''}
       ${totals.igst ? `<div>IGST: <b>${fmtINR(totals.igst)}</b></div>` : ''}
+      ${totals.cess ? `<div>Compensation cess: <b>${fmtINR(totals.cess)}</b></div>` : ''}
       <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:15px">Invoice total: ${fmtINR(totals.total)}</b></div>
       ${advanceApplied > 0 ? `<div style="color:var(--saffron-deep)">Less: advance applied <b>${fmtINR(advanceApplied)}</b></div><div style="margin-top:4px"><b style="font-size:13px">Net payable: ${fmtINR(netPayable)}</b></div>` : ''}
       <div style="font-size:11px;color:var(--ink-2);margin-top:4px">${routing}</div>
@@ -11801,14 +11818,14 @@ function renderInvoiceForm(main) {
       STATE.db.run('BEGIN');
       try {
         STATE.db.run(
-          'INSERT INTO invoices (invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [invoiceNumber, form.seriesName || 'Domestic', customer.id, invoiceDate, customerState, placeOfSupplyName, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.total, notes, 'posted', companySnapshot, customerSnapshot, nowIso()]
+          'INSERT INTO invoices (invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [invoiceNumber, form.seriesName || 'Domestic', customer.id, invoiceDate, customerState, placeOfSupplyName, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.cess, totals.total, notes, 'posted', companySnapshot, customerSnapshot, nowIso()]
         );
         const invoiceId = lastInsertId(STATE.db);
-        const lineStmt = STATE.db.prepare('INSERT INTO invoice_lines (invoice_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        const lineStmt = STATE.db.prepare('INSERT INTO invoice_lines (invoice_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
         for (const ln of computedLines) {
           const hsnDesc = lookupHsnDescription(ln.hsn_sac);
-          lineStmt.run([invoiceId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, hsnDesc, ln.quantity, null, ln.rate, ln.discount, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.total]);
+          lineStmt.run([invoiceId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, hsnDesc, ln.quantity, null, ln.rate, ln.discount, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.cess || 0, ln.total]);
         }
         lineStmt.free();
 
@@ -11824,6 +11841,7 @@ function renderInvoiceForm(main) {
           cgst: totals.cgst,
           sgst: totals.sgst,
           igst: totals.igst,
+          cess: totals.cess,
           total: totals.total,
         }, customer, computedLines);
         STATE.db.run('UPDATE invoices SET ledger_entry_id = ? WHERE id = ?', [entryId, invoiceId]);

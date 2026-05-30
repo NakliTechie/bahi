@@ -1497,6 +1497,26 @@ function getRateById(rateId) {
   return REF.gstRates.data.find(r => r.rateId === rateId) || null;
 }
 
+// === B2CL reporting threshold (effective-dated) ===
+// GSTR-1 reports an inter-state B2C invoice individually (B2CL) when its value EXCEEDS
+// this threshold ON THE INVOICE DATE; otherwise it aggregates into B2CS. We always use the
+// value in force on the invoice date, so historical invoices are never re-bucketed when the
+// rule changes (same principle as the rate lifecycle above).
+//   - ₹2,50,000 has applied since GST inception.
+//   - The GST Council (53rd meeting, 2024) recommended reducing it to ₹1,00,000.
+//     >>> CONFIRM the notified effective date, then uncomment the second tier below. <<<
+//     Until then only the ₹2.5L tier is active, so nothing is mis-bucketed.
+const B2CL_THRESHOLDS = [
+  { validFrom: '2017-07-01', thresholdPaise: 250000 * 100 },
+  // { validFrom: 'YYYY-MM-DD', thresholdPaise: 100000 * 100 },  // ₹1L — set the confirmed effective date
+];
+function b2clThresholdPaise(date) {
+  const d = (date || nowIso()).slice(0, 10);
+  const applicable = B2CL_THRESHOLDS.filter(t => t.validFrom <= d);
+  if (!applicable.length) return B2CL_THRESHOLDS[0].thresholdPaise; // pre-GST date → earliest tier
+  return applicable.reduce((a, b) => (b.validFrom > a.validFrom ? b : a)).thresholdPaise;
+}
+
 // Normalise an HSN dataset entry to a uniform shape regardless of source.
 // The bundled HSN_SEED uses [code, description, history[]] (array of arrays).
 // The khata-standard CBIC scrape uses {hsn, description, rateId, rateAsOf} (array of objects).
@@ -7809,7 +7829,7 @@ async function replayAuditLogToFreshDb(auditEntries) {
 //
 // Sections shipped (Phase 2B.4):
 //   B2B    — invoices to registered customers (customer_snapshot.gstin present)
-//   B2CL   — large unregistered inter-state invoices (> ₹2.5 lakh, no GSTIN)
+//   B2CL   — large unregistered inter-state invoices (over the date-effective threshold, no GSTIN)
 //   B2CS   — small unregistered + intra-state unregistered, aggregated by (POS, rate)
 //   HSN    — per-(HSN, rate) summary across all invoices in the period
 //   doc_issue — single-series invoice number range with cancellation count
@@ -7954,8 +7974,8 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
         inv_typ: inv.isSez ? 'SEWP' : 'R',
         itms,
       });
-    } else if (isInterState && inv.total > 250000 * 100) {
-      // B2CL — inter-state, > ₹2.5 lakh
+    } else if (isInterState && inv.total > b2clThresholdPaise(inv.date)) {
+      // B2CL — inter-state, value over the threshold in force on the invoice date
       b2cl.push({
         pos: posGstin,
         inv: [{
@@ -8216,7 +8236,7 @@ function buildGSTR1CSV(data) {
   }
 
   if (data.b2cl.length) {
-    row('=== B2CL (large unregistered, inter-state, > ₹2.5L) ===');
+    row('=== B2CL (large unregistered, inter-state) ===');
     row('Place of supply', 'Invoice #', 'Date', 'Total');
     for (const e of data.b2cl) {
       for (const inv of e.inv) {

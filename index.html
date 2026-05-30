@@ -1429,8 +1429,23 @@ const GST_RATES = [
 // deferred to Phase 2B since SMB freelancer / service users rarely deal with cess HSNs.
 const CESS_RATES = [
   // [hsnCode, cessRate, type, validFrom, validTo, description]
-  // Currently empty — Phase 1 has no SMB-relevant cess HSNs in the bundled HSN seed.
-  // Real values land when the full HSN top-2000 ships from khata-standard.
+  //   type 'advalorem' → cessRate is a fraction of the taxable value (0.12 = 12%).
+  //   type 'specific'  → cessRate is paise PER UNIT (and the line qty's unit must match).
+  //   hsnCode matches by PREFIX: a cess heading applies to that HSN and all its sub-codes, so an
+  //   item HSN '22021010' picks up the '220210' rule. Most-specific (longest) match wins.
+  //
+  // STARTER SET — the two clearest ad-valorem cess goods. NOT exhaustive: verify against the
+  // official GST compensation-cess schedule, and prefer the khata-standard reference-update
+  // channel for the full set.
+  //   • NOT seeded (need granular sub-classification): motor vehicles (HSN 8703 — 1–22% by
+  //     engine/length/type), cigarettes & other tobacco (specific ₹/1000-sticks + ad valorem),
+  //     coal (2701 — ₹400/tonne specific, unit-dependent).
+  //   • Compensation cess was DISCONTINUED for most goods w.e.f. 2025-09-22 (GST 2.0); only the
+  //     tobacco family (cigarettes, pan masala/gutkha, chewing tobacco, zarda, bidi) continues.
+  //     Historical invoices dated before the cutover still need the old rates — hence the validTo
+  //     on aerated waters. >>> CONFIRM the exact notification + cutover date before relying on it. <<<
+  ['220210',   0.12, 'advalorem', '2017-07-01', '2025-09-21', 'Aerated / sweetened / caffeinated waters — 12% cess (ended 2025-09-22)'],
+  ['21069020', 0.60, 'advalorem', '2017-07-01', null,         'Pan masala (no tobacco) — 60% cess (tobacco family; continues)'],
 ];
 
 // --- HSN / SAC: each entry now carries a RATE HISTORY array, not a single rate. ---
@@ -1530,8 +1545,17 @@ function b2clThresholdPaise(date) {
 // manual per-line cess input drives it in the meantime.
 function getCessRateRow(hsnSac, date) {
   if (!hsnSac) return null;
+  const code = String(hsnSac).replace(/\s+/g, ''); // HSN may be entered with spaces
   const d = (date || nowIso()).slice(0, 10);
-  return REF.cessRates.data.find(r => r[0] === hsnSac && r[3] <= d && (r[4] == null || r[4] >= d)) || null;
+  // A cess HSN heading applies to that code and all its sub-codes, so match by PREFIX and let
+  // the most-specific (longest) heading win. Effective-dated like the GST rate lookup.
+  let best = null;
+  for (const r of REF.cessRates.data) {
+    if (!code.startsWith(r[0])) continue;
+    if (!(r[3] <= d && (r[4] == null || r[4] >= d))) continue;
+    if (!best || r[0].length > best[0].length) best = r;
+  }
+  return best;
 }
 function cessForLine(hsnSac, taxablePaise, qty, date) {
   const row = getCessRateRow(hsnSac, date);

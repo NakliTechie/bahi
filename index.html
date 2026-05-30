@@ -14305,6 +14305,7 @@ function renderPurchaseForm(main, opts = {}) {
       <th class="num" style="width:8%">Qty</th>
       <th class="num" style="width:14%">Rate</th>
       <th class="num" style="width:9%">Tax</th>
+      <th class="num" style="width:10%">Cess (₹)</th>
       <th class="num" style="width:14%">Amount</th>
       <th></th>
     </tr></thead><tbody></tbody>
@@ -14434,6 +14435,12 @@ function renderPurchaseForm(main, opts = {}) {
       taxSel.onchange = (e) => { ln.tax_rate = parseFloat(e.target.value); recomputeTotals(); };
       const tdTax = h('td', { class: 'num' }); tdTax.appendChild(taxSel); tr.appendChild(tdTax);
 
+      // Compensation cess (₹). Manual entry; placeholder auto-suggests from the HSN cess table.
+      const autoCess = cessForLine(ln.hsnSac || null, computeLineTaxable(ln), parseFloat(ln.quantity) || 0, form.billDate || nowIso());
+      const cessInp = h('input', { type: 'text', value: ln.cess || '', placeholder: autoCess > 0 ? (autoCess / 100).toFixed(2) : '0.00', style: 'width:100%;text-align:right' });
+      cessInp.oninput = (e) => { ln.cess = e.target.value; recomputeTotals(); };
+      const tdCess = h('td', { class: 'num' }); tdCess.appendChild(cessInp); tr.appendChild(tdCess);
+
       const taxableCell = h('td', { class: 'num' }, [fmtINR(computeLineTaxable(ln))]);
       tr.appendChild(taxableCell);
 
@@ -14454,10 +14461,15 @@ function renderPurchaseForm(main, opts = {}) {
     const rate = parseRupees(ln.rate);
     return Math.max(0, Math.round(qty * rate));
   }
+  // Per-line compensation cess in paise. Manual entry wins; else auto from the HSN cess table.
+  function computeLineCess(ln) {
+    if (ln.cess != null && String(ln.cess).trim() !== '') return Math.max(0, parseRupees(ln.cess));
+    return cessForLine(ln.hsnSac || null, computeLineTaxable(ln), parseFloat(ln.quantity) || 0, form.billDate || nowIso());
+  }
 
   function recomputeTotals() {
     const customerState = form.placeOfSupply || null;
-    const computedLines = form.lines.map(ln => ({ ...ln, taxable: computeLineTaxable(ln) }));
+    const computedLines = form.lines.map(ln => ({ ...ln, taxable: computeLineTaxable(ln), cess: computeLineCess(ln) }));
     const totals = computeInvoiceTax({
       companyStateIso: companyState,
       customerStateIso: customerState,
@@ -14473,6 +14485,7 @@ function renderPurchaseForm(main, opts = {}) {
       ${totals.cgst ? `<div>CGST: <b>${fmtINR(totals.cgst)}</b></div>` : ''}
       ${totals.sgst ? `<div>SGST: <b>${fmtINR(totals.sgst)}</b></div>` : ''}
       ${totals.igst ? `<div>IGST: <b>${fmtINR(totals.igst)}</b></div>` : ''}
+      ${totals.cess ? `<div>Compensation cess: <b>${fmtINR(totals.cess)}</b></div>` : ''}
       <div style="margin-top:6px;border-top:1px solid var(--rule);padding-top:6px"><b style="font-size:15px">Bill total: ${fmtINR(totals.total)}</b></div>
       <div style="font-size:11px;color:var(--ink-2);margin-top:4px">${routing}</div>
     `;
@@ -14494,6 +14507,7 @@ function renderPurchaseForm(main, opts = {}) {
           quantity: parseFloat(ln.quantity) || 0,
           rate: parseRupees(ln.rate),
           taxable: computeLineTaxable(ln),
+          cess: computeLineCess(ln),
           tax_rate: ln.tax_rate || 0,
           rate_id: rateIdForDecimal(ln.tax_rate || 0, billDateForLookup),
         }))
@@ -14535,13 +14549,13 @@ function renderPurchaseForm(main, opts = {}) {
       STATE.db.run('BEGIN');
       try {
         STATE.db.run(
-          'INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [billNumber, internalRefVal, vendor.id, billDate, customerState, placeOfSupplyName, rcm, itcEligible, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.total, notes, 'posted', companySnapshot, vendorSnapshot, nowIso()]
+          'INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          [billNumber, internalRefVal, vendor.id, billDate, customerState, placeOfSupplyName, rcm, itcEligible, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.cess, totals.total, notes, 'posted', companySnapshot, vendorSnapshot, nowIso()]
         );
         const purchaseId = lastInsertId(STATE.db);
-        const lineStmt = STATE.db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+        const lineStmt = STATE.db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
         for (const ln of computedLines) {
-          lineStmt.run([purchaseId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, itcEligible, ln.total || (ln.taxable + (ln.cgst||0) + (ln.sgst||0) + (ln.igst||0))]);
+          lineStmt.run([purchaseId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.cess || 0, itcEligible, ln.total || (ln.taxable + (ln.cgst||0) + (ln.sgst||0) + (ln.igst||0) + (ln.cess||0))]);
         }
         lineStmt.free();
 
@@ -14553,6 +14567,7 @@ function renderPurchaseForm(main, opts = {}) {
           bill_date: billDate,
           subtotal: totals.subtotal,
           cgst: totals.cgst, sgst: totals.sgst, igst: totals.igst,
+          cess: totals.cess,
           total: totals.total,
           reverse_charge: rcm,
         }, vendor, computedLines, { aiAssisted: !!opts.aiAssisted });

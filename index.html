@@ -1504,13 +1504,11 @@ function getRateById(rateId) {
 // this threshold ON THE INVOICE DATE; otherwise it aggregates into B2CS. We always use the
 // value in force on the invoice date, so historical invoices are never re-bucketed when the
 // rule changes (same principle as the rate lifecycle above).
-//   - ₹2,50,000 has applied since GST inception.
-//   - The GST Council (53rd meeting, 2024) recommended reducing it to ₹1,00,000.
-//     >>> CONFIRM the notified effective date, then uncomment the second tier below. <<<
-//     Until then only the ₹2.5L tier is active, so nothing is mis-bucketed.
+//   - ₹2,50,000 from GST inception.
+//   - ₹1,00,000 from 2024-08-01 — Notification 12/2024-Central Tax (10 Jul 2024), CGST Rule 59(4).
 const B2CL_THRESHOLDS = [
   { validFrom: '2017-07-01', thresholdPaise: 250000 * 100 },
-  // { validFrom: 'YYYY-MM-DD', thresholdPaise: 100000 * 100 },  // ₹1L — set the confirmed effective date
+  { validFrom: '2024-08-01', thresholdPaise: 100000 * 100 },
 ];
 function b2clThresholdPaise(date) {
   const d = (date || nowIso()).slice(0, 10);

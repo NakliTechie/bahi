@@ -5,6 +5,7 @@
 !khata-format.md
 !LICENSE
 !.gitignore
+!.assetsignore
 !docs
 !docs/**
 !demo

@@ -1,0 +1,20 @@
+# Files excluded from Cloudflare Workers asset upload.
+# Same syntax as .gitignore. Wrangler reads this from the assets directory root.
+
+.git
+.claude
+.wrangler
+.dev.vars*
+.env
+.env.*
+.DS_Store
+**/.DS_Store
+plan
+.gitignore
+.assetsignore
+
+# Screenshot-generation tooling (the screenshots themselves stay)
+demo/build_index.py
+demo/capture.py
+demo/regenerate.sh
+demo/CAPTURE-LOG.md

@@ -2435,14 +2435,18 @@ self.addEventListener('message', async (e) => {
       }
       const messages = m.messages || [];
       const maxNewTokens = m.maxTokens || 512;
-      const inputs = tokenizer.apply_chat_template(messages, {
-        return_tensors: 'pt',
+      // transformers.js wants return_dict → { input_ids, attention_mask } tensors. The old
+      // return_tensors:'pt' is a Python-only spelling that transformers.js ignores, so
+      // apply_chat_template returned a value with no .dims → "reading '1'" crash before inference.
+      const enc = tokenizer.apply_chat_template(messages, {
         add_generation_prompt: true,
+        return_dict: true,
       });
-      const promptLen = inputs.dims[1];
+      const inputIds = (enc && enc.input_ids) ? enc.input_ids : enc;
+      const promptLen = inputIds.dims[1];
       const t0 = performance.now();
       const output = await model.generate({
-        input_ids: inputs,
+        ...((enc && enc.input_ids) ? enc : { input_ids: inputIds }),
         max_new_tokens: maxNewTokens,
         do_sample: false,
       });

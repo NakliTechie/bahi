@@ -3,7 +3,7 @@
 Bahi sample-data generator.
 
 Produces three realistic .khata files (pharma, manufacturing, consulting)
-that fully conform to the v1.0 .khata format and Bahi schema v9.
+that fully conform to the v1.0 .khata format and Bahi schema v12.
 
 Re-running with the same Python version produces byte-identical output
 (deterministic seeds, fixed timestamps).
@@ -35,7 +35,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, utils as asym_utils
 # === Constants matching index.html ===
 
 KHATA_FORMAT_VERSION = "1.0"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 12
 GENESIS_PREV = "0" * 64
 
 # Origin tag — non-browser context. Bahi uses 'file://' as the fallback;
@@ -46,6 +46,13 @@ GENERATOR_ORIGIN = "local-file://generator.py"
 # captured by the task spec; the actual file create flows treat this as
 # the moment of creation.
 FIXED_NOW = datetime(2026, 4, 8, 9, 0, 0, tzinfo=timezone.utc)
+
+# GST 2.0 — compensation cess was discontinued for all but the tobacco family w.e.f. this date.
+# The seeded sample cess (aerated waters 12% ad valorem, coal ₹400/tonne specific) therefore
+# applies only to invoices/bills dated before the cutover; on/after it the cess is zero.
+CESS_CUTOVER = "2025-09-22"
+def cess_active_on(date_iso: str) -> bool:
+    return date_iso < CESS_CUTOVER
 
 OUT_DIR = Path(__file__).resolve().parent
 
@@ -173,9 +180,10 @@ INVOICE_SERIES_DEFAULTS = [
     ("Bill of supply", "BOS", "bos"),
 ]
 
-# === DDL — copied verbatim from index.html (Phase 1 + 2A..8A, schema v9) ===
-# Including the v6→v9 ALTER TABLE additions inlined into CREATE TABLE so a
-# fresh DB lands at v9 without needing to run the migration walker.
+# === DDL — copied verbatim from index.html (Phase 1 + 2A..8A + H1/H8, schema v12:
+# audit_log.hash_version, invoice_lines.cess, purchase_lines.cess) ===
+# Including the v6→v12 ALTER TABLE additions inlined into CREATE TABLE so a
+# fresh DB lands at v12 without needing to run the migration walker.
 
 DDL = r"""
 CREATE TABLE IF NOT EXISTS accounts (
@@ -224,7 +232,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
   payload TEXT,
   prev_hash TEXT NOT NULL,
   hash TEXT NOT NULL,
-  signature TEXT
+  signature TEXT,
+  hash_version INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -315,7 +324,8 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
   cgst INTEGER NOT NULL DEFAULT 0,
   sgst INTEGER NOT NULL DEFAULT 0,
   igst INTEGER NOT NULL DEFAULT 0,
-  total INTEGER NOT NULL
+  total INTEGER NOT NULL,
+  cess INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_invoice_lines_invoice ON invoice_lines(invoice_id);
 
@@ -475,7 +485,8 @@ CREATE TABLE IF NOT EXISTS purchase_lines (
   sgst INTEGER NOT NULL DEFAULT 0,
   igst INTEGER NOT NULL DEFAULT 0,
   itc_eligible INTEGER DEFAULT 1,
-  total INTEGER NOT NULL
+  total INTEGER NOT NULL,
+  cess INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_purchase_lines_purchase ON purchase_lines(purchase_id);
 
@@ -827,6 +838,19 @@ def sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
+def audit_preimage_v2(prev_hash: str, ts: str, actor: str, action: str,
+                      ref: Optional[str], origin: str, payload_str: str) -> str:
+    """Mirror index.html auditPreimageV2 — the v2 all-field tamper-evident hash preimage.
+    v1 (legacy) hashed only prev+origin+payload; v2 covers every semantic field so ts/actor/
+    action/ref can't be edited without breaking the chain. canonical_json provably matches the
+    app's canonicalJson (sorted keys, no spaces), so this preimage is byte-identical."""
+    return canonical_json({
+        "v": 2, "prev": prev_hash, "ts": ts, "actor": actor,
+        "action": action, "ref": ref if ref is not None else None,
+        "origin": origin, "payload": payload_str,
+    })
+
+
 def sha256_bytes_hex(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
@@ -880,7 +904,10 @@ def sign_hash_hex(priv_key: ec.EllipticCurvePrivateKey, hash_hex: str) -> str:
     Web Crypto returns raw r||s (64 bytes for P-256), then b64encode.
     """
     msg = hex_to_bytes(hash_hex)
-    der_sig = priv_key.sign(msg, ec.ECDSA(hashes.SHA256()))
+    # RFC 6979 deterministic ECDSA — derive the nonce k from (private key + message) instead of
+    # randomness, so re-running the generator produces byte-identical .khata files. The signatures
+    # are ordinary valid ECDSA and verify identically under Web Crypto (verification is k-agnostic).
+    der_sig = priv_key.sign(msg, ec.ECDSA(hashes.SHA256(), deterministic_signing=True))
     r, s = asym_utils.decode_dss_signature(der_sig)
     raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
     return b64encode(raw).decode("ascii")
@@ -1075,6 +1102,20 @@ class KhataBuilder:
         self.account_id_by_name[sub_name] = new_id
         return new_id
 
+    def get_or_create_cess_account(self, name: str, type_: str) -> int:
+        """Mirror of getOrCreateCessAccount — a single Cess Output / Cess Input / Cess RCM
+        account under Duties & Taxes, created lazily the first time cess is posted (system_flag=1)."""
+        if name in self.account_id_by_name:
+            return self.account_id_by_name[name]
+        pid = self.account_id_by_name["Duties & Taxes"]
+        self.cur.execute(
+            "INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, ?, 1)",
+            (name, pid, type_),
+        )
+        new_id = self.cur.lastrowid
+        self.account_id_by_name[name] = new_id
+        return new_id
+
     # ----- Audit chain -----
 
     def get_audit_head(self) -> str:
@@ -1090,11 +1131,12 @@ class KhataBuilder:
         origin = GENERATOR_ORIGIN
         prev_hash = self.get_audit_head()
         payload_str = canonical_json(payload or {})
-        hash_hex = sha256_hex(prev_hash + origin + payload_str)
+        # v2 all-field hash (hash_version = 2), matching index.html appendAuditEntry.
+        hash_hex = sha256_hex(audit_preimage_v2(prev_hash, ts, actor, action, ref, origin, payload_str))
         sig = sign_hash_hex(self.priv_key, hash_hex)
         self.cur.execute(
-            "INSERT INTO audit_log (ts, actor, action, ref, origin, payload, prev_hash, hash, signature) VALUES (?,?,?,?,?,?,?,?,?)",
-            (ts, actor, action, ref, origin, payload_str, prev_hash, hash_hex, sig),
+            "INSERT INTO audit_log (ts, actor, action, ref, origin, payload, prev_hash, hash, signature, hash_version) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (ts, actor, action, ref, origin, payload_str, prev_hash, hash_hex, sig, 2),
         )
 
     # ----- Posting engine -----
@@ -1344,9 +1386,14 @@ class KhataBuilder:
                 "taxable": taxable,
                 "tax_rate": tax_rate,
                 "rate_id": rate_id,
+                "cess": int(spec.get("cess", 0) or 0),
             })
 
         totals = self.compute_tax(company_state, customer.state, lines)
+        # Compensation cess rides on top of the invoice; invoice.total INCLUDES it (mirrors the app),
+        # so Dr Sundry Debtors below stays balanced against Sales + GST + Cess Output.
+        total_cess = sum(ln.get("cess", 0) for ln in lines)
+        invoice_total = totals["total"] + total_cess
         invoice_number = self.next_invoice_number(series, date_iso)
         st = STATE_BY_ISO.get(customer.state)
         place_of_supply_name = st[2] if st else None
@@ -1355,24 +1402,24 @@ class KhataBuilder:
         customer_snapshot = self._customer_snapshot_json(customer)
 
         self.cur.execute(
-            "INSERT INTO invoices (invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO invoices (invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (invoice_number, series, customer.id, date_iso, customer.state, place_of_supply_name,
-             totals["subtotal"], totals["cgst"], totals["sgst"], totals["igst"], totals["total"],
+             totals["subtotal"], totals["cgst"], totals["sgst"], totals["igst"], total_cess, invoice_total,
              notes, "posted", company_snapshot, customer_snapshot, self._now()),
         )
         invoice_id = self.cur.lastrowid
 
         for ln in lines:
             self.cur.execute(
-                "INSERT INTO invoice_lines (invoice_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO invoice_lines (invoice_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, total, cess) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (invoice_id, ln["line_no"], ln["item_id"], ln["description"], ln["hsn_sac"],
                  ln["hsn_description"], ln["quantity"], ln["unit"], ln["rate"], ln["discount"],
-                 ln["taxable"], ln["tax_rate"], ln["rate_id"], ln["cgst"], ln["sgst"], ln["igst"], ln["total"]),
+                 ln["taxable"], ln["tax_rate"], ln["rate_id"], ln["cgst"], ln["sgst"], ln["igst"], ln["total"], ln["cess"]),
             )
 
         # Post to ledger via the bridge
         posting_lines = [
-            {"accountId": self.account_id_by_name["Sundry Debtors"], "debit": totals["total"], "credit": 0},
+            {"accountId": self.account_id_by_name["Sundry Debtors"], "debit": invoice_total, "credit": 0},
             {"accountId": self.account_id_by_name["Sales"], "debit": 0, "credit": totals["subtotal"]},
         ]
         # Group by tax rate
@@ -1394,6 +1441,10 @@ class KhataBuilder:
             if g["igst"] > 0:
                 aid = self.get_or_create_rate_account("IGST Output", rate_pct_full)
                 posting_lines.append({"accountId": aid, "debit": 0, "credit": g["igst"]})
+
+        # H8 — compensation cess leg (Cr Cess Output). invoice_total already includes it.
+        if total_cess > 0:
+            posting_lines.append({"accountId": self.get_or_create_cess_account("Cess Output", "liability"), "debit": 0, "credit": total_cess})
 
         entry_id = self.post_entry(
             voucher_type="sales",
@@ -1467,29 +1518,34 @@ class KhataBuilder:
                 "taxable": taxable,
                 "tax_rate": tax_rate,
                 "rate_id": rate_id,
+                "cess": int(spec.get("cess", 0) or 0),
             })
 
         totals = self.compute_tax(company_state, vendor.state, lines)
+        # Cess on purchases (e.g. coal): purchase.total INCLUDES it; the Dr Cess Input leg below
+        # claims it as ITC (or Cess RCM Input/Output, net 0, under reverse charge).
+        total_cess = sum(ln.get("cess", 0) for ln in lines)
+        purchase_total = totals["total"] + total_cess
         internal_ref = self.next_purchase_ref(date_iso)
         st = STATE_BY_ISO.get(vendor.state)
         place_of_supply_name = st[2] if st else None
 
         self.cur.execute(
-            "INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (bill_number, internal_ref, vendor.id, date_iso, vendor.state, place_of_supply_name,
              reverse_charge, itc_eligible, totals["subtotal"], totals["cgst"], totals["sgst"],
-             totals["igst"], totals["total"], None, "posted",
+             totals["igst"], total_cess, purchase_total, None, "posted",
              self._company_snapshot_json(), self._vendor_snapshot_json(vendor), self._now()),
         )
         purchase_id = self.cur.lastrowid
 
         for ln in lines:
             self.cur.execute(
-                "INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, itc_eligible, total, cess) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (purchase_id, ln["line_no"], ln["item_id"], ln["description"], ln["hsn_sac"],
                  ln["hsn_description"], ln["quantity"], ln["unit"], ln["rate"], ln["discount"],
                  ln["taxable"], ln["tax_rate"], ln["rate_id"], ln["cgst"], ln["sgst"], ln["igst"],
-                 itc_eligible, ln["total"]),
+                 itc_eligible, ln["total"], ln["cess"]),
             )
 
         # Ledger posting (mirror of postPurchaseToLedger)
@@ -1511,6 +1567,10 @@ class KhataBuilder:
                 if tot_tax > 0:
                     posting_lines.append({"accountId": self.get_or_create_rate_account("GST RCM Input", rate_pct_full), "debit": tot_tax, "credit": 0})
                     posting_lines.append({"accountId": self.get_or_create_rate_account("GST RCM Output", rate_pct_full), "debit": 0, "credit": tot_tax})
+            # Cess under RCM: Dr Cess RCM Input + Cr Cess RCM Output (net 0; input claimable).
+            if total_cess > 0:
+                posting_lines.append({"accountId": self.get_or_create_cess_account("Cess RCM Input", "asset"), "debit": total_cess, "credit": 0})
+                posting_lines.append({"accountId": self.get_or_create_cess_account("Cess RCM Output", "liability"), "debit": 0, "credit": total_cess})
             posting_lines.append({"accountId": self.account_id_by_name["Sundry Creditors"], "debit": 0, "credit": totals["subtotal"]})
         else:
             for rate, g in by_rate.items():
@@ -1521,7 +1581,10 @@ class KhataBuilder:
                     posting_lines.append({"accountId": self.get_or_create_rate_account("SGST Input", rate_pct_full / 2), "debit": g["sgst"], "credit": 0})
                 if g["igst"] > 0:
                     posting_lines.append({"accountId": self.get_or_create_rate_account("IGST Input", rate_pct_full), "debit": g["igst"], "credit": 0})
-            posting_lines.append({"accountId": self.account_id_by_name["Sundry Creditors"], "debit": 0, "credit": totals["total"]})
+            # Compensation cess: Dr Cess Input (claimable ITC); Sundry Creditors below includes it.
+            if total_cess > 0:
+                posting_lines.append({"accountId": self.get_or_create_cess_account("Cess Input", "asset"), "debit": total_cess, "credit": 0})
+            posting_lines.append({"accountId": self.account_id_by_name["Sundry Creditors"], "debit": 0, "credit": purchase_total})
 
         entry_id = self.post_entry(
             voucher_type="purchase",
@@ -1895,7 +1958,7 @@ MFG_ITEMS = [
 ]
 MFG_RAW_ITEMS = [
     ("Iron ore (Fe 62%)", "7308", 0.18, "tonne", 850000),
-    ("Coking coal", "7308", 0.18, "tonne", 1850000),
+    ("Coking coal", "2701", 0.18, "tonne", 1850000),
     ("Manganese ore", "7308", 0.18, "tonne", 1450000),
     ("Steel scrap (HMS-1)", "7308", 0.18, "tonne", 2950000),
     ("Ferro silicon", "7308", 0.18, "tonne", 9500000),
@@ -1959,11 +2022,11 @@ def gen_pharma() -> KhataBuilder:
         "stateName": "Maharashtra",
         "gstinStateCode": "27",
         "address": "Plot 47, MIDC Industrial Area, Andheri East, Mumbai 400093",
-        "fy_start": "2024-04-01",
+        "fy_start": "2021-04-01",
         "composition": {"enabled": False},
     }
-    b = KhataBuilder(company=company, ui_tier="goods", fy_start="2024-04-01",
-                     seed=42, clock_start=datetime(2024, 4, 1, 9, 0, 0, tzinfo=timezone.utc))
+    b = KhataBuilder(company=company, ui_tier="goods", fy_start="2021-04-01",
+                     seed=42, clock_start=datetime(2021, 4, 1, 9, 0, 0, tzinfo=timezone.utc))
     rng = b.rng
 
     b.create_db()
@@ -2024,11 +2087,18 @@ def gen_pharma() -> KhataBuilder:
     goods_items = [it for it in b.items if not it.is_service]
     service_items = [it for it in b.items if it.is_service]
 
-    # ----- 24 months of activity -----
+    # Aerated health beverage — carries 12% compensation cess before the 2025-09-22 cutover.
+    # Created AFTER the goods/service lists (inventory off) so the random activity loops ignore it;
+    # it is sold via a dedicated quarterly block after the main loop to demonstrate cess.
+    aerated = b.add_item(name="Vaidya Glucose-D Fizz 250ml (case of 24)", hsn_sac="22021010",
+                         is_service=0, unit="case", default_rate=48000, default_tax_rate=0.28,
+                         enable_inventory=0)
+
+    # ----- 60 months of activity -----
     # First seed opening stock via initial purchases (so sales never short)
     print("[pharma] seeding opening stock…")
     seed_vendor = b.vendors[0]
-    seed_date = "2024-04-02"
+    seed_date = "2021-04-02"
     for it in goods_items:
         # Buy a healthy initial stock at ~85% of sale rate
         cost_rate = round(it.default_rate * 0.65)
@@ -2041,7 +2111,7 @@ def gen_pharma() -> KhataBuilder:
     outstanding: List[Tuple[int, str, int]] = []
 
     months = []
-    for fy in (2024, 2025):
+    for fy in (2021, 2022, 2023, 2024, 2025):
         for m in range(4, 13):
             months.append((fy, m))
         for m in range(1, 4):
@@ -2124,6 +2194,25 @@ def gen_pharma() -> KhataBuilder:
                 reference=f"VENDOR-UTR{rng.randint(100000, 999999)}",
                 tds_section=tds_section, tds_rate=tds_rate,
             )
+
+    # ----- Aerated-beverage sales: one invoice per quarter, settled promptly. Demonstrates
+    # date-effective compensation cess — 12% before 2025-09-22, zero on/after. -----
+    print("[pharma] adding aerated-beverage sales (compensation cess)…")
+    for (year, month) in months:
+        if month not in (4, 7, 10, 1):  # one per quarter
+            continue
+        adate = business_dates_in_month(rng, year, month, 1)[0]
+        acust = rng.choice(b.customers)
+        aqty = rng.randint(20, 120)
+        ataxable = aqty * aerated.default_rate
+        acess = round(ataxable * 0.12) if cess_active_on(adate) else 0
+        ainv = b.post_invoice(customer=acust, date_iso=adate,
+                              line_specs=[{"item": aerated, "quantity": aqty,
+                                           "rate": aerated.default_rate, "cess": acess}])
+        arow = b.cur.execute("SELECT invoice_number, total FROM invoices WHERE id = ?", (ainv,)).fetchone()
+        b.post_customer_payment(customer=acust, date_iso=adate, amount=arow[1],
+                                payment_mode="neft", reference=f"UTR{rng.randint(100000, 999999)}",
+                                allocations=[(ainv, arow[0], arow[1])])
 
     # A handful of credit notes (pharmaceutical sales returns happen)
     print("[pharma] adding credit notes / debit notes / journals…")
@@ -2237,11 +2326,11 @@ def gen_manufacturing() -> KhataBuilder:
         "stateName": "Gujarat",
         "gstinStateCode": "24",
         "address": "Plot 12, GIDC Phase II, Vatva, Ahmedabad 382445",
-        "fy_start": "2024-04-01",
+        "fy_start": "2021-04-01",
         "composition": {"enabled": False},
     }
-    b = KhataBuilder(company=company, ui_tier="goods", fy_start="2024-04-01",
-                     seed=43, clock_start=datetime(2024, 4, 1, 9, 0, 0, tzinfo=timezone.utc))
+    b = KhataBuilder(company=company, ui_tier="goods", fy_start="2021-04-01",
+                     seed=43, clock_start=datetime(2021, 4, 1, 9, 0, 0, tzinfo=timezone.utc))
     rng = b.rng
 
     b.create_db()
@@ -2287,7 +2376,7 @@ def gen_manufacturing() -> KhataBuilder:
     # Opening stock: heavy initial purchase
     print("[mfg] seeding opening stock…")
     seed_vendor = b.vendors[0]
-    seed_date = "2024-04-02"
+    seed_date = "2021-04-02"
     for it in finished_items:
         cost = round(it.default_rate * 0.85)
         b.post_purchase(vendor=seed_vendor, bill_number=f"OPEN-{it.id:03d}",
@@ -2295,7 +2384,7 @@ def gen_manufacturing() -> KhataBuilder:
                         line_specs=[{"item": it, "quantity": rng.randint(20, 100), "rate": cost}])
 
     months = []
-    for fy in (2024, 2025):
+    for fy in (2021, 2022, 2023, 2024, 2025):
         for m in range(4, 13):
             months.append((fy, m))
         for m in range(1, 4):
@@ -2324,9 +2413,12 @@ def gen_manufacturing() -> KhataBuilder:
             it = rng.choice(finished_items + raw_items)
             qty = rng.randint(15, 70)
             cost = round(it.default_rate * 0.78 * rng.uniform(0.97, 1.05))
+            spec = {"item": it, "quantity": qty, "rate": cost}
+            # Coking coal (HSN 2701) carried ₹400/tonne specific compensation cess until 2025-09-22.
+            if it.hsn_sac == "2701" and cess_active_on(date_iso):
+                spec["cess"] = qty * 40000
             b.post_purchase(vendor=ven, bill_number=f"BILL-{ven.id:02d}-{date_iso.replace('-','')}",
-                            date_iso=date_iso,
-                            line_specs=[{"item": it, "quantity": qty, "rate": cost}])
+                            date_iso=date_iso, line_specs=[spec])
 
         # 12 receipts/month
         for date_iso in business_dates_in_month(rng, year, month, 12):
@@ -2376,11 +2468,11 @@ def gen_consulting() -> KhataBuilder:
         "stateName": "Karnataka",
         "gstinStateCode": "29",
         "address": "3rd Floor, Prestige Atlanta, 80 Feet Road, Indiranagar, Bangalore 560038",
-        "fy_start": "2024-04-01",
+        "fy_start": "2021-04-01",
         "composition": {"enabled": False},
     }
-    b = KhataBuilder(company=company, ui_tier="service", fy_start="2024-04-01",
-                     seed=44, clock_start=datetime(2024, 4, 1, 9, 0, 0, tzinfo=timezone.utc))
+    b = KhataBuilder(company=company, ui_tier="service", fy_start="2021-04-01",
+                     seed=44, clock_start=datetime(2021, 4, 1, 9, 0, 0, tzinfo=timezone.utc))
     rng = b.rng
 
     b.create_db()
@@ -2416,7 +2508,7 @@ def gen_consulting() -> KhataBuilder:
                    default_rate=paise, default_tax_rate=rate, enable_inventory=0)
 
     months = []
-    for fy in (2024, 2025):
+    for fy in (2021, 2022, 2023, 2024, 2025):
         for m in range(4, 13):
             months.append((fy, m))
         for m in range(1, 4):
@@ -2500,27 +2592,31 @@ def validate(b: KhataBuilder, label: str) -> Dict[str, Any]:
     results["sum_credit"] = cr
     results["balance_diff"] = diff
     # Audit chain walk
-    rows = b.cur.execute("SELECT id, origin, payload, prev_hash, hash, signature FROM audit_log ORDER BY id ASC").fetchall()
+    rows = b.cur.execute("SELECT id, ts, actor, action, ref, origin, payload, prev_hash, hash, signature, hash_version FROM audit_log ORDER BY id ASC").fetchall()
     prev = GENESIS_PREV
     bad = 0
     for r in rows:
-        _id, origin, payload, prev_hash, hash_v, sig = r
+        _id, ts, actor, action, ref, origin, payload, prev_hash, hash_v, sig, hv = r
         if prev_hash != prev:
             bad += 1
             print(f"  audit chain break at id={_id}: prev={prev[:12]} expected, got {prev_hash[:12]}")
-        computed = sha256_hex(prev + (origin or "") + (payload or ""))
+        # Recompute with the row's hash version (v2 = all fields; legacy = origin+payload only).
+        if hv == 2:
+            computed = sha256_hex(audit_preimage_v2(prev_hash, ts, actor, action, ref, origin, payload or ""))
+        else:
+            computed = sha256_hex(prev + (origin or "") + (payload or ""))
         if computed != hash_v:
             bad += 1
             print(f"  audit hash mismatch at id={_id}")
         prev = hash_v
     results["audit_chain_count"] = len(rows)
     results["audit_chain_bad"] = bad
-    results["audit_chain_head"] = rows[-1][4] if rows else None
+    results["audit_chain_head"] = rows[-1][8] if rows else None
 
     # Verify final signature with the public key
     if rows:
-        last_hash = rows[-1][4]
-        last_sig = rows[-1][5]
+        last_hash = rows[-1][8]
+        last_sig = rows[-1][9]
         try:
             from cryptography.exceptions import InvalidSignature
             import base64 as _b64

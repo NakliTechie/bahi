@@ -446,8 +446,9 @@ const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Fil
 //   v9 → Phase 8A: payments.vendor_id + payment_direction + tds_amount + tds_section,
 //        bank_reconciliations table
 //   v10 → H1: audit_log.hash_version (versioned, all-field tamper-evident audit hash)
+//   v11 → H8: invoice_lines.cess (per-line GST compensation cess)
 // The runner is in runSchemaMigrations() below.
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 // Snapshot retention policy (spec §9.3):
 //   - Last N saves: keep the most recent N auto snapshots regardless of date
@@ -694,7 +695,8 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
   cgst INTEGER NOT NULL DEFAULT 0,
   sgst INTEGER NOT NULL DEFAULT 0,
   igst INTEGER NOT NULL DEFAULT 0,
-  total INTEGER NOT NULL           -- taxable + tax components
+  cess INTEGER NOT NULL DEFAULT 0,  -- H8: GST compensation cess (paise)
+  total INTEGER NOT NULL           -- taxable + tax components + cess
 );
 CREATE INDEX IF NOT EXISTS idx_invoice_lines_invoice ON invoice_lines(invoice_id);
 
@@ -1515,6 +1517,26 @@ function b2clThresholdPaise(date) {
   const applicable = B2CL_THRESHOLDS.filter(t => t.validFrom <= d);
   if (!applicable.length) return B2CL_THRESHOLDS[0].thresholdPaise; // pre-GST date → earliest tier
   return applicable.reduce((a, b) => (b.validFrom > a.validFrom ? b : a)).thresholdPaise;
+}
+
+// === Compensation cess: effective-dated per-HSN lookup (H8) ===
+// CESS_RATES rows are [hsnCode, cessRate, type, validFrom, validTo, description]:
+//   type 'specific' → cess = round(qty * cessRate) (cessRate is paise-per-unit);
+//   otherwise (ad valorem) → cess = round(taxable * cessRate).
+// Returns 0 when the HSN has no cess on that date. CESS_RATES is currently empty (cess HSNs land
+// with the khata-standard reference update), so auto-cess is 0 until then — the invoice form's
+// manual per-line cess input drives it in the meantime.
+function getCessRateRow(hsnSac, date) {
+  if (!hsnSac) return null;
+  const d = (date || nowIso()).slice(0, 10);
+  return REF.cessRates.data.find(r => r[0] === hsnSac && r[3] <= d && (r[4] == null || r[4] >= d)) || null;
+}
+function cessForLine(hsnSac, taxablePaise, qty, date) {
+  const row = getCessRateRow(hsnSac, date);
+  if (!row) return 0;
+  const cessRate = Number(row[1] || 0);
+  if (row[2] === 'specific') return Math.max(0, Math.round((qty || 0) * cessRate));
+  return Math.max(0, Math.round((taxablePaise || 0) * cessRate));
 }
 
 // Normalise an HSN dataset entry to a uniform shape regardless of source.
@@ -3298,6 +3320,12 @@ function runSchemaMigrations(db) {
     db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '10')");
   }
 
+  // === Migration 10 → 11: H8 — per-line compensation cess ===
+  if (currentVersion < 11) {
+    tryAddColumn('invoice_lines', 'cess INTEGER NOT NULL DEFAULT 0');
+    db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '11')");
+  }
+
   // Future migrations land here as `if (currentVersion < N) { ... }` blocks.
 }
 
@@ -4219,10 +4247,13 @@ function getAccountIdByName(db, name) {
 // export/SEZ as zero-rated (no tax); the with-LUT vs without-LUT distinction lands in 2B.
 function computeInvoiceTax({ companyStateIso, customerStateIso, isExport, isSez, lines }) {
   const intraState = !isExport && !isSez && !!companyStateIso && !!customerStateIso && companyStateIso === customerStateIso;
-  let subtotal = 0, cgst = 0, sgst = 0, igst = 0;
+  let subtotal = 0, cgst = 0, sgst = 0, igst = 0, cess = 0;
   for (const ln of lines) {
     const taxable = Math.max(0, Math.round(ln.taxable || 0));
     const rate = Number(ln.tax_rate || 0);
+    // Compensation cess rides on the line (set by the caller: auto from cessForLine + manual
+    // override). Zero-rated for export/SEZ, like GST.
+    const lineCess = (isExport || isSez) ? 0 : Math.max(0, Math.round(ln.cess || 0));
     subtotal += taxable;
     if (isExport || isSez) {
       ln.cgst = 0; ln.sgst = 0; ln.igst = 0;
@@ -4240,10 +4271,12 @@ function computeInvoiceTax({ companyStateIso, customerStateIso, isExport, isSez,
       ln.igst = i;
       igst += i;
     }
-    ln.total = taxable + (ln.cgst || 0) + (ln.sgst || 0) + (ln.igst || 0);
+    ln.cess = lineCess;
+    cess += lineCess;
+    ln.total = taxable + (ln.cgst || 0) + (ln.sgst || 0) + (ln.igst || 0) + lineCess;
   }
-  const total = subtotal + cgst + sgst + igst;
-  return { subtotal, cgst, sgst, igst, total, intraState };
+  const total = subtotal + cgst + sgst + igst + cess;
+  return { subtotal, cgst, sgst, igst, cess, total, intraState };
 }
 
 // Auto-generate the next invoice number for the given series. Reads the series row
@@ -4483,6 +4516,18 @@ function getOrCreateRateAccount(db, parentName, ratePct) {
   return lastInsertId(db);
 }
 
+// Cess Output account (single, not per-rate). Created lazily under Duties & Taxes the first
+// time an invoice carries compensation cess. Cess collected is a liability (payable to govt).
+function getOrCreateCessAccount(db) {
+  const name = 'Cess Output';
+  const r = db.exec('SELECT id FROM accounts WHERE name = ? LIMIT 1', [name]);
+  if (r.length && r[0].values.length) return r[0].values[0][0];
+  const p = db.exec("SELECT id FROM accounts WHERE name = 'Duties & Taxes' LIMIT 1");
+  const parentId = (p.length && p[0].values.length) ? p[0].values[0][0] : null;
+  db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, ?, 1)', [name, parentId, 'liability']);
+  return lastInsertId(db);
+}
+
 // Post an invoice to the double-entry ledger via the existing postEntry engine.
 // Routes tax through PER-RATE sub-accounts so reports can break down liability by rate
 // without enumerating bands. Lines are grouped by `tax_rate`, and each group posts to
@@ -4517,6 +4562,12 @@ async function postInvoiceToLedger(db, invoice, customer, computedLines) {
       const accId = getOrCreateRateAccount(db, 'IGST Output', rate * 100);
       postingLines.push({ accountId: accId, debit: 0, credit: g.igst });
     }
+  }
+
+  // H8 — compensation cess leg (Cr Cess Output). invoice.total already includes cess, so the
+  // Dr Sundry Debtors above stays balanced against Sales + GST + Cess.
+  if (invoice.cess > 0) {
+    postingLines.push({ accountId: getOrCreateCessAccount(db), debit: 0, credit: invoice.cess });
   }
 
   const result = await postEntry(db, {
@@ -7954,7 +8005,7 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
   let linesByInvoice = new Map();
   if (invIds.length) {
     const lineQ = db.exec(
-      `SELECT invoice_id, line_no, hsn_sac, hsn_description, quantity, unit, rate, taxable, tax_rate, cgst, sgst, igst
+      `SELECT invoice_id, line_no, hsn_sac, hsn_description, quantity, unit, rate, taxable, tax_rate, cgst, sgst, igst, cess
        FROM invoice_lines WHERE invoice_id IN (${invIds.map(() => '?').join(',')}) ORDER BY invoice_id, line_no`,
       invIds
     );
@@ -7976,17 +8027,12 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
   for (const inv of invoices) {
     const lines = linesByInvoice.get(inv.id) || [];
     if (!inv.posIso) validation.warnings.push(`${inv.num}: missing place of supply`);
-    // Compensation cess is captured only at the invoice level (invoices.cess); invoice_lines
-    // has no per-line cess column, so GSTR-1's per-line/aggregate csamt cannot be populated
-    // correctly yet. Warn rather than silently dropping it. The full fix needs a per-line
-    // cess column (schema migration) — tracked as H8 in plan/workplan.md.
-    if (inv.cess > 0) validation.warnings.push(`${inv.num}: ₹${(inv.cess / 100).toFixed(2)} compensation cess is NOT included in this GSTR-1 export (per-line cess tracking is not yet implemented).`);
     const posGstin = isoToGstinCode(inv.posIso);
     const isInterState = inv.posIso !== supplierStateIso;
 
     // Build itms array for this invoice
     const itms = lines.map((ln, i) => {
-      const [, lineNo, hsnSac, , , , , taxable, taxRate, lcgst, lsgst, ligst] = ln;
+      const [, lineNo, hsnSac, , , , , taxable, taxRate, lcgst, lsgst, ligst, lcess] = ln;
       if (!hsnSac) validation.warnings.push(`${inv.num} line ${lineNo}: missing HSN/SAC`);
       return {
         num: lineNo,
@@ -7996,7 +8042,7 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
           iamt: paiseToRs(ligst),
           camt: paiseToRs(lcgst),
           samt: paiseToRs(lsgst),
-          csamt: 0,
+          csamt: paiseToRs(lcess || 0),
         },
       };
     });
@@ -8033,7 +8079,7 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
       // B2CS — aggregate by (pos, rate). One invoice can contribute to multiple
       // (pos, rate) buckets if it has lines at different rates.
       for (const ln of lines) {
-        const [, , , , , , , taxable, taxRate, lcgst, lsgst, ligst] = ln;
+        const [, , , , , , , taxable, taxRate, lcgst, lsgst, ligst, lcess] = ln;
         const ratePct = Math.round((taxRate || 0) * 10000) / 100;
         const key = `${posGstin}|${ratePct}`;
         if (!b2csByPosRate.has(key)) {
@@ -8050,12 +8096,13 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
         agg.iamt += ligst || 0;
         agg.camt += lcgst || 0;
         agg.samt += lsgst || 0;
+        agg.csamt += lcess || 0;
       }
     }
 
     // === HSN aggregation across ALL invoices in the period ===
     for (const ln of lines) {
-      const [, , hsnSac, hsnDesc, qty, unit, , taxable, taxRate, lcgst, lsgst, ligst] = ln;
+      const [, , hsnSac, hsnDesc, qty, unit, , taxable, taxRate, lcgst, lsgst, ligst, lcess] = ln;
       const ratePct = Math.round((taxRate || 0) * 10000) / 100;
       const code = hsnSac || '';
       const key = `${code}|${ratePct}`;
@@ -8074,7 +8121,8 @@ function buildGSTR1Data(db, periodStart, periodEnd) {
       agg.iamt += ligst || 0;
       agg.camt += lcgst || 0;
       agg.samt += lsgst || 0;
-      agg.val += (taxable || 0) + (lcgst || 0) + (lsgst || 0) + (ligst || 0);
+      agg.csamt += lcess || 0;
+      agg.val += (taxable || 0) + (lcgst || 0) + (lsgst || 0) + (ligst || 0) + (lcess || 0);
     }
   }
 

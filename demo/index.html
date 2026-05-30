@@ -409,6 +409,85 @@
   </div>
 </section>
 
+<h2 id="first-run">Starting from blank</h2>
+<p class="intro">The walkthrough above uses a populated sample. If you want to build your own books from scratch — your real company, your real ledger — the path from empty browser to first GST-compliant invoice is six steps and about ten minutes.</p>
+<section class="try-it">
+  <ol class="steps">
+    <li>
+      <h4>Pick a mode</h4>
+      <p>On first open, Bahi asks <em>Are you a business owner or a chartered accountant?</em> Pick <strong>Business owner</strong> if you're managing one company's books. Pick <strong>Chartered accountant</strong> if you'll be reviewing multiple client files. You can switch any time later from the topbar badge or with <code>Ctrl+Shift+M</code>.</p>
+    </li>
+    <li>
+      <h4>Create your first <code>.khata</code> file</h4>
+      <p>Workspace → <strong>+ Create new .khata</strong>. Pick a folder on your disk (Documents / Bahi Books / is a sensible default) and a filename. Bahi then opens the new-company wizard. Fill in:</p>
+      <ul>
+        <li><strong>Legal name</strong> — your registered business name</li>
+        <li><strong>Trade name</strong> — what you actually call yourself</li>
+        <li><strong>Company type</strong> — proprietorship / partnership / LLP / private limited / etc.</li>
+        <li><strong>GSTIN</strong> (optional) — your 15-digit GST number; Bahi auto-fills the state from the first two digits</li>
+        <li><strong>State</strong> — type the name, ISO code (MH), or the GST state code (27); Bahi auto-fills the others</li>
+        <li><strong>Address</strong></li>
+        <li><strong>FY start</strong> — defaults to April 1 of the current FY</li>
+        <li><strong>UI tier</strong> — Service SMB or Goods SMB (changeable later in Settings)</li>
+        <li><strong>Composition scheme</strong> — toggle on if you're registered under section 10</li>
+      </ul>
+      <p>Click <strong>Create</strong>. Bahi writes the file to disk and lands you on the Dashboard.</p>
+    </li>
+    <li>
+      <h4>Add your first customer</h4>
+      <p>Sidebar → <strong>Customers</strong> → <strong>+ Add customer</strong>. Name (required), GSTIN (optional — auto-fills the state), state, and email / phone / address (all optional). Set an <strong>opening balance</strong> only if the customer owes you something on day one. Save.</p>
+    </li>
+    <li>
+      <h4>Add an item or service</h4>
+      <p>Sidebar → <strong>Items / services</strong> → <strong>+ Add item</strong>.</p>
+      <p>For a <strong>service</strong>: set Type = Service, fill the name, optional SAC code, unit (HR / NOS / etc.), default rate, and tax rate. Bahi auto-suggests the tax rate from the SAC code if it's in the bundled reference data.</p>
+      <p>For a <strong>goods item</strong>: set Type = Goods. Bahi reveals an inventory section — enable inventory tracking, pick valuation method (Weighted Average Cost or FIFO), batch tracking on/off, reorder level, preferred vendor, and opening stock quantity + value. For your first item, leave inventory tracking off; you can enable it later.</p>
+    </li>
+    <li>
+      <h4>Raise your first invoice</h4>
+      <p>Sidebar → <strong>+ New invoice</strong>. The form has three sections:</p>
+      <ul>
+        <li><strong>Header</strong> — customer, invoice series (default Domestic), invoice number (auto), date, place of supply (auto-filled from customer state), notes</li>
+        <li><strong>Lines</strong> — pick an item or type a free-text description; quantity, rate, tax rate (default from the item). For cess-bearing goods (aerated drinks, pan masala, tobacco, etc.) there's a <strong>Cess (₹)</strong> column that auto-suggests the compensation cess from the HSN</li>
+        <li><strong>Totals</strong> — subtotal, CGST/SGST routing (intra-state) vs IGST (inter-state), compensation cess, invoice total in numbers and amount-in-words</li>
+      </ul>
+      <p>Click <strong>Post invoice &amp; save</strong>. Behind the scenes Bahi:</p>
+      <ul>
+        <li>Inserts the invoice header + lines into the database</li>
+        <li>Posts the double-entry ledger — Dr Sundry Debtors / Cr Sales / Cr GST Output @ rate%, plus Cr Cess Output if the invoice carries cess</li>
+        <li>Captures snapshots of the company, customer, and HSN/SAC descriptions at this exact moment, so reprints stay correct even if you rename the customer later</li>
+        <li>Writes a signed audit log entry</li>
+        <li>Saves the file to disk</li>
+      </ul>
+      <p>Click <strong>PDF</strong> on the new invoice row to save a GST-compliant PDF.</p>
+    </li>
+    <li>
+      <h4>Record a payment</h4>
+      <p>Sidebar → <strong>+ Record payment</strong>. Pick the customer, date, amount, bank / cash account (or quick-add a new one), mode (bank transfer / cheque / UPI), reference (UTR / cheque number). Bahi shows the customer's open invoices and lets you allocate FIFO across them with checkboxes. Allocate, then <strong>Post payment &amp; save</strong>.</p>
+    </li>
+  </ol>
+  <p>You're done. Open the <strong>Dashboard</strong> to see receivables aging, top customers, GST liability for the month, and the audit log in plain English.</p>
+</section>
+
+<section class="flow">
+  <h3>What's next</h3>
+  <ul>
+    <li><strong>Sidebar</strong> has 60+ routes grouped into 10 sections — explore at your own pace. Hit <code>?</code> any time for the keyboard cheat sheet.</li>
+    <li><strong>Backup Now</strong> in the topbar (or <code>Ctrl+Shift+B</code>) writes a dated archive zip — do this at the end of every working session and keep one offsite copy.</li>
+    <li><strong>Settings → Safety &amp; failure modes</strong> — read this once. It explains what's protected against (browser crash, multi-machine, file corruption) and what isn't.</li>
+  </ul>
+  <h3>Where your data lives</h3>
+  <p>Your <code>.khata</code> file is a zip archive. Unzip it from the command line and you'll find:</p>
+  <ul>
+    <li><code>manifest.json</code> — metadata, schema version, integrity hashes, audit log head</li>
+    <li><code>books.sqlite</code> — the double-entry ledger as a regular SQLite database</li>
+    <li><code>snapshots/</code> — rolling snapshots of previous saves</li>
+    <li><code>attachments/</code> — scanned bills</li>
+    <li><code>exports/</code> — cached report exports</li>
+  </ul>
+  <p>The format is published in <code>khata-format.md</code>. Anyone can write a <code>.khata</code> reader or writer — Bahi is just one implementation.</p>
+</section>
+
 <h2 id="accountant-walkthrough">Accountant walkthrough</h2>
 <p class="intro">Every route the day-to-day accountant touches, captured against the pharma sample. Click any screenshot to open the live Bahi route in this build (load <code>pharma.khata</code> first).</p>
 <section class="flow">
@@ -1258,6 +1337,95 @@
 
 <h2 id="ca-audit-walkthrough">CA audit walkthrough</h2>
 <p class="intro">One CA profile, three client files, one review workflow. The CA opens each <code>.khata</code> in sequence, runs trial balance / balance sheet / P&amp;L, uses the review panel to annotate and sign off, and exports a printable report — all without leaving the browser.</p>
+
+<section class="flow">
+  <h3>How CA mode works</h3>
+  <p class="section-intro">The screenshot tour below shows what review looks like in practice. This subsection covers the layer underneath it — how CA mode behaves, what your CA profile is, how to add a client, and what happens if the owner edits in parallel.</p>
+
+  <h4>The problem CA mode solves</h4>
+  <p>Without CA mode, the typical handoff is messy: the owner sends a <code>.khata</code> to the CA via email / WhatsApp / Drive, the CA opens it pretending to be the owner, makes adjustments (year-end, depreciation, prepaid, outstanding, accruals), sends it back, and the owner has no visible record of what changed.</p>
+  <p>With CA mode, Bahi tags every action the CA takes with <code>actor='ca'</code> in the audit log automatically, stamps the CA's name + firm + ICAI membership on each entry, lets the CA mark entries reviewed and attach annotations, generates a formal PDF Review Report with the CA firm letterhead, and — when the owner reopens the file — surfaces exactly what was added, the review report, the annotations, and any to-dos to react to.</p>
+
+  <h4>One-time setup</h4>
+  <p>Click the <strong>OWNER</strong> badge in the topbar (or use <code>Ctrl+Shift+M</code>) and confirm the switch. The first time you enter CA mode, Bahi shows the CA profile setup modal:</p>
+  <ul>
+    <li><strong>Your name</strong></li>
+    <li><strong>Firm name</strong></li>
+    <li><strong>ICAI membership number</strong></li>
+    <li><strong>Logo</strong> (optional, ≤200 KB) — appears on review reports</li>
+  </ul>
+  <p>This profile is stored in your browser's IndexedDB, <strong>never inside any client <code>.khata</code> file</strong>. It's per-machine, so if you work from two laptops you set it up on each. Edit later via <strong>Settings → Edit CA profile</strong>.</p>
+
+  <h4>Adding a client</h4>
+  <p>Workspace → <strong>+ Add client</strong> → pick the client's <code>.khata</code>. Bahi validates the format and adds it to your Client list. Each card shows client name + GSTIN, last-reviewed date, unreviewed entries count, and last-opened.</p>
+  <p>Every time you open a client file, Bahi runs the <strong>Layer 3 ancestry check</strong> against the previous open's audit log head. Five outcomes:</p>
+  <ul>
+    <li><strong>Identical</strong> — same audit head as last open → silent, proceed</li>
+    <li><strong>Fast-forward</strong> — incoming file is downstream (owner posted new entries since you last had it) → silent, proceed</li>
+    <li><strong>Same GSTIN, no shared ancestry</strong> — file shares no history with your last copy → warning toast (probable cause: fresh export, restore from old backup, or different file with the same GSTIN)</li>
+    <li><strong>Divergent</strong> — both you and the owner have new entries the other doesn't → routes to the Reconciliation View (see below)</li>
+    <li><strong>Different GSTIN</strong> — hard block; you've opened the wrong file</li>
+  </ul>
+
+  <h4>Annotation types</h4>
+  <p>Click <strong>+ Note</strong> on any review row, or use <strong>Sidebar → CA → Annotations</strong>. Six types:</p>
+  <ul>
+    <li><strong>Comment</strong> — generic note</li>
+    <li><strong>To-do</strong> — something you'll come back to</li>
+    <li><strong>Flag</strong> — needs attention but no specific action</li>
+    <li><strong>Reclassified</strong> — you posted an adjustment to move an entry; this annotation explains why</li>
+    <li><strong>Missing bill</strong> — supporting document is missing; ask the client</li>
+    <li><strong>Confirm with client</strong> — needs the client's input before finalising</li>
+  </ul>
+  <p>Each annotation captures your CA identity (name + firm + ICAI membership) at creation time as a snapshot. If your firm renames itself later, last year's annotations still show last year's firm name — same invariant as invoice, customer, and vendor snapshots.</p>
+
+  <h4>Adjustment voucher types</h4>
+  <p>Sidebar → <strong>CA → + Adjustment voucher</strong> (or <code>F7</code> for a journal voucher). The form is a thin wrapper around the journal-voucher engine with one extra field — <strong>Adjustment type</strong>:</p>
+  <ul>
+    <li><strong>Year-end</strong> — closing entries that aren't full FY rollover</li>
+    <li><strong>Depreciation</strong> — fixed-asset depreciation</li>
+    <li><strong>Prepaid</strong> — prepaid expenses → reclassify as expense</li>
+    <li><strong>Outstanding</strong> — outstanding expenses → reclassify as liability</li>
+    <li><strong>Accrual</strong> — revenue / expense accrual</li>
+    <li><strong>Other</strong> — anything else</li>
+  </ul>
+  <p>Posted via the same <code>postEntry</code> engine as native journal vouchers, but with <code>actor='ca'</code> and a dedicated <code>ca.adjustment</code> audit log action. The owner sees this entry tagged as a CA adjustment with your name, firm, and the adjustment type.</p>
+
+  <h4>Sending the file back</h4>
+  <p>Two options:</p>
+  <ul>
+    <li><strong>File system</strong> (simplest) — save the file (any save action does this; or hit <code>Ctrl+S</code>), send the <code>.khata</code> via your normal channel, tell the client to open it in Bahi.</li>
+    <li><strong>Backup zip with the review report bundled</strong> (cleaner handoff) — hit <strong>Backup Now</strong> (or <code>Ctrl+Shift+B</code>). Bahi writes a dated <code>.khata-backup.zip</code> containing the file + audit log CSV + meta.json. Add the PDF review report to the same zip manually. Send the zip.</li>
+  </ul>
+  <p>Either way, the owner's next file open triggers the Layer 3 ancestry check on their side. Your audit log head is downstream of theirs → fast-forward, proceed silently. They see the new audit log entries clearly attributed to you.</p>
+
+  <h4>Reconciliation — when the owner edited in parallel</h4>
+  <p>If the owner posted new entries while you were reviewing — the "we both made changes" scenario — Bahi detects it on the <strong>owner's</strong> next file open. Their workspace's last-known head doesn't match the head of the file you sent back, AND their audit chain has entries you don't have, AND your audit chain has entries they don't have.</p>
+  <p>Bahi opens the <strong>Reconciliation View</strong> automatically for them:</p>
+  <ul>
+    <li><strong>Header banner</strong> with the common ancestor hash, both branch heads, and per-side counts of unique entries</li>
+    <li><strong>Side-by-side checkbox lists</strong> — local branch (owner) on the left, imported branch (you) on the right, default = keep all from both sides</li>
+    <li><strong>Pre-merge summary</strong> of how many entries will come from each branch</li>
+  </ul>
+  <p>The owner unchecks anything they don't want, then <strong>Build merged file</strong>. Bahi runs the replay engine — takes the local DB as the base, walks the picked imported entries in chronological order, and re-executes them via the existing posting bridges. The merged manifest carries <code>integrity.parentHashes = [localHead, importedHead]</code> so the file knows its lineage from both branches, and the audit log gets a <code>merge.commit</code> entry. Nothing is silently lost; both branches' work is preserved; the owner is in control of the merge decisions.</p>
+
+  <h4>What CA mode is, and isn't</h4>
+  <p>It <strong>is</strong>:</p>
+  <ul>
+    <li>A way to attribute every action to either the owner or a specific CA via the audit log's <code>actor</code> field</li>
+    <li>A way to attach notes to ledger entries that survive handoff</li>
+    <li>A way to generate a formal PDF review report with your firm letterhead in one click</li>
+    <li>A way to safely round-trip a <code>.khata</code> file between owner and CA without silent overwrites</li>
+  </ul>
+  <p>It <strong>is not</strong>:</p>
+  <ul>
+    <li>Real-time collaboration — Bahi is local-first; multi-CA workflows on the same file are not supported (the same problem as multi-machine concurrent editing)</li>
+    <li>A way to lock the owner out — they can still post entries in parallel; the Reconciliation View exists to handle that</li>
+    <li>A way to delete or hide owner entries — the audit log is append-only; your adjustments are additive</li>
+    <li>A multi-firm workspace — each browser stores one CA profile. If you work for two firms with different membership numbers, use a separate browser profile (Chrome / Brave / Arc profile) for each</li>
+  </ul>
+</section>
+
 <section class="flow">
   <h3>Client 1 — Pharma (Vaidya Life Sciences)</h3>
   <p class="section-intro">CA opens pharma.khata. Mode badge turns into the CA tile. Review workflow begins.</p>
@@ -1441,6 +1609,134 @@
   </div>
 </section>
 
+
+<h2 id="tally-migration">Migrating from Tally</h2>
+<p class="intro">Bahi has a built-in Tally XML importer that handles both Tally Prime and Tally ERP 9. A typical migration takes about 30 minutes for a year of bookkeeping. The importer is an orchestrator over Bahi's existing posting engine — every imported voucher goes through the same posting functions as native entries, so imported records are forensically indistinguishable from natively-posted ones.</p>
+
+<section class="flow">
+  <h3>What gets imported, what doesn't</h3>
+  <div class="why-grid">
+    <div class="why"><h4>Imported</h4><p>Masters (groups, ledgers, stock items, units, godowns) plus vouchers — Sales / Purchase / Receipt / Payment / Journal / Contra / Credit Note / Debit Note and variants.</p></div>
+    <div class="why"><h4>Ignored</h4><p>Cost-centre allocations (warned), Stock Journal manual adjustments, Memorandum, Reversing Journal, Sales Order, Purchase Order, Payroll — none are part of standard double-entry books.</p></div>
+    <div class="why"><h4>Multi-currency</h4><p>Taken at face value from the INR column. Non-INR vouchers get flagged in the result for you to review.</p></div>
+    <div class="why"><h4>Not supported</h4><p>Tally <code>.tcp</code> backup files (proprietary binary). Tally Cloud / TallyVault encrypted files (proprietary, encrypted).</p></div>
+  </div>
+</section>
+
+<section class="flow">
+  <h3>Step 1 — Export from Tally</h3>
+  <h4>Tally Prime</h4>
+  <ol>
+    <li>Open your company in Tally Prime.</li>
+    <li><strong>Gateway of Tally → Export → All Masters</strong>, format XML → save to a known folder.</li>
+    <li><strong>Gateway of Tally → Export → Day Book</strong>, format XML, set the date range (or full year) → save to the same folder.</li>
+  </ol>
+  <h4>Tally ERP 9</h4>
+  <ol>
+    <li>Open your company in Tally ERP 9.</li>
+    <li><strong>Gateway of Tally → Display → List of Accounts → Alt+E (Export)</strong>, pick XML, save.</li>
+    <li><strong>Gateway of Tally → Display → Day Book → Alt+E (Export)</strong>, pick XML, set the period, save.</li>
+  </ol>
+  <p>Either path produces two XML files. You can combine them into one (most CAs do) or import them sequentially — Bahi handles both.</p>
+</section>
+
+<section class="flow">
+  <h3>Step 2 — Run the wizard</h3>
+  <p class="section-intro">In Bahi: <strong>Workspace → Import from Tally…</strong> → pick your Tally XML. Bahi parses the file (usually under 2 seconds for an SMB year) and routes you to a 6-step wizard.</p>
+  <ol class="steps">
+    <li>
+      <h4>File summary</h4>
+      <p>Source company name + GSTIN (from the Tally <code>&lt;COMPANY&gt;</code> element), detected format (Prime / ERP 9), counts of groups / ledgers / stock items / godowns / vouchers, the voucher date range, and a voucher-type breakdown with supported / unsupported flags. If unsupported is under ~5% of total you're fine — otherwise look at the breakdown and consider fixing in Tally first.</p>
+    </li>
+    <li>
+      <h4>Date range filter</h4>
+      <p>Defaults to the full file range. The picker has a live count that updates as you change the dates. Common scenarios: <strong>first migration</strong> (import everything), <strong>year-by-year</strong> (import current FY first, then the previous), <strong>period-end</strong> (import only since the last close).</p>
+    </li>
+    <li>
+      <h4>Mapping review</h4>
+      <p>Tally and Bahi both use a chart-of-accounts hierarchy, but Tally has 28 reserved groups plus whatever customs you've created. Bahi auto-maps the reserved groups; your custom groups go into a <strong>Needs mapping</strong> panel that hard-blocks Continue until every row is resolved. Common picks:</p>
+      <ul>
+        <li>Custom expense group ("Marketing", "Office") → Indirect Expenses</li>
+        <li>Custom income group → Sales</li>
+        <li>Custom liability group → Current Liabilities</li>
+        <li>Custom asset group → Current Assets</li>
+      </ul>
+      <p>Auto-mapped groups sit in a collapsible section above. Click any row to override if Bahi got it wrong.</p>
+    </li>
+    <li>
+      <h4>Commit target</h4>
+      <p>Two options:</p>
+      <ul>
+        <li><strong>Create new <code>.khata</code> file</strong> — fresh file with the Tally company info pre-populated. Safer; recommended for first-time imports.</li>
+        <li><strong>Merge into currently-open file</strong> — adds the Tally data to the file you have open. Customers and vendors are deduped by GSTIN (or name if no GSTIN). Voucher-number collisions get a <code>TALLY-</code> prefix so you can see which records came from import.</li>
+      </ul>
+      <p>For merge mode, Bahi shows a live preview of how many customers will be matched vs created (and the same for vendors).</p>
+    </li>
+    <li>
+      <h4>Dry-run preview</h4>
+      <p>Final counts before committing: customers, vendors, items, godowns, supported vouchers in range, unsupported vouchers that will be skipped. Verify the date range and the commit target. Click <strong>Commit import</strong>.</p>
+    </li>
+    <li>
+      <h4>Result</h4>
+      <p>Bahi runs the import in a single SQL transaction (any failure rolls back cleanly) and shows: created / matched counts per category, the <strong>auto-cleaned-to-services</strong> list (stock items that looked service-shaped — zero opening stock, no HSN code, name contains "service" / "consulting" / "advice" / "fee" — were imported as services with inventory disabled), the cost-centre warning, the multi-currency warning, skipped vouchers with reasons, and the unsupported voucher types with counts.</p>
+      <p>Click <strong>Download import report</strong> to save a JSON file with the full result for your records. Keep it alongside the original Tally export as the audit trail of the migration.</p>
+    </li>
+  </ol>
+</section>
+
+<section class="flow">
+  <h3>Step 3 — Verify the import</h3>
+  <p class="section-intro">Don't skip this. Migration mistakes are easier to catch on day one than six months later.</p>
+  <ol>
+    <li><strong>Trial Balance</strong> (Sidebar → Reports → Trial Balance) — verify total debits and credits tie. A mismatch usually means a few vouchers were skipped — cross-check the count against the import report.</li>
+    <li><strong>Customer + vendor totals</strong> — pick three of each at random and verify the outstanding balances match what Tally showed.</li>
+    <li><strong>Stock on hand</strong> (Sidebar → Inventory → Stock on hand) — for goods items, verify the opening + post-import quantities are right.</li>
+    <li><strong>Sales register</strong> for the most recent month — invoice count should match Tally.</li>
+    <li><strong>GSTR-3B summary</strong> (Sidebar → Compliance → GSTR-3B) for the current period — total CGST/SGST/IGST should match the Tally summary.</li>
+  </ol>
+</section>
+
+<section class="flow">
+  <h3>Once you're confident</h3>
+  <ul>
+    <li>Hit <strong>Backup Now</strong> (<code>Ctrl+Shift+B</code>) to save a dated <code>.khata-backup.zip</code>. Keep one copy offsite.</li>
+    <li>Decide your handoff date with Tally — usually the start of a new month or new financial year.</li>
+    <li>From that date forward, post directly into Bahi. Don't dual-post into both Tally and Bahi — keeping two systems in sync by hand is the same problem as multi-machine concurrent editing, and it doesn't work.</li>
+    <li>After 30 days of clean Bahi posting, retire the Tally license (or keep it read-only for historical reference).</li>
+  </ul>
+</section>
+
+<section class="flow">
+  <h3>Common gotchas</h3>
+  <div class="why-grid">
+    <div class="why"><h4>Customer-not-found skips on sales vouchers</h4><p>Usually means the customer ledger sat under a custom group you didn't map to Sundry Debtors in Step 5. Fix the mapping and re-import.</p></div>
+    <div class="why"><h4>Tax amounts don't match</h4><p>Check if the original Tally vouchers used inclusive vs exclusive tax handling. Bahi assumes exclusive (line subtotal + GST = total). Inclusive-tax vouchers may need a manual journal voucher to correct.</p></div>
+    <div class="why"><h4>Stock valuation off by a few rupees</h4><p>Rounding. Tally uses different rounding rules than Bahi. Material only if your stock has many low-value items.</p></div>
+    <div class="why"><h4>Period overlap with existing Bahi entries</h4><p>If you've already posted in Bahi for the same period the Tally import covers, you'll see a yellow banner in Step 4 (merge mode only). Importing anyway will duplicate ledger entries — narrow the import date range or roll back the Bahi entries first.</p></div>
+  </div>
+</section>
+
+<section class="flow">
+  <h3>If something goes wrong</h3>
+  <p>The import is wrapped in a single SQL transaction. If anything fails mid-import, the database rolls back to its pre-import state and a <code>tally.import.failed</code> entry appears in the audit log with the error message.</p>
+  <p>If the import succeeded but the result looks wrong: open <strong>Settings → Snapshots</strong> — Bahi captured a snapshot just before the import. Restore it to a fresh <code>.khata</code> file and start over with different mapping decisions. If you used merge-into-existing, restore the snapshot to undo the merge. If you used create-new, just delete the new file and re-create from the original Tally XML.</p>
+</section>
+
+<section class="flow">
+  <h3>What the Tally importer is, and isn't</h3>
+  <p>It <strong>is</strong>:</p>
+  <ul>
+    <li>A one-way migration tool (Tally → Bahi)</li>
+    <li>An orchestrator over Bahi's existing posting engine — imported records are forensically and behaviorally indistinguishable from natively-posted ones</li>
+  </ul>
+  <p>It <strong>is not</strong>:</p>
+  <ul>
+    <li>A bidirectional sync tool — going Bahi → Tally is a separate (and much lower-value) feature</li>
+    <li>A reader for Tally <code>.tcp</code> backup files (proprietary binary, not handled)</li>
+    <li>A reader for encrypted Tally Cloud / TallyVault files (same)</li>
+    <li>An IRN / e-invoicing data preserver — Tally Prime exports include IRN data, but Bahi has no IRN field yet</li>
+  </ul>
+</section>
 
 <h2 id="capture-summary">Capture summary</h2>
 <p class="intro">Every screenshot on this page is generated by <code>capture.py</code> — a Playwright script that drives a local Bahi dev server, loads each sample file via Bahi's in-page globals, navigates to each route, and records a 1400×900 PNG. The script doubles as a regression test: any route that fails to render or throws a console error is flagged in <a href="CAPTURE-LOG.md">CAPTURE-LOG.md</a>.</p>

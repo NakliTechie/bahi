@@ -447,8 +447,9 @@ const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Fil
 //        bank_reconciliations table
 //   v10 → H1: audit_log.hash_version (versioned, all-field tamper-evident audit hash)
 //   v11 → H8: invoice_lines.cess (per-line GST compensation cess)
+//   v12 → H8: purchase_lines.cess (per-line cess on purchases / ITC)
 // The runner is in runSchemaMigrations() below.
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 // Snapshot retention policy (spec §9.3):
 //   - Last N saves: keep the most recent N auto snapshots regardless of date
@@ -880,6 +881,7 @@ CREATE TABLE IF NOT EXISTS purchase_lines (
   sgst INTEGER NOT NULL DEFAULT 0,
   igst INTEGER NOT NULL DEFAULT 0,
   itc_eligible INTEGER DEFAULT 1,
+  cess INTEGER NOT NULL DEFAULT 0,  -- H8: GST compensation cess (paise)
   total INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_purchase_lines_purchase ON purchase_lines(purchase_id);
@@ -3326,6 +3328,12 @@ function runSchemaMigrations(db) {
     db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '11')");
   }
 
+  // === Migration 11 → 12: H8 — per-line compensation cess on purchases (ITC) ===
+  if (currentVersion < 12) {
+    tryAddColumn('purchase_lines', 'cess INTEGER NOT NULL DEFAULT 0');
+    db.run("INSERT OR REPLACE INTO meta (k, v) VALUES ('schemaVersion', '12')");
+  }
+
   // Future migrations land here as `if (currentVersion < N) { ... }` blocks.
 }
 
@@ -4518,13 +4526,12 @@ function getOrCreateRateAccount(db, parentName, ratePct) {
 
 // Cess Output account (single, not per-rate). Created lazily under Duties & Taxes the first
 // time an invoice carries compensation cess. Cess collected is a liability (payable to govt).
-function getOrCreateCessAccount(db) {
-  const name = 'Cess Output';
+function getOrCreateCessAccount(db, name = 'Cess Output', type = 'liability') {
   const r = db.exec('SELECT id FROM accounts WHERE name = ? LIMIT 1', [name]);
   if (r.length && r[0].values.length) return r[0].values[0][0];
   const p = db.exec("SELECT id FROM accounts WHERE name = 'Duties & Taxes' LIMIT 1");
   const parentId = (p.length && p[0].values.length) ? p[0].values[0][0] : null;
-  db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, ?, 1)', [name, parentId, 'liability']);
+  db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, ?, 1)', [name, parentId, type]);
   return lastInsertId(db);
 }
 
@@ -4933,6 +4940,11 @@ async function postPurchaseToLedger(db, purchase, vendor, computedLines, opts = 
         lines.push({ accountId: getOrCreateRateAccount(db, 'GST RCM Output', ratePct), debit: 0, credit: totalTaxAtRate });
       }
     }
+    // Compensation cess under RCM: Dr Cess RCM Input + Cr Cess RCM Output (net 0; input claimable).
+    if (purchase.cess > 0) {
+      lines.push({ accountId: getOrCreateCessAccount(db, 'Cess RCM Input', 'asset'), debit: purchase.cess, credit: 0 });
+      lines.push({ accountId: getOrCreateCessAccount(db, 'Cess RCM Output', 'liability'), debit: 0, credit: purchase.cess });
+    }
     // Cr Sundry Creditors only the taxable amount (the supplier didn't charge GST under RCM)
     lines.push({ accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: 0, credit: purchase.subtotal });
   } else {
@@ -4943,6 +4955,8 @@ async function postPurchaseToLedger(db, purchase, vendor, computedLines, opts = 
       if (g.sgst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'SGST Input', ratePct / 2), debit: g.sgst, credit: 0 });
       if (g.igst > 0) lines.push({ accountId: getOrCreateRateAccount(db, 'IGST Input', ratePct), debit: g.igst, credit: 0 });
     }
+    // Compensation cess: Dr Cess Input (claimable ITC). Sundry Creditors below already includes it (total).
+    if (purchase.cess > 0) lines.push({ accountId: getOrCreateCessAccount(db, 'Cess Input', 'asset'), debit: purchase.cess, credit: 0 });
     lines.push({ accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: 0, credit: purchase.total });
   }
 
@@ -5252,35 +5266,36 @@ function getBalanceSheet(db, asOfDate) {
 function buildGSTR3BSummary(db, periodStart, periodEnd) {
   // Outward — sum from invoices
   const invR = db.exec(`
-    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COUNT(*)
+    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COALESCE(SUM(cess),0), COUNT(*)
     FROM invoices WHERE status='posted' AND invoice_date BETWEEN ? AND ?
   `, [periodStart, periodEnd]);
-  const [outTaxable, outCgst, outSgst, outIgst, invoiceCount] = invR[0].values[0];
+  const [outTaxable, outCgst, outSgst, outIgst, outCess, invoiceCount] = invR[0].values[0];
 
   // ITC from purchases (non-RCM)
   const purR = db.exec(`
-    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COUNT(*)
+    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COALESCE(SUM(cess),0), COUNT(*)
     FROM purchases WHERE status='posted' AND reverse_charge=0 AND itc_eligible=1 AND bill_date BETWEEN ? AND ?
   `, [periodStart, periodEnd]);
-  const [itcTaxable, itcCgst, itcSgst, itcIgst, purchaseCount] = purR[0].values[0];
+  const [itcTaxable, itcCgst, itcSgst, itcIgst, itcCess, purchaseCount] = purR[0].values[0];
 
   // RCM purchases (Section 3.1d)
   const rcmR = db.exec(`
-    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COUNT(*)
+    SELECT COALESCE(SUM(subtotal),0), COALESCE(SUM(cgst),0), COALESCE(SUM(sgst),0), COALESCE(SUM(igst),0), COALESCE(SUM(cess),0), COUNT(*)
     FROM purchases WHERE status='posted' AND reverse_charge=1 AND bill_date BETWEEN ? AND ?
   `, [periodStart, periodEnd]);
-  const [rcmTaxable, rcmCgst, rcmSgst, rcmIgst, rcmCount] = rcmR[0].values[0];
+  const [rcmTaxable, rcmCgst, rcmSgst, rcmIgst, rcmCess, rcmCount] = rcmR[0].values[0];
 
   return {
     period_start: periodStart,
     period_end: periodEnd,
-    outward: { taxable: outTaxable, cgst: outCgst, sgst: outSgst, igst: outIgst, count: invoiceCount },
-    itc: { taxable: itcTaxable, cgst: itcCgst, sgst: itcSgst, igst: itcIgst, count: purchaseCount },
-    rcm: { taxable: rcmTaxable, cgst: rcmCgst, sgst: rcmSgst, igst: rcmIgst, count: rcmCount },
+    outward: { taxable: outTaxable, cgst: outCgst, sgst: outSgst, igst: outIgst, cess: outCess, count: invoiceCount },
+    itc: { taxable: itcTaxable, cgst: itcCgst, sgst: itcSgst, igst: itcIgst, cess: itcCess, count: purchaseCount },
+    rcm: { taxable: rcmTaxable, cgst: rcmCgst, sgst: rcmSgst, igst: rcmIgst, cess: rcmCess, count: rcmCount },
     netLiability: {
       cgst: (outCgst + rcmCgst) - itcCgst,
       sgst: (outSgst + rcmSgst) - itcSgst,
       igst: (outIgst + rcmIgst) - itcIgst,
+      cess: (outCess + rcmCess) - itcCess,
     },
   };
 }

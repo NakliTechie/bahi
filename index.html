@@ -11699,12 +11699,12 @@ function renderInvoiceForm(main) {
           lineStmt.run([invoiceId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, hsnDesc, ln.quantity, null, ln.rate, ln.discount, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.total]);
         }
         lineStmt.free();
-        STATE.db.run('COMMIT');
 
-        // Now post to the ledger via the engine. postEntry runs its own transaction.
+        // Post to the ledger in the SAME transaction — postEntry uses a SAVEPOINT, so it
+        // nests under this BEGIN. Invoice header + lines + ledger entry now commit (or roll
+        // back) atomically, so a posting failure can't leave an invoice with no ledger entry.
         // Pass computedLines so the bridge can group by rate and route to per-rate
-        // sub-accounts (CGST Output @ 9%, IGST Output @ 18%, etc.) — auto-created
-        // on first use.
+        // sub-accounts (CGST Output @ 9%, IGST Output @ 18%, etc.) — auto-created on first use.
         const entryId = await postInvoiceToLedger(STATE.db, {
           invoice_number: invoiceNumber,
           invoice_date: invoiceDate,
@@ -11715,6 +11715,7 @@ function renderInvoiceForm(main) {
           total: totals.total,
         }, customer, computedLines);
         STATE.db.run('UPDATE invoices SET ledger_entry_id = ? WHERE id = ?', [entryId, invoiceId]);
+        STATE.db.run('COMMIT');
 
         // === Phase 4: stock effects + COGS posting (skipped for service-only items) ===
         try {
@@ -12481,14 +12482,15 @@ function renderPaymentForm(main) {
           allocStmt.run([paymentId, a.invoiceId, a.amount, invNumByIdLocal.get(a.invoiceId) || null]);
         }
         allocStmt.free();
-        STATE.db.run('COMMIT');
 
-        // Post to ledger
+        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
+        // payment row + allocations + ledger entry commit (or roll back) atomically.
         const entryId = await postPaymentToLedger(STATE.db, {
           payment_number: paymentNumber, payment_date: paymentDate,
           amount: totalAmount, payment_mode: mode,
         }, customer, bankAcc);
         STATE.db.run('UPDATE payments SET ledger_entry_id = ? WHERE id = ?', [entryId, paymentId]);
+        STATE.db.run('COMMIT');
 
         setSaveStatus('unsaved');
         const ok = await persistKhata();
@@ -14388,8 +14390,9 @@ function renderPurchaseForm(main, opts = {}) {
           lineStmt.run([purchaseId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, itcEligible, ln.total || (ln.taxable + (ln.cgst||0) + (ln.sgst||0) + (ln.igst||0))]);
         }
         lineStmt.free();
-        STATE.db.run('COMMIT');
 
+        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
+        // purchase header + lines + ledger entry commit (or roll back) atomically.
         const entryId = await postPurchaseToLedger(STATE.db, {
           internal_ref: internalRefVal,
           bill_number: billNumber,
@@ -14400,6 +14403,7 @@ function renderPurchaseForm(main, opts = {}) {
           reverse_charge: rcm,
         }, vendor, computedLines, { aiAssisted: !!opts.aiAssisted });
         STATE.db.run('UPDATE purchases SET ledger_entry_id = ? WHERE id = ?', [entryId, purchaseId]);
+        STATE.db.run('COMMIT');
 
         // === Phase 4: stock effects (skipped for service-only items) ===
         try {
@@ -15075,14 +15079,16 @@ function renderCreditNoteForm(main) {
           }
           lineStmt.free();
         }
-        STATE.db.run('COMMIT');
 
+        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
+        // credit note + lines + ledger entry commit (or roll back) atomically.
         const entryId = await postCreditNoteToLedger(STATE.db, {
           cn_number: cnNumber, cn_date: cnDate,
           original_invoice_number: inv.invoice_number,
           subtotal: cnSub, cgst: cnCgst, sgst: cnSgst, igst: cnIgst, total: cnTotal,
         }, customer, computedLines);
         STATE.db.run('UPDATE credit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, cnId]);
+        STATE.db.run('COMMIT');
 
         // === Phase 4: stock effects (stock back in) ===
         try {
@@ -15290,14 +15296,16 @@ function renderDebitNoteForm(main) {
           }
           lineStmt.free();
         }
-        STATE.db.run('COMMIT');
 
+        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
+        // debit note + lines + ledger entry commit (or roll back) atomically.
         const entryId = await postDebitNoteToLedger(STATE.db, {
           dn_number: dnNumber, dn_date: dnDate,
           original_bill_number: pur.bill_number,
           subtotal: dnSub, cgst: dnCgst, sgst: dnSgst, igst: dnIgst, total: dnTotal,
         }, vendor, computedLines);
         STATE.db.run('UPDATE debit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, dnId]);
+        STATE.db.run('COMMIT');
 
         // === Phase 4: stock effects (stock out — purchase return) ===
         try {
@@ -18620,10 +18628,10 @@ function renderVendorPaymentForm(main) {
           [paymentNumber, paymentDate, vendor.id, 'out', bankAcc.id, gross, mode, reference, notes, 'posted', vendorSnapshot, bankAcc.name, tdsAmount, tdsSection, nowIso()]
         );
         const paymentId = lastInsertId(STATE.db);
-        STATE.db.run('COMMIT');
 
-        // Post the bank-side journal: Dr Sundry Creditors (gross) / Cr Bank (net) / Cr TDS Payable (tds)
-        // The TDS leg is wrapped in recordTdsDeduction below; here we post just Dr Creditors / Cr Bank (net)
+        // Post the journal in the SAME transaction (postEntry uses a SAVEPOINT) so the
+        // payment row + ledger entry + TDS deduction row commit (or roll back) atomically:
+        // Dr Sundry Creditors (gross) / Cr Bank (net) / Cr TDS Payable (tds, if any).
         const lines = [
           { accountId: getAccountIdByName(STATE.db, 'Sundry Creditors'), debit: gross, credit: 0 },
           { accountId: bankAcc.id, debit: 0, credit: netToVendor },
@@ -18652,6 +18660,7 @@ function renderVendorPaymentForm(main) {
             [paymentId, vendor.id, tdsSection, tdsRate, gross, tdsAmount, paymentDate, vPan2, vName2, result.entryId, nowIso()]
           );
         }
+        STATE.db.run('COMMIT');
 
         setSaveStatus('unsaved');
         const ok = await persistKhata();

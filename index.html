@@ -1537,12 +1537,45 @@ function b2clThresholdPaise(date) {
 }
 
 // === Compensation cess: effective-dated per-HSN lookup (H8) ===
-// CESS_RATES rows are [hsnCode, cessRate, type, validFrom, validTo, description]:
-//   type 'specific' → cess = round(qty * cessRate) (cessRate is paise-per-unit);
-//   otherwise (ad valorem) → cess = round(taxable * cessRate).
-// Returns 0 when the HSN has no cess on that date. CESS_RATES is currently empty (cess HSNs land
-// with the khata-standard reference update), so auto-cess is 0 until then — the invoice form's
-// manual per-line cess input drives it in the meantime.
+// Two on-disk shapes feed this lookup, so normalise each entry before use:
+//   • Bundled CESS_RATES (array): [hsnCode, rate, type, validFrom, validTo, desc] where rate is a
+//     FRACTION for ad valorem (0.12 = 12%) or paise-per-unit for 'specific'.
+//   • khata-standard cess dataset (object): {hsnPattern, cessRate, cessType, validFrom, validTo}
+//     where cessRate is a PERCENT (12.0 = 12%) and is null for 'compound'/'specific' entries whose
+//     rate lives only in a human-readable note (not machine-applicable).
+// normaliseCessEntry collapses both to { code, rate, type, validFrom, validTo } with rate always a
+// fraction (ad valorem) or paise-per-unit (specific); non-applicable entries normalise to rate 0 so
+// they contribute no auto-cess (the invoice form's manual per-line cess input drives those).
+function normaliseCessEntry(entry) {
+  if (!entry) return null;
+  if (Array.isArray(entry)) {
+    const type = entry[2] === 'specific' ? 'specific' : 'advalorem';
+    return {
+      code: String(entry[0] || '').replace(/\s+/g, ''),
+      rate: Number(entry[1] || 0),
+      type,
+      validFrom: entry[3],
+      validTo: entry[4] == null ? null : entry[4],
+    };
+  }
+  if (typeof entry === 'object') {
+    const ct = String(entry.cessType || '').toLowerCase().replace(/[\s_]+/g, '');
+    const type = ct === 'specific' ? 'specific' : (ct === 'compound' ? 'compound' : 'advalorem');
+    // Object-format ad-valorem rate is a percent → fraction. null (compound/specific) → 0 (no auto-cess).
+    const rate = entry.cessRate == null ? 0 : (type === 'advalorem' ? Number(entry.cessRate) / 100 : Number(entry.cessRate));
+    return {
+      code: String(entry.hsnPattern || entry.hsn || entry.code || '').replace(/\s+/g, ''),
+      rate,
+      type,
+      validFrom: entry.validFrom,
+      validTo: entry.validTo == null ? null : entry.validTo,
+    };
+  }
+  return null;
+}
+// Returns a normalised cess row { code, rate, type, validFrom, validTo } or null when the HSN has
+// no cess on that date. CESS_RATES seeds only the two clearest ad-valorem goods, so auto-cess is 0
+// for everything else until the khata-standard reference update lands the full set.
 function getCessRateRow(hsnSac, date) {
   if (!hsnSac) return null;
   const code = String(hsnSac).replace(/\s+/g, ''); // HSN may be entered with spaces
@@ -1550,18 +1583,19 @@ function getCessRateRow(hsnSac, date) {
   // A cess HSN heading applies to that code and all its sub-codes, so match by PREFIX and let
   // the most-specific (longest) heading win. Effective-dated like the GST rate lookup.
   let best = null;
-  for (const r of REF.cessRates.data) {
-    if (!code.startsWith(r[0])) continue;
-    if (!(r[3] <= d && (r[4] == null || r[4] >= d))) continue;
-    if (!best || r[0].length > best[0].length) best = r;
+  for (const raw of REF.cessRates.data) {
+    const r = normaliseCessEntry(raw);
+    if (!r || !r.code || !code.startsWith(r.code)) continue;
+    if (!(r.validFrom <= d && (r.validTo == null || r.validTo >= d))) continue;
+    if (!best || r.code.length > best.code.length) best = r;
   }
   return best;
 }
 function cessForLine(hsnSac, taxablePaise, qty, date) {
   const row = getCessRateRow(hsnSac, date);
   if (!row) return 0;
-  const cessRate = Number(row[1] || 0);
-  if (row[2] === 'specific') return Math.max(0, Math.round((qty || 0) * cessRate));
+  const cessRate = Number(row.rate || 0);
+  if (row.type === 'specific') return Math.max(0, Math.round((qty || 0) * cessRate));
   return Math.max(0, Math.round((taxablePaise || 0) * cessRate));
 }
 

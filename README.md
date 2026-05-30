@@ -63,6 +63,7 @@ The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chai
 
 - Invoice form with live tax computation (intra-state CGST+SGST vs inter-state IGST routing)
 - **Date-parameterized GST rates** (no hardcoded enums); per-rate sub-account auto-create on first use
+- **Compensation cess** — per-line cess on cess-bearing goods, auto-suggested from the HSN and date-effective (honours the 2025-09-22 GST 2.0 cutover for non-tobacco goods); posts a Cess Output leg and flows through to the PDF, GSTR-1 (`csamt`) and GSTR-3B. Reads both the bundled rate table and the [khata-standard](https://github.com/NakliTechie/khata-standard) cess dataset
 - Auto invoice number per FY, per series (`INV/26-27/0001`)
 - **Snapshot pattern** on every invoice — company, customer, place-of-supply, HSN description, account names frozen at posting time so reprints survive any future master edit
 - GST-compliant **invoice PDF** (TAX INVOICE / BILL OF SUPPLY) with multi-line description wrapping, totals, amount in words, signature block
@@ -74,6 +75,7 @@ The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chai
 
 - Purchases with internal ref (`PUR/{FY}/{NNNN}`), vendor's bill number, place-of-supply state routing
 - RCM toggle that auto-routes posting to GST RCM Input/Output sub-accounts
+- **Compensation cess** on cess-bearing purchases — posts a Cess Input leg (or Cess RCM Input/Output that nets to zero under reverse charge) and flows into GSTR-3B ITC
 - ITC eligibility flag for blocked credits (motor vehicles, club fees, etc.)
 - Per-rate GST Input sub-account auto-create
 - Debit notes against purchases (full-reversal or partial)
@@ -117,8 +119,8 @@ The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chai
 
 ### Compliance
 
-- **GSTR-1** monthly portal-upload JSON — B2B / B2CL / B2CS / HSN / doc_issue / AT (advances) / TXP (adjustments), validation errors hard-block JSON download
-- **GSTR-3B** monthly summary — Section 3.1(a) outward + 3.1(d) RCM + Section 4 ITC + net liability, JSON + CSV export
+- **GSTR-1** monthly portal-upload JSON — B2B / B2CL / B2CS / HSN / doc_issue / AT (advances) / TXP (adjustments), compensation cess (`csamt`) carried per line, validation errors hard-block JSON download. **B2CL threshold is date-effective** (₹2.5 L pre-2024-08-01, ₹1 L from 2024-08-01) so historical invoices are never re-bucketed
+- **GSTR-3B** monthly summary — Section 3.1(a) outward + 3.1(d) RCM + Section 4 ITC (including cess) + net liability, JSON + CSV export
 - **CMP-08** quarterly view for composition dealers
 - **Form 26Q** quarterly TDS return — section breakdown, validation errors, NSDL-compatible CSV
 - **Form 27EQ** quarterly TCS return — same shape
@@ -240,6 +242,8 @@ When you post an invoice, Bahi freezes the company name, customer name, GSTIN, s
 ### Why date-parameterized tax rates
 
 GST rates change. We don't hardcode "18% GST" anywhere in the engine. `REF.gstRates` is a list of `(rate, validFrom, validTo)` records, and every lookup is parameterized by the invoice date. Backdated invoices automatically get the rate set that was in force then. Per-rate sub-accounts (`CGST Output @ 9%` etc.) auto-create on first use so the chart of accounts stays clean.
+
+The same date-effective principle governs anything else that moves with policy: compensation-cess rates (with the 2025-09-22 GST 2.0 cutover encoded as a `validTo`) and the B2CL reporting threshold (₹2.5 L → ₹1 L on 2024-08-01) are both looked up by the invoice date, so a rule change never silently re-states a historical document.
 
 ### Why ISO state codes (not GSTIN numeric codes)
 

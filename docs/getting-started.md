@@ -79,14 +79,14 @@ Sidebar → **+ New invoice**.
 
 The form has three sections:
 1. **Header** — pick the customer (default: the only one), invoice series (default: Domestic), invoice number (auto), date, place of supply (auto-filled from the customer's state), notes
-2. **Lines** — pick an item from the dropdown or type a free-text description. Quantity, rate, tax rate (default from the item). The amount auto-computes.
-3. **Totals** — Bahi shows the subtotal, CGST/SGST/IGST routing (intra-state vs inter-state, automatic), invoice total in both numbers and amount-in-words
+2. **Lines** — pick an item from the dropdown or type a free-text description. Quantity, rate, tax rate (default from the item). The amount auto-computes. For cess-bearing goods (aerated drinks, pan masala, tobacco, etc.) there's a **Cess (₹)** column: type the HSN and Bahi auto-suggests the compensation cess as a grey placeholder — leave the field blank to accept the suggestion, or type your own figure to override. Most goods have no cess, so the column simply stays empty.
+3. **Totals** — Bahi shows the subtotal, CGST/SGST/IGST routing (intra-state vs inter-state, automatic), compensation cess (only if a line carries it), invoice total in both numbers and amount-in-words
 
 Click **Post invoice & save**.
 
 Bahi:
 - Inserts the invoice header + lines into the database
-- Posts the corresponding double-entry ledger entry (Dr Sundry Debtors / Cr Sales / Cr GST Output @ {rate}%)
+- Posts the corresponding double-entry ledger entry (Dr Sundry Debtors / Cr Sales / Cr GST Output @ {rate}%, plus Cr Cess Output if the invoice carries compensation cess)
 - Captures snapshots of the company, customer, and HSN/SAC descriptions at this exact moment (so reprints stay correct even if you rename the customer later)
 - Writes a signed audit log entry
 - Saves the file to disk

@@ -101,11 +101,14 @@ class TestFormatAndIntegrity(KhataTestBase):
             rows = b["con"].execute("PRAGMA integrity_check").fetchall()
             self.assertEqual(rows[0][0], "ok", f"{name}: integrity_check failed")
 
-    def test_A04_schema_version_v9(self):
+    def test_A04_schema_version(self):
+        # Sample books are regenerated at the app's current SCHEMA_VERSION. Bump this when
+        # the schema advances; the manifest and meta.schemaVersion must agree.
+        EXPECTED_SCHEMA = 12
         for name, b in self.books.items():
-            self.assertEqual(b["manifest"]["schemaVersion"], 9, f"{name}: schemaVersion")
+            self.assertEqual(b["manifest"]["schemaVersion"], EXPECTED_SCHEMA, f"{name}: schemaVersion")
             row = b["con"].execute("SELECT v FROM meta WHERE k='schemaVersion'").fetchone()
-            self.assertEqual(int(row["v"]), 9, f"{name}: meta schemaVersion")
+            self.assertEqual(int(row["v"]), EXPECTED_SCHEMA, f"{name}: meta schemaVersion")
 
     def test_A05_format_version(self):
         for name, b in self.books.items():
@@ -490,16 +493,20 @@ class TestStock(KhataTestBase):
                 f"{name}: {len(rows)} items with negative stock: {[dict(r) for r in rows[:3]]}",
             )
 
-    def test_I02_stock_movement_value_equals_qty_times_rate(self):
+    def test_I02_stock_in_value_equals_qty_times_rate(self):
+        # Inward movements are received at a known rate, so value == qty*rate exactly.
+        # Outward movements use WAC/FIFO proportional valuation (the cost drawn from the
+        # pool), so value is deliberately NOT qty*rate — asserting it here would contradict
+        # the engine. Outward valuation is covered by the JS engine's own WAC/FIFO unit tests.
         for name in ("pharma", "manufacturing"):
             b = self.books[name]
             rows = b["con"].execute("""
                 SELECT id, qty, rate, value
                 FROM stock_movements
-                WHERE ABS(value - qty*rate) > 0.5
+                WHERE movement_type = 'in' AND ABS(value - qty*rate) > 0.5
             """).fetchall()
             self.assertEqual(len(rows), 0,
-                             f"{name}: {len(rows)} stock rows where value != qty*rate")
+                             f"{name}: {len(rows)} inward stock rows where value != qty*rate")
 
     def test_I03_consulting_has_no_stock(self):
         b = self.books["consulting"]

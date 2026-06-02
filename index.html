@@ -3336,12 +3336,22 @@ async function buildKhata({ manifest, dbBytes, snapshots }) {
   return await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 }
 
+// Safety caps for an untrusted .khata (it's a zip). Real books stay far below these;
+// the point is to stop a crafted archive from exhausting memory/CPU on open (zip bomb).
+const MAX_KHATA_DB_BYTES = 1024 * 1024 * 1024;     // 1 GB books.sqlite
+const MAX_KHATA_SNAP_FILES = 1000;                  // snapshot file count
+const MAX_KHATA_SNAP_BYTES = 1024 * 1024 * 1024;    // 1 GB across all snapshots
+
 async function readKhata(blob) {
   const JSZip = await loadJSZip();
   const zip = await JSZip.loadAsync(blob);
   const mf = zip.file('manifest.json');
   const dbf = zip.file('books.sqlite');
   if (!mf || !dbf) throw new Error('Not a valid .khata file (missing manifest.json or books.sqlite)');
+  // Check the declared uncompressed size BEFORE decompressing, so a bomb never inflates.
+  if (dbf._data && dbf._data.uncompressedSize > MAX_KHATA_DB_BYTES) {
+    throw new Error('Refusing to open: books.sqlite exceeds the 1 GB safety limit.');
+  }
   const manifest = JSON.parse(await mf.async('text'));
   const dbBytes = await dbf.async('uint8array');
   // Carry forward any snapshots/* files. Eager load is fine for current file sizes;
@@ -3349,12 +3359,20 @@ async function readKhata(blob) {
   const snapshots = {};
   const sFolder = zip.folder('snapshots');
   if (sFolder) {
-    const promises = [];
+    let nFiles = 0, totalBytes = 0;
+    const entries = [];
     sFolder.forEach((relPath, file) => {
       if (file.dir) return;
-      promises.push(file.async('uint8array').then(bytes => { snapshots[relPath] = bytes; }));
+      // Reject path traversal / absolute paths inside an untrusted archive.
+      if (relPath.includes('..') || relPath.startsWith('/')) { console.warn('Skipping unsafe snapshot path:', relPath); return; }
+      if (++nFiles > MAX_KHATA_SNAP_FILES) throw new Error(`Refusing to open: too many snapshot files (> ${MAX_KHATA_SNAP_FILES}).`);
+      totalBytes += (file._data && file._data.uncompressedSize) || 0;
+      if (totalBytes > MAX_KHATA_SNAP_BYTES) throw new Error('Refusing to open: snapshots exceed the 1 GB safety limit.');
+      entries.push([relPath, file]);
     });
-    await Promise.all(promises);
+    await Promise.all(entries.map(([relPath, file]) =>
+      file.async('uint8array').then(bytes => { snapshots[relPath] = bytes; })
+    ));
   }
   return { manifest, dbBytes, snapshots };
 }
@@ -3694,7 +3712,19 @@ async function postEntry(db, { voucherType, voucherRef, narration, postedAt, lin
     }
     lineStmt.free();
 
+    // Period-lock awareness: if this date falls inside a filed (locked) return period, flag
+    // the entry as an amendment instead of letting it post silently — the /period-locks UI
+    // promises exactly this. Any locked return covering the date counts. (getPeriodLockForDate
+    // is per-return-type; here we want "is this date locked at all", so query directly.)
+    let isAmendment = false;
+    try {
+      const lk = db.exec('SELECT 1 FROM period_locks WHERE period_start <= ? AND period_end >= ? LIMIT 1', [postedAt, postedAt]);
+      isAmendment = !!(lk.length && lk[0].values.length);
+    } catch (_) { /* period_locks absent on a very old file — treat as unlocked */ }
+    if (isAmendment) db.run('UPDATE entries SET is_amendment = 1 WHERE id = ?', [entryId]);
+
     const auditPayload = { entryId, voucherType, voucherRef: voucherRef || null, postedAt, totalDr, lineCount: lines.length };
+    if (isAmendment) auditPayload.isAmendment = true;
     // Per khata-standard PR #22: when a CA accepts an AI-drafted entry, actor stays
     // 'ca' and we mark aiAssisted: true on the payload to preserve AI provenance.
     // For owner-mode AI accepts, actor === 'ai' is sufficient and aiAssisted is omitted.
@@ -7953,7 +7983,10 @@ async function verifyExportIdentity() {
     const wsName = ws.name || '';
     // Walk changeHistory for legitimate renames
     const history = STATE.manifest.company?.changeHistory || [];
-    const knownNames = new Set([fileName, ...history.map(h => h.value).filter(Boolean)]);
+    const knownNames = new Set([
+      fileName,
+      ...history.filter(c => c.field === 'name').flatMap(c => [c.oldValue, c.newValue]).filter(Boolean),
+    ]);
     if (wsName && fileName && !knownNames.has(wsName)) {
       return `Workspace entry name "${wsName}" doesn't match the open file's name "${fileName}" (or any historical name). Switch to the right file before exporting.`;
     }
@@ -8972,6 +9005,11 @@ async function persistKhata() {
     if (STATE.publicJwk && !STATE.manifest.integrity.signedBy) {
       STATE.manifest.integrity.signedBy = STATE.publicJwk;
     }
+    // Sign the books hash. booksHash on its own is a plain checksum: an offline editor of
+    // the sqlite bytes can simply recompute it. The ECDSA signature can't be reforged
+    // without the private key, so a tampered ledger is detectable on open — bringing the
+    // books up to the same protection level as the audit chain's per-row signatures.
+    STATE.manifest.integrity.booksSig = STATE.privateKey ? await signHashHex(STATE.privateKey, booksHash) : null;
     if (!Array.isArray(STATE.manifest.snapshots)) STATE.manifest.snapshots = [];
 
     // === Optimistic concurrency check + snapshot capture (combined) ===
@@ -9701,6 +9739,13 @@ async function openHandle(handle, existingWsId) {
     const actual = await sha256Bytes(dbBytes);
     if (actual !== manifest.integrity.booksHash) {
       toast('Warning: manifest booksHash does not match actual sqlite bytes', 'err');
+    } else if (manifest.integrity.booksSig && manifest.integrity.signedBy) {
+      // booksHash matched — but that's only a checksum a tamperer can recompute. The
+      // signature over it can't be reforged without the private key, so verify it. A
+      // mismatch means the ledger was edited outside Bahi (or signed on another machine).
+      let booksSigOk = false;
+      try { booksSigOk = await verifyHashHex(manifest.integrity.signedBy, actual, manifest.integrity.booksSig); } catch (_) {}
+      if (!booksSigOk) toast("Books signature doesn't match this file's key — the ledger may have been edited outside Bahi, or signed on a different machine.", 'err');
     }
   }
 
@@ -20264,6 +20309,13 @@ function runSql(q, outEl) {
     outEl.innerHTML = '<div class="error-screen">Read-only console — data-modifying statements are blocked.</div>';
     return;
   }
+  // A PRAGMA in `PRAGMA name = value` form mutates DB/session state (writable_schema,
+  // user_version, foreign_keys, journal_mode, …). The query forms (PRAGMA integrity_check,
+  // PRAGMA table_info(x)) carry no '=' and still run — so block only the assignment form.
+  if (/^\s*pragma\b/i.test(trimmed) && trimmed.includes('=')) {
+    outEl.innerHTML = '<div class="error-screen">Read-only console — settable PRAGMAs (PRAGMA … = …) are blocked.</div>';
+    return;
+  }
   if (!/^\s*(select|pragma|explain|with)\b/i.test(trimmed)) {
     outEl.innerHTML = '<div class="error-screen">Read-only console — only SELECT / PRAGMA / EXPLAIN / WITH allowed.</div>';
     return;
@@ -20947,7 +20999,7 @@ function renderSettings(main) {
       <li><b>File on disk got corrupted.</b> <code>PRAGMA integrity_check</code> runs on every open. If it fails, a corruption recovery modal lists the in-file snapshots (the <code>snapshots/</code> folder may still be intact even if <code>books.sqlite</code> is damaged) and lets you restore one to a fresh file.</li>
       <li><b>Wrong file opened.</b> Layer 2 wrong-file detection walks the company's <code>changeHistory</code> and surfaces a hard block if the identity of the file doesn't match the workspace entry being replaced. Layer 5 fingerprints export filenames so you can tell at a glance which company / GSTIN they belong to.</li>
       <li><b>Schema changes between Bahi versions.</b> Migration runner is idempotent and version-tagged in <code>meta.schemaVersion</code>. Older files migrate forward on open. Newer files (format version above this build) open read-only with a banner.</li>
-      <li><b>Audit log integrity.</b> The audit log is a SHA-256 hash chain where each entry hashes <code>prev_hash || origin || canonicalJson(payload) || booksHash</code>. The Debug Console has a verifier that walks the entire chain and reports any break — so if anything ever did slip past the layers above, it would show up here.</li>
+      <li><b>Audit log integrity.</b> The audit log is a SHA-256 hash chain where each entry hashes <code>prev_hash || ts || actor || action || ref || origin || canonicalJson(payload)</code> (canonical JSON, version-tagged), and every entry is ECDSA-signed with the file's key. Separately, the database's <code>booksHash</code> is itself signed with that key, so editing the ledger outside Bahi is detectable on open. The Debug Console has a verifier that walks the entire chain and reports any break — so if anything ever did slip past the layers above, it would show up here.</li>
       <li><b>CA round-trip workflows (owner → CA → owner).</b> Phase 6 adds Layer 3 ancestry check on every file open: when you reopen a file the workspace already knows, Bahi compares the audit chain head against the last-known head and warns if the file shares no history with the previous copy. If both branches have new entries (you changed the file in one Bahi instance, the CA changed it in another), the Reconciliation View opens automatically and lets you pick which entries to keep from each branch — the merged file's manifest carries both parent hashes for forensics.</li>
       <li><b>CA acting as owner accidentally.</b> Every action in CA mode is automatically tagged <code>actor='ca'</code> in the audit log, with the CA's name + firm + ICAI membership stamped into both the audit payload and any annotations. The owner can see exactly which entries were posted by their CA versus by themselves.</li>
       <li><b>Owner editing a file the CA was reviewing.</b> When the CA next opens their copy, the ancestry check fires (CA's lastKnownHead ≠ disk head) and offers reconciliation. No silent overwrites in either direction.</li>

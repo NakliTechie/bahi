@@ -1972,8 +1972,11 @@ const CA_LOOKUP_LS_KEY = 'bahi.calookup.enabled';
 const CA_ANSWER_LS_KEY = 'bahi.calookup.answer'; // 'off' | 'local' | 'provider'
 function getCaLookupEnabled() { try { return localStorage.getItem(CA_LOOKUP_LS_KEY) === '1'; } catch (_) { return false; } }
 function setCaLookupEnabled(v) { try { if (v) localStorage.setItem(CA_LOOKUP_LS_KEY, '1'); else localStorage.removeItem(CA_LOOKUP_LS_KEY); } catch (_) {} }
-function getCaAnswerMode() { try { return localStorage.getItem(CA_ANSWER_LS_KEY) || 'local'; } catch (_) { return 'local'; } }
+function getCaAnswerMode() { try { return localStorage.getItem(CA_ANSWER_LS_KEY) || 'lfm2-2.6b'; } catch (_) { return 'lfm2-2.6b'; } }
 function setCaAnswerMode(v) { try { localStorage.setItem(CA_ANSWER_LS_KEY, v); } catch (_) {} }
+// Answer value is 'off' | 'provider' | a local model id. Legacy 'local' = the default local model.
+function caAnswerKind(v) { return (v === 'off' || v === 'provider') ? v : 'local'; }
+function caAnswerModelId(v) { return v === 'local' ? ANSWER_MODEL_ID : v; }
 
 // Provider registry for the AI subsystem. Local provider runs on-device via the
 // LocalMind adapter; the BYOK providers share a single fetch-based adapter that
@@ -3308,8 +3311,12 @@ function caHideAnswer() { if (_caAnswerEl) { _caAnswerEl.style.display = 'none';
 async function caModelReady() {
   try {
     const mode = getCaAnswerMode();
-    if (mode === 'off') return { ready: false, kind: 'off' };
-    if (mode === 'local') return { ready: !!(_answerAdapter && _answerAdapter._loaded), kind: 'local' };
+    const kind = caAnswerKind(mode);
+    if (kind === 'off') return { ready: false, kind: 'off' };
+    if (kind === 'local') {
+      const modelId = caAnswerModelId(mode);
+      return { ready: !!(_answerAdapter && _answerAdapter._loaded && _answerAdapter._modelId === modelId), kind: 'local' };
+    }
     // 'provider' mode → answer via the configured Smart Capture provider
     if (!getAiEnabled()) return { ready: false, kind: 'provider' };
     const pid = await getAiProvider();
@@ -3333,13 +3340,14 @@ function caVerifyAnswer(text, citedEntries) {
 async function caAnswer(query, results, onState) {
   const mode = getCaAnswerMode();
   let llm;
-  if (mode === 'local') {
-    // on-device: answer on the dedicated LIGHT model, not the heavy bill-capture model
+  if (caAnswerKind(mode) === 'local') {
+    // on-device: answer on the chosen light model, not the heavy bill-capture model
+    const modelId = caAnswerModelId(mode);
     llm = getAnswerAdapter();
-    if (!llm._loaded) {
-      const m = LOCAL_MODEL_REGISTRY[ANSWER_MODEL_ID];
-      if (onState) onState(`Loading the answer model (${m ? m.displayName : ANSWER_MODEL_ID})…`);
-      await llm.loadModel({ modelId: ANSWER_MODEL_ID });
+    if (!llm._loaded || llm._modelId !== modelId) {
+      const m = LOCAL_MODEL_REGISTRY[modelId];
+      if (onState) onState(`Loading the answer model (${m ? m.displayName : modelId})…`);
+      await llm.loadModel({ modelId });
     }
   } else {
     // 'provider' mode: use the configured Smart Capture provider (cloud, or its local model)
@@ -3425,12 +3433,15 @@ async function caDoAnswer(query, results) {
 }
 
 async function caMaybeAnswer(query, results) {
-  if (getCaAnswerMode() === 'off') { caHideAnswer(); return; } // search-only mode
+  if (caAnswerKind(getCaAnswerMode()) === 'off') { caHideAnswer(); return; } // search-only mode
   const ready = await caModelReady();
   if (ready.ready) { caDoAnswer(query, results); return; } // hybrid: auto-run when a model is ready
-  const hint = ready.kind === 'provider'
-    ? 'Answers use your Smart Capture provider — enable & configure it in Settings.'
-    : 'Runs a small on-device model (LFM2 2.6B, ~1.7 GB on first use).';
+  let hint = 'Answers use your Smart Capture provider — enable & configure it in Settings.';
+  if (ready.kind === 'local') {
+    const m = LOCAL_MODEL_REGISTRY[caAnswerModelId(getCaAnswerMode())];
+    const gb = m && m.sizeBytes ? (m.sizeBytes / 1073741824).toFixed(1) : '?';
+    hint = `Runs ${m ? m.displayName : 'an on-device model'} (~${gb} GB on first use).`;
+  }
   caRenderAnswer({ status: 'ask', hint, onAsk: () => caDoAnswer(query, results) });
 }
 
@@ -21557,12 +21568,17 @@ function renderSettings(main) {
     const ansRow = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap' });
     ansRow.appendChild(h('label', { for: 'ca-answer-mode', style: 'font-size:12px;font-weight:600;min-width:90px' }, ['AI answer']));
     const ansSel = h('select', { id: 'ca-answer-mode', style: 'padding:6px 8px;font-size:12px;min-width:300px;font-family:inherit' });
-    const curMode = getCaAnswerMode();
-    for (const [val, label] of [
-      ['off', 'Off — search results only (lightest)'],
-      ['local', 'On-device — LFM2 2.6B (~1.7 GB, private)'],
-      ['provider', 'Use my Smart Capture provider (cloud / local)'],
-    ]) {
+    let curMode = getCaAnswerMode();
+    if (curMode === 'local') curMode = ANSWER_MODEL_ID; // legacy value → default model id
+    const localOpts = ['lfm2-2.6b', 'lfm2-8b-a1b'].map((id) => {
+      const m = LOCAL_MODEL_REGISTRY[id] || {};
+      const gb = m.sizeBytes ? (m.sizeBytes / 1073741824).toFixed(1) : '?';
+      const tag = m.requiresHighEnd ? ', high-end · experimental' : ', private';
+      const name = (m.displayName || id).replace(/\s*\(.*\)$/, '');
+      return [id, `On-device — ${name} (~${gb} GB${tag})`];
+    });
+    const ansOpts = [['off', 'Off — search results only (lightest)'], ...localOpts, ['provider', 'Use my Smart Capture provider (cloud / local)']];
+    for (const [val, label] of ansOpts) {
       const o = h('option', { value: val }, [label]);
       if (val === curMode) o.selected = true;
       ansSel.appendChild(o);

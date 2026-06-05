@@ -6,8 +6,6 @@
 !LICENSE
 !.gitignore
 !.assetsignore
-!functions
-!functions/**
 !docs
 !docs/**
 !demo

@@ -1978,7 +1978,7 @@ function setCaAnswerMode(v) { try { localStorage.setItem(CA_ANSWER_LS_KEY, v); }
 // Answer value is 'off' | 'provider' | a local model id. Legacy 'local' = the default local model.
 function caAnswerKind(v) { return (v === 'off' || v === 'provider') ? v : 'local'; }
 function caAnswerModelId(v) { return v === 'local' ? ANSWER_MODEL_ID : v; }
-// Web search (Tavily BYO key, via the same-origin /api/tavily proxy)
+// Web search (Tavily BYO key, called directly from the browser — Tavily allows CORS)
 function getCaWebEnabled() { try { return localStorage.getItem('bahi.calookup.web') === '1'; } catch (_) { return false; } }
 function setCaWebEnabled(v) { try { if (v) localStorage.setItem('bahi.calookup.web', '1'); else localStorage.removeItem('bahi.calookup.web'); } catch (_) {} }
 async function getTavilyKey() { try { const r = await idbGet(STORES.settings, 'ai.tavily'); return (r && r.v && r.v.apiKey) || ''; } catch (_) { return ''; } }
@@ -3348,18 +3348,20 @@ function caVerifyAnswer(text, citedEntries) {
   return missing.length ? `Unverified figure(s) not found in the cited sources: ${missing.join(', ')} — check the cards below.` : null;
 }
 
-const TAVILY_PROXY_URL = '/api/tavily';
-// Web enrichment via the BYO-key Tavily proxy. Returns { results:[{title,url,content}] },
-// { error }, or null (no key). The query + key leave the device — gated on the
-// CA Lookup "search the web" toggle.
+const TAVILY_API_URL = 'https://api.tavily.com/search';
+// Web enrichment — direct browser -> Tavily with the user's BYO key. Tavily sends
+// permissive CORS (verified: it allows the Authorization header cross-origin), so
+// NO proxy/server is involved: the query + key go straight from the user's browser
+// to Tavily (their key, their request). Returns { results:[...] }, { error }, or
+// null (no key). Gated on the CA Lookup "search the web" toggle.
 async function tavilySearch(query, opts = {}) {
   const key = await getTavilyKey();
   if (!key) return null;
   try {
-    const res = await fetch(TAVILY_PROXY_URL, {
+    const res = await fetch(TAVILY_API_URL, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-tavily-key': key },
-      body: JSON.stringify({ query: String(query), max_results: opts.max || 4, search_depth: 'basic' }),
+      headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + key },
+      body: JSON.stringify({ query: String(query), max_results: opts.max || 4, search_depth: 'basic', include_answer: false }),
     });
     if (!res.ok) return { error: 'web search failed (' + res.status + ')' };
     const data = await res.json();
@@ -21663,7 +21665,7 @@ function renderSettings(main) {
     keyRow.appendChild(keyBtn);
     caBody.appendChild(keyRow);
     caBody.appendChild(h('p', { class: 'help', style: 'margin:6px 0 0' }, [
-      'Web search sends your question + key to Bahi’s proxy and on to Tavily — it leaves your device. The key is stored in this browser only (never in .khata or exports).'
+      'Web search sends your question + key directly to Tavily from your browser — it leaves your device. Your key is stored in this browser only (never sent to Bahi, never in .khata or exports).'
     ]));
     (async () => { const k = await getTavilyKey(); if (k) keyInput.value = k; })();
     webCb.onchange = () => { setCaWebEnabled(webCb.checked); keyRow.style.display = webCb.checked ? 'flex' : 'none'; toast(webCb.checked ? 'Web search on — add a Tavily key below.' : 'Web search off.', ''); };

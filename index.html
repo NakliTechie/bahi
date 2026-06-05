@@ -2388,6 +2388,24 @@ const LOCAL_MODEL_REGISTRY = {
 };
 const DEFAULT_LOCAL_MODEL_ID = 'gemma-4-e2b';
 
+// Embedding model for the CA-lookup corpus (Tier-1 semantic search). Separate
+// from the generation registry. PINNED — the precomputed corpus vectors
+// (corpus/ca-corpus.v1.json) were built with this exact model + pooling, so the
+// in-browser query embedder MUST match it (see corpus/embed.mjs parity contract).
+const EMBED_MODEL_REGISTRY = {
+  'bge-small-en-v1.5': {
+    id: 'bge-small-en-v1.5',
+    displayName: 'BGE Small EN v1.5 (search)',
+    repo: 'Xenova/bge-small-en-v1.5',
+    dtype: 'q8',
+    dim: 384,
+    // bge asymmetric retrieval: prepend to QUERIES only, never to passages.
+    queryPrefix: 'Represent this sentence for searching relevant passages: ',
+    isDefault: true,
+  },
+};
+const DEFAULT_EMBED_MODEL_ID = 'bge-small-en-v1.5';
+
 async function getLocalModelId() {
   const r = await idbGet(STORES.settings, 'ai.localModel');
   return (r && r.v) || DEFAULT_LOCAL_MODEL_ID;
@@ -2422,6 +2440,7 @@ import {
   AutoTokenizer,
   AutoProcessor,
   Gemma4ForConditionalGeneration,
+  pipeline,
   env,
 } from '${TRANSFORMERS_CDN}';
 
@@ -2436,6 +2455,7 @@ let model = null;
 let tokenizer = null;
 let processor = null;
 let loadedType = null;
+let embedder = null;       // feature-extraction pipeline (bge-small) — coexists with the generation model
 
 function send(msg) { self.postMessage(msg); }
 
@@ -2470,6 +2490,19 @@ async function loadCausal(repo, dtype, device) {
     progress_callback: (p) => send({ type: 'progress', stage: 'model', data: p }),
   });
   loadedType = 'causal';
+}
+
+// Embedding model (bge-small) for the CA-lookup corpus. Separate from the
+// generation model and kept resident alongside it (it is tiny, ~30 MB q8).
+// PARITY CONTRACT (must match corpus/embed.mjs): mean-pool + L2-normalize via
+// { pooling:'mean', normalize:true }. The bge query prefix is applied by the
+// CALLER, not here (corpus passages were precomputed without it).
+async function loadEmbedder(repo, dtype, device) {
+  embedder = await pipeline('feature-extraction', repo, {
+    dtype:  dtype  || 'q8',
+    device: device || 'webgpu',
+    progress_callback: (p) => send({ type: 'progress', stage: 'embed-model', data: p }),
+  });
 }
 
 // Returns { inputs, promptLen } ready for model.generate(). Both paths yield a tensor
@@ -2546,6 +2579,24 @@ self.addEventListener('message', async (e) => {
       });
       return;
     }
+    if (m.type === 'loadEmbed') {
+      const device = m.device || 'webgpu';
+      await loadEmbedder(m.repo, m.dtype, device);
+      await embedder('warmup', { pooling: 'mean', normalize: true }); // compile shaders
+      send({ type: 'embedReady', device });
+      return;
+    }
+    if (m.type === 'embed') {
+      if (!embedder) { send({ type: 'error', requestId, message: 'No embed model loaded' }); return; }
+      const texts = m.texts || [];
+      const vectors = [];
+      for (const t of texts) {
+        const out = await embedder(String(t), { pooling: 'mean', normalize: true });
+        vectors.push(Array.from(out.data));
+      }
+      send({ type: 'embedded', requestId, vectors });
+      return;
+    }
     if (m.type === 'unload') {
       try { if (model && model.dispose) await model.dispose(); } catch (_) {}
       model = null; tokenizer = null; processor = null; loadedType = null;
@@ -2583,6 +2634,9 @@ class LocalMindAdapter extends LLM {
     this._pending = new Map();   // requestId → { resolve, reject }
     this._reqCounter = 0;
     this._loadCallbacks = null;  // { resolve, reject, onProgress }
+    this._embedLoaded = false;
+    this._embedModelId = null;
+    this._embedLoadCallbacks = null; // { resolve, reject, onProgress }
   }
 
   _initWorker() {
@@ -2617,6 +2671,17 @@ class LocalMindAdapter extends LLM {
           this._loadCallbacks.resolve({ modelId: m.modelId, device: m.device });
           this._loadCallbacks = null;
         }
+      } else if (m.type === 'embedReady') {
+        this._embedLoaded = true;
+        this._embedModelId = DEFAULT_EMBED_MODEL_ID;
+        if (this._caps) this._caps.embedding = true;
+        if (this._embedLoadCallbacks) {
+          this._embedLoadCallbacks.resolve({ device: m.device });
+          this._embedLoadCallbacks = null;
+        }
+      } else if (m.type === 'embedded') {
+        const cb = this._pending.get(m.requestId);
+        if (cb) { this._pending.delete(m.requestId); cb.resolve(m.vectors); }
       } else if (m.type === 'unloaded') {
         this._modelId = null; this._loaded = false; this._caps = null;
       } else if (m.type === 'reply') {
@@ -2630,6 +2695,9 @@ class LocalMindAdapter extends LLM {
         } else if (this._loadCallbacks) {
           this._loadCallbacks.reject(new Error(m.message));
           this._loadCallbacks = null;
+        } else if (this._embedLoadCallbacks) {
+          this._embedLoadCallbacks.reject(new Error(m.message));
+          this._embedLoadCallbacks = null;
         } else {
           console.error('LocalMind worker error:', m.message);
         }
@@ -2721,9 +2789,30 @@ class LocalMindAdapter extends LLM {
     throw err;
   }
 
-  async embed(_texts) {
-    const err = new Error('LocalMind embedding (all-MiniLM-L6-v2) lands with v1.2 reconciliation. Stage 1D ships text-only.');
-    err.code = 'NotImplemented'; throw err;
+  async loadEmbedModel(config = {}) {
+    if (this._embedLoaded) return { modelId: this._embedModelId };
+    const entry = EMBED_MODEL_REGISTRY[config.modelId || DEFAULT_EMBED_MODEL_ID];
+    if (!entry) throw new Error('Unknown embed model: ' + (config.modelId || DEFAULT_EMBED_MODEL_ID));
+    const backend = await detectAiBackend();
+    if (!this._worker) this._initWorker();
+    return new Promise((resolve, reject) => {
+      this._embedLoadCallbacks = { resolve, reject, onProgress: config.onProgress };
+      this._worker.postMessage({ type: 'loadEmbed', repo: entry.repo, dtype: entry.dtype, device: backend });
+    });
+  }
+
+  // Low-level embed: one float[] per input text. The bge query prefix is NOT
+  // applied here (the caller adds it for queries; corpus passages were
+  // precomputed without it). Lazily loads the embed model on first use.
+  // See corpus/embed.mjs for the parity contract.
+  async embed(texts) {
+    const arr = Array.isArray(texts) ? texts : [texts];
+    if (!this._embedLoaded) await this.loadEmbedModel();
+    const requestId = ++this._reqCounter;
+    return await new Promise((resolve, reject) => {
+      this._pending.set(requestId, { resolve, reject });
+      this._worker.postMessage({ type: 'embed', requestId, texts: arr });
+    });
   }
 
   async unload() {
@@ -2748,6 +2837,8 @@ class LocalMindAdapter extends LLM {
     }
     this._modelId = null;
     this._loaded = false;
+    this._embedLoaded = false;
+    this._embedModelId = null;
     this._caps = null;
     // Reject any in-flight requests
     for (const [, cb] of this._pending) {
@@ -2786,6 +2877,127 @@ function resetActiveLLM() {
   }
   _activeLLM = null;
 }
+
+// ===========================================================================
+// CA-lookup corpus + hybrid retrieval (Phase 1 engine — Tier-1 semantic search)
+// Ports corpus/retrieve.mjs into the app. The corpus artifact (built offline by
+// corpus/build.mjs) is fetched once + cached; the query is embedded in-browser
+// with the SAME pinned model + pooling + query prefix (the parity contract).
+// Search works regardless of the active chat provider and without a generation
+// model — this is the Tier-1 floor.
+// ===========================================================================
+
+const CA_CORPUS_URL = './corpus/ca-corpus.v1.json';
+const CA_TOP_K = 5;
+const CA_BOOST_EXACT = 0.6;    // query code (section or HSN/SAC) ∈ entry.codes
+const CA_BOOST_FAMILY = 0.25;  // bare 3-digit family (e.g. "194" → any 194x)
+const CA_COSINE_FLOOR = 0.50;  // no-confident-match gate (exact code overrides)
+
+let _caCorpus = null;          // cached artifact
+let _caCorpusPromise = null;   // in-flight load (dedupe concurrent callers)
+let _embedAdapter = null;      // dedicated LocalMind adapter for embedding
+
+async function getEmbedAdapter() {
+  // Reuse the active adapter if it is already LocalMind (shares its worker);
+  // else spin a dedicated embed-only adapter (loads just bge, ~30 MB).
+  if (_activeLLM instanceof LocalMindAdapter) return _activeLLM;
+  if (!_embedAdapter) {
+    _embedAdapter = new LocalMindAdapter({ providerId: 'localmind', provider: AI_PROVIDERS.localmind || {} });
+  }
+  return _embedAdapter;
+}
+
+async function loadCaCorpus() {
+  if (_caCorpus) return _caCorpus;
+  if (_caCorpusPromise) return _caCorpusPromise;
+  _caCorpusPromise = (async () => {
+    const res = await fetch(CA_CORPUS_URL, { cache: 'force-cache' });
+    if (!res.ok) throw new Error('CA corpus fetch failed: ' + res.status);
+    const art = await res.json();
+    if (!art || !Array.isArray(art.entries) || !art.entries.length) {
+      throw new Error('CA corpus is empty or malformed');
+    }
+    if (art.model !== DEFAULT_EMBED_MODEL_ID) {
+      console.warn(`[ca-lookup] corpus model "${art.model}" != embed model "${DEFAULT_EMBED_MODEL_ID}" — scores may be off.`);
+    }
+    // TODO(Phase 5/6): verify art.signature (ECDSA) against the pinned corpus
+    // key before trusting it, mirroring the books-signature flow. Unsigned dev artifact for now.
+    _caCorpus = art;
+    return art;
+  })();
+  try { return await _caCorpusPromise; }
+  finally { _caCorpusPromise = null; }
+}
+
+function _caDequantize(q, vmin, vmax) {
+  const range = (vmax - vmin) || 1;
+  const out = new Float32Array(q.length);
+  for (let i = 0; i < q.length; i++) out[i] = ((q[i] + 128) / 255) * range + vmin;
+  return out;
+}
+function _caCosine(query, vec) {
+  let dot = 0, nv = 0;
+  for (let i = 0; i < query.length; i++) { dot += query[i] * vec[i]; nv += vec[i] * vec[i]; }
+  return dot / (Math.sqrt(nv) || 1);
+}
+function _caNormCode(s) { return String(s).toUpperCase().replace(/[\s-]/g, ''); }
+function _caDigitFamily(code) { const m = String(code).match(/^\D*(\d{2,3})/); return m ? m[1] : ''; }
+
+function _caExtractQueryCodes(query) {
+  const strong = new Set(), family = new Set();
+  let m;
+  const secRe = /\b(\d{3}(?:[-\s]?[A-Za-z]+)?(?:\s*\(\s*\d+\s*[A-Za-z]?\s*\))?)/g;
+  while ((m = secRe.exec(query)) !== null) {
+    const norm = _caNormCode(m[1]);
+    if (/[A-Z]/.test(norm) || /\(/.test(norm)) strong.add(norm);
+  }
+  const hsnRe = /\b(\d{4,8})\b/g;
+  while ((m = hsnRe.exec(query)) !== null) strong.add(m[1]);
+  const chRe = /\b(?:chapter|hsn|heading)\s*:?\s*(\d{2})\b/gi;
+  while ((m = chRe.exec(query)) !== null) strong.add(m[1]);
+  const famRe = /\b(\d{3})\b/g;
+  while ((m = famRe.exec(query)) !== null) family.add(m[1]);
+  return { strong, family };
+}
+
+function _caLexicalBoost(entry, q) {
+  const codes = (entry.codes || entry.sectionAliases || []).map(_caNormCode);
+  let boost = 0, exact = false; const why = [];
+  for (const c of q.strong) {
+    if (codes.includes(c)) { boost += CA_BOOST_EXACT; why.push('code=' + c); exact = true; }
+  }
+  if (!exact) {
+    const fams = new Set(codes.map(_caDigitFamily).filter(Boolean));
+    for (const d of q.family) if (fams.has(d)) { boost += CA_BOOST_FAMILY; why.push('fam=' + d); }
+  }
+  return { boost, exact, why };
+}
+
+// Public: returns { confident, query, results:[{ entry, score, sim, boost, exact, why }] }.
+async function caLookup(query, opts = {}) {
+  const topK = opts.topK || CA_TOP_K;
+  const corpus = await loadCaCorpus();
+  const adapter = await getEmbedAdapter();
+  const model = EMBED_MODEL_REGISTRY[DEFAULT_EMBED_MODEL_ID];
+  const prefix = (model && model.queryPrefix) || '';
+  const vecs = await adapter.embed([prefix + String(query)]);
+  const qVec = vecs[0];
+  const q = _caExtractQueryCodes(String(query));
+
+  const scored = corpus.entries.map((entry) => {
+    const vec = _caDequantize(entry.vec, entry.vmin, entry.vmax);
+    const sim = _caCosine(qVec, vec);
+    const { boost, exact, why } = _caLexicalBoost(entry, q);
+    return { entry, sim, boost, exact, why, score: sim + boost };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored[0];
+  const confident = !!top && (top.exact || top.sim >= CA_COSINE_FLOOR);
+  return { confident, query: String(query), results: scored.slice(0, topK) };
+}
+
+// Console/debug hook so Phase 1 can be exercised before the sidecar UI lands.
+try { if (typeof window !== 'undefined') window.caLookup = caLookup; } catch (_) {}
 
 // === Stage 2 — Capture from bill (multi-file queue) ===
 // Module-scope queue holds in-flight bill drafts. Lives in memory only — never

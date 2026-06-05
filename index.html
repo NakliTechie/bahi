@@ -243,6 +243,53 @@ table.dense td.num,table.dense th.num{text-align:right;font-variant-numeric:tabu
   display:flex;justify-content:flex-end;gap:8px;background:var(--ash);
 }
 
+/* === CA-lookup sidecar (Phase 2 — Tier-1 search floor) === */
+.ca-launcher{
+  position:fixed;right:22px;bottom:22px;z-index:7000;
+  display:flex;align-items:center;gap:7px;
+  background:var(--navy);color:#fff;border:none;cursor:pointer;
+  padding:10px 15px;border-radius:22px;font-size:12px;font-weight:600;
+  box-shadow:0 4px 16px rgba(0,0,0,0.22);
+}
+.ca-launcher:hover{background:var(--navy-hover)}
+.ca-launcher .ca-key{opacity:0.6;font-size:11px;font-weight:500}
+.ca-panel{
+  position:fixed;top:0;right:0;bottom:0;z-index:7500;
+  width:min(440px,94vw);background:var(--white);
+  border-left:1px solid var(--rule);box-shadow:-8px 0 32px rgba(0,0,0,0.18);
+  display:flex;flex-direction:column;
+  transform:translateX(100%);transition:transform .22s ease-out;
+}
+.ca-panel.open{transform:translateX(0)}
+.ca-panel-h{
+  padding:13px 16px;border-bottom:1px solid var(--rule);
+  background:var(--saffron-soft);color:var(--saffron-deep);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.ca-panel-h .ca-title{font-weight:700;font-size:14px}
+.ca-panel-h .ca-sub{font-size:10px;color:var(--ink-2);font-weight:500;margin-top:1px}
+.ca-x{background:none;border:none;font-size:20px;cursor:pointer;color:var(--ink-2);line-height:1;padding:0 4px}
+.ca-x:hover{color:var(--ink)}
+.ca-search-wrap{padding:12px 16px;border-bottom:1px solid var(--rule)}
+.ca-search{
+  width:100%;box-sizing:border-box;padding:9px 11px;
+  border:1px solid var(--rule);border-radius:5px;font-size:13px;
+  font-family:inherit;background:var(--white);color:var(--ink);
+}
+.ca-search:focus{outline:none;border-color:var(--navy)}
+.ca-results{flex:1;overflow-y:auto;padding:10px 14px}
+.ca-card{border:1px solid var(--rule);border-radius:6px;padding:11px 12px;margin-bottom:9px;background:var(--white)}
+.ca-card-h{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:4px}
+.ca-card-title{font-weight:600;font-size:12.5px;color:var(--ink);line-height:1.3}
+.ca-rate{font-size:13px;font-weight:700;color:var(--navy);margin:3px 0}
+.ca-meta{font-size:11px;color:var(--ink-2);line-height:1.55}
+.ca-meta b{color:var(--ink);font-weight:600}
+.ca-src{font-size:10.5px;margin-top:6px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ca-src a{color:var(--navy);text-decoration:none}
+.ca-src a:hover{text-decoration:underline}
+.ca-disc{padding:9px 16px;border-top:1px solid var(--rule);background:var(--ash);font-size:10px;color:var(--ink-2);line-height:1.5}
+.ca-state{text-align:center;color:var(--ink-2);font-size:12px;padding:26px 16px;font-style:italic;line-height:1.6}
+
 .empty{text-align:center;color:var(--ink-2);padding:30px 20px;font-size:12px;font-style:italic}
 .help{font-size:11px;color:var(--ink-2);margin:6px 0}
 
@@ -2998,6 +3045,141 @@ async function caLookup(query, opts = {}) {
 
 // Console/debug hook so Phase 1 can be exercised before the sidecar UI lands.
 try { if (typeof window !== 'undefined') window.caLookup = caLookup; } catch (_) {}
+
+// ===========================================================================
+// CA-lookup sidecar UI (Phase 2 — Tier-1 search floor). A floating launcher +
+// right-side slide-out panel over caLookup(). Search-only for now; the AI-answer
+// tier (RAG) layers on in Phase 3. Gated on getAiEnabled() per Bahi's AI-off promise.
+// ===========================================================================
+
+let _caPanelEl = null, _caInputEl = null, _caResultsEl = null, _caSearchSeq = 0, _caDebounce = null;
+
+function _caEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+}
+function _caConfBadge(conf) {
+  const cls = conf === 'high' ? 'green' : conf === 'low' ? 'alert' : 'saffron';
+  return `<span class="badge ${cls}">${_caEsc(conf || '?')}</span>`;
+}
+
+function caRenderResults(res) {
+  if (!_caResultsEl) return;
+  if (!res) {
+    _caResultsEl.innerHTML = '<div class="ca-state">Ask a tax / GST question — e.g. &ldquo;GST rate on cement&rdquo;, &ldquo;TDS on rent&rdquo;, &ldquo;is professional fee taxed&rdquo;, or a code like &ldquo;194J&rdquo;.</div>';
+    return;
+  }
+  if (res.loading) { _caResultsEl.innerHTML = '<div class="ca-state">Loading on-device search model (first run downloads ~30&nbsp;MB)…</div>'; return; }
+  if (res.error) { _caResultsEl.innerHTML = `<div class="ca-state">Couldn&rsquo;t search: ${_caEsc(res.error)}</div>`; return; }
+  if (!res.confident) {
+    _caResultsEl.innerHTML = '<div class="ca-state">No confident match in the CA corpus for that. Try rephrasing, or a section / HSN code.</div>';
+    return;
+  }
+  _caResultsEl.innerHTML = res.results.map((r) => {
+    const e = r.entry;
+    const chip = e.section ? e.section : (e.subtopic || e.topic || '');
+    const src = Array.isArray(e.sources) && e.sources[0];
+    const thr = (e.threshold && e.threshold !== 'None') ? `<span><b>Threshold:</b> ${_caEsc(e.threshold)}</span>` : '';
+    const eff = e.effectiveFrom ? `<span><b>Effective:</b> ${_caEsc(e.effectiveFrom)}</span>` : '';
+    const meta = [thr, eff].filter(Boolean).join(' &nbsp;·&nbsp; ');
+    const flag = (Array.isArray(e.reviewFlags) && e.reviewFlags.length)
+      ? '<div class="ca-meta" style="margin-top:4px;color:var(--saffron-deep)">&#9873; Flagged for CA confirmation</div>' : '';
+    return `<div class="ca-card">
+      <div class="ca-card-h">
+        <div class="ca-card-title">${_caEsc(e.title)}</div>
+        <span class="badge navy">${_caEsc(chip)}</span>
+      </div>
+      ${e.rate ? `<div class="ca-rate">${_caEsc(e.rate)}</div>` : ''}
+      ${meta ? `<div class="ca-meta">${meta}</div>` : ''}
+      <div class="ca-meta" style="margin-top:3px">${_caEsc((e.body || '').slice(0, 200))}</div>
+      ${flag}
+      <div class="ca-src">
+        <span>${src ? `<a href="${_caEsc(src.url)}" target="_blank" rel="noopener noreferrer">${_caEsc(src.name || src.ref || 'source')} &#8599;</a>` : ''}</span>
+        ${_caConfBadge(e.confidence)}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function caRunSearch(q) {
+  const seq = ++_caSearchSeq;
+  if (!q || !q.trim()) { caRenderResults(null); return; }
+  caRenderResults({ loading: true });
+  try {
+    const res = await caLookup(q.trim(), { topK: 5 });
+    if (seq !== _caSearchSeq) return; // superseded by a newer keystroke
+    caRenderResults(res);
+  } catch (e) {
+    if (seq !== _caSearchSeq) return;
+    caRenderResults({ error: String((e && e.message) || e) });
+  }
+}
+
+function caOpenPanel() {
+  if (!_caPanelEl) return;
+  _caPanelEl.classList.add('open');
+  _caPanelEl.setAttribute('aria-hidden', 'false');
+  setTimeout(() => { if (_caInputEl) { _caInputEl.focus(); _caInputEl.select(); } }, 60);
+}
+function caClosePanel() {
+  if (!_caPanelEl) return;
+  _caPanelEl.classList.remove('open');
+  _caPanelEl.setAttribute('aria-hidden', 'true');
+}
+function caTogglePanel() {
+  if (_caPanelEl && _caPanelEl.classList.contains('open')) caClosePanel(); else caOpenPanel();
+}
+
+function initCaSidecar() {
+  if (!getAiEnabled()) return;   // respect Bahi's AI-off promise
+  if ($('ca-launcher')) return;  // already initialized
+
+  const launcher = h('button', { id: 'ca-launcher', class: 'ca-launcher', title: 'CA Lookup (Ctrl/Cmd+Shift+L)' }, []);
+  launcher.innerHTML = 'CA Lookup <span class="ca-key">&#8679;&#8984;L</span>';
+  launcher.onclick = caTogglePanel;
+  document.body.appendChild(launcher);
+
+  const panel = h('div', { id: 'ca-panel', class: 'ca-panel', role: 'dialog', 'aria-label': 'CA Lookup', 'aria-hidden': 'true' }, []);
+  panel.innerHTML = `
+    <div class="ca-panel-h">
+      <div><div class="ca-title">CA Lookup</div><div class="ca-sub">Tax &amp; GST reference — on-device search</div></div>
+      <button class="ca-x" id="ca-close" title="Close (Esc)">&times;</button>
+    </div>
+    <div class="ca-search-wrap">
+      <input id="ca-search" class="ca-search" type="text" autocomplete="off" spellcheck="false"
+        placeholder="GST rate on cement · TDS on rent · 194J…" />
+    </div>
+    <div id="ca-results" class="ca-results"></div>
+    <div class="ca-disc">Draft reference (FY 2026-27) — AI-assembled &amp; cross-checked. <b>Verify before relying</b>; not tax advice.</div>`;
+  document.body.appendChild(panel);
+
+  _caPanelEl = panel;
+  _caInputEl = $('ca-search');
+  _caResultsEl = $('ca-results');
+  $('ca-close').onclick = caClosePanel;
+  caRenderResults(null);
+
+  _caInputEl.addEventListener('input', () => {
+    const v = _caInputEl.value;
+    clearTimeout(_caDebounce);
+    _caDebounce = setTimeout(() => caRunSearch(v), 260);
+  });
+  _caInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); caClosePanel(); }
+    else if (e.key === 'Enter') { clearTimeout(_caDebounce); caRunSearch(_caInputEl.value); }
+  });
+
+  // Global shortcut: Ctrl/Cmd + Shift + L (plain Cmd+K is the sidebar search; the
+  // existing Cmd+K listener is shift-agnostic so we deliberately avoid 'k').
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
+      e.preventDefault();
+      caTogglePanel();
+    } else if (e.key === 'Escape' && _caPanelEl && _caPanelEl.classList.contains('open')) {
+      caClosePanel();
+    }
+  });
+}
+try { if (typeof window !== 'undefined') window.initCaSidecar = initCaSidecar; } catch (_) {}
 
 // === Stage 2 — Capture from bill (multi-file queue) ===
 // Module-scope queue holds in-flight bill drafts. Lives in memory only — never
@@ -21591,6 +21773,9 @@ async function boot() {
       }
     });
   }
+
+  // CA-lookup sidecar (Phase 2) — floating launcher + panel, if Smart Capture is on.
+  initCaSidecar();
 
   // First-run intro modal — shown once per machine, after the initial render so it
   // overlays the workspace screen rather than appearing in front of a blank page.

@@ -312,6 +312,7 @@ table.dense td.num,table.dense th.num{text-align:right;font-variant-numeric:tabu
 .ca-askai{width:100%;padding:9px;border:1px dashed var(--navy);background:#f7f9fc;color:var(--navy);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
 .ca-askai:hover{background:var(--navy-soft)}
 .ca-ans-hint{font-size:10px;color:var(--ink-2);margin-top:5px;text-align:center;line-height:1.4}
+.ca-ans-disc{font-size:10px;color:var(--ink-2);margin-top:8px;padding-top:6px;border-top:1px solid var(--rule)}
 .ca-spin{display:inline-block;width:11px;height:11px;border:2px solid var(--navy-soft);border-top-color:var(--navy);border-radius:50%;animation:caSpin .7s linear infinite;vertical-align:-1px}
 @keyframes caSpin{to{transform:rotate(360deg)}}
 
@@ -3408,7 +3409,8 @@ function caRenderAnswer(state) {
     + `<div class="ca-ans-text">${_caEsc(out.answer || '(no answer)')}</div>`
     + (out.caveat ? `<div class="ca-ans-note">${_caEsc(out.caveat)}</div>` : '')
     + (verifyNote ? `<div class="ca-ans-note">&#9873; ${_caEsc(verifyNote)}</div>` : '')
-    + (chips ? `<div class="ca-ans-cite">${chips}</div>` : '');
+    + (chips ? `<div class="ca-ans-cite">${chips}</div>` : '')
+    + '<div class="ca-ans-disc">AI can make mistakes. Please double-check.</div>';
   _caAnswerEl.querySelectorAll('.ca-cite').forEach((btn) => {
     btn.onclick = () => {
       const idx = parseInt(btn.getAttribute('data-idx'), 10);

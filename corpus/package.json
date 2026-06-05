@@ -1,0 +1,15 @@
+{
+  "name": "bahi-corpus",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bahi CA-lookup sidecar — Phase 0 engine spine (build + retrieve)",
+  "scripts": {
+    "build": "node build.mjs",
+    "retrieve": "node retrieve.mjs"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0"
+  }
+}

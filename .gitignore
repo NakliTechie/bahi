@@ -23,3 +23,24 @@ sample-data/__pycache__/
 !.dev.vars.example
 .env*
 !.env.example
+
+# corpus/ — Phase 0 CA-lookup engine spine
+# The repo .gitignore is an allowlist ("*" then "!"-exceptions), so corpus/
+# must be explicitly un-ignored. We allow the source + built artifact, but
+# never the model cache or installed deps.
+!corpus
+!corpus/schema.md
+!corpus/build.mjs
+!corpus/retrieve.mjs
+!corpus/embed.mjs
+!corpus/ca-corpus.v0.json
+!corpus/ca-corpus.v1.json
+!corpus/PHASE0-RESULTS.md
+!corpus/CORPUS-V1.md
+!corpus/package.json
+# never commit deps or the downloaded model weights
+corpus/node_modules/
+corpus/.cache/
+corpus/.transformers-cache/
+corpus/package-lock.json
+corpus/**/.DS_Store

@@ -289,6 +289,19 @@ table.dense td.num,table.dense th.num{text-align:right;font-variant-numeric:tabu
 .ca-src a:hover{text-decoration:underline}
 .ca-disc{padding:9px 16px;border-top:1px solid var(--rule);background:var(--ash);font-size:10px;color:var(--ink-2);line-height:1.5}
 .ca-state{text-align:center;color:var(--ink-2);font-size:12px;padding:26px 16px;font-style:italic;line-height:1.6}
+/* Phase 3 — AI answer tier */
+.ca-answer{margin:0 0 11px;padding:11px 12px;border:1px solid var(--navy-soft);border-left:3px solid var(--navy);border-radius:6px;background:#f7f9fc}
+.ca-ans-label{font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--navy);font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:6px}
+.ca-ans-text{font-size:12.5px;line-height:1.55;color:var(--ink);white-space:pre-wrap}
+.ca-ans-cite{margin-top:8px;display:flex;flex-wrap:wrap;gap:5px}
+.ca-cite{font-size:10px;background:var(--navy-soft);color:var(--navy);border:none;border-radius:3px;padding:2px 7px;cursor:pointer;font-family:inherit}
+.ca-cite:hover{background:var(--navy);color:#fff}
+.ca-ans-note{font-size:10px;color:var(--saffron-deep);margin-top:7px;line-height:1.4}
+.ca-askai{width:100%;padding:9px;border:1px dashed var(--navy);background:#f7f9fc;color:var(--navy);border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+.ca-askai:hover{background:var(--navy-soft)}
+.ca-ans-hint{font-size:10px;color:var(--ink-2);margin-top:5px;text-align:center;line-height:1.4}
+.ca-spin{display:inline-block;width:11px;height:11px;border:2px solid var(--navy-soft);border-top-color:var(--navy);border-radius:50%;animation:caSpin .7s linear infinite;vertical-align:-1px}
+@keyframes caSpin{to{transform:rotate(360deg)}}
 
 .empty{text-align:center;color:var(--ink-2);padding:30px 20px;font-size:12px;font-style:italic}
 .help{font-size:11px;color:var(--ink-2);margin:6px 0}
@@ -3052,7 +3065,7 @@ try { if (typeof window !== 'undefined') window.caLookup = caLookup; } catch (_)
 // tier (RAG) layers on in Phase 3. Gated on getAiEnabled() per Bahi's AI-off promise.
 // ===========================================================================
 
-let _caPanelEl = null, _caInputEl = null, _caResultsEl = null, _caSearchSeq = 0, _caDebounce = null;
+let _caPanelEl = null, _caInputEl = null, _caResultsEl = null, _caAnswerEl = null, _caSearchSeq = 0, _caDebounce = null;
 
 function _caEsc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -3102,12 +3115,14 @@ function caRenderResults(res) {
 
 async function caRunSearch(q) {
   const seq = ++_caSearchSeq;
+  caHideAnswer();
   if (!q || !q.trim()) { caRenderResults(null); return; }
   caRenderResults({ loading: true });
   try {
     const res = await caLookup(q.trim(), { topK: 5 });
     if (seq !== _caSearchSeq) return; // superseded by a newer keystroke
     caRenderResults(res);
+    if (res && res.confident) caMaybeAnswer(q.trim(), res.results);
   } catch (e) {
     if (seq !== _caSearchSeq) return;
     caRenderResults({ error: String((e && e.message) || e) });
@@ -3148,13 +3163,17 @@ function initCaSidecar() {
       <input id="ca-search" class="ca-search" type="text" autocomplete="off" spellcheck="false"
         placeholder="GST rate on cement · TDS on rent · 194J…" />
     </div>
-    <div id="ca-results" class="ca-results"></div>
+    <div class="ca-results">
+      <div id="ca-answer" class="ca-answer" style="display:none"></div>
+      <div id="ca-results-list"></div>
+    </div>
     <div class="ca-disc">Draft reference (FY 2026-27) — AI-assembled &amp; cross-checked. <b>Verify before relying</b>; not tax advice.</div>`;
   document.body.appendChild(panel);
 
   _caPanelEl = panel;
   _caInputEl = $('ca-search');
-  _caResultsEl = $('ca-results');
+  _caResultsEl = $('ca-results-list');
+  _caAnswerEl = $('ca-answer');
   $('ca-close').onclick = caClosePanel;
   caRenderResults(null);
 
@@ -3180,6 +3199,128 @@ function initCaSidecar() {
   });
 }
 try { if (typeof window !== 'undefined') window.initCaSidecar = initCaSidecar; } catch (_) {}
+
+// ===========================================================================
+// Phase 3 — grounded AI answer over the retrieved snippets (the "hybrid" half).
+// Snippets render instantly (Tier 1); when a chat model is ready (BYOK key, or a
+// local model already loaded) an answer auto-fills ABOVE them, drawn ONLY from the
+// retrieved context (grounded, cited, never invented). If no model is ready we show
+// an "Ask AI" button so we never trigger a multi-GB download silently.
+// ===========================================================================
+
+function caHideAnswer() { if (_caAnswerEl) { _caAnswerEl.style.display = 'none'; _caAnswerEl.innerHTML = ''; } }
+
+async function caModelReady() {
+  try {
+    if (!getAiEnabled()) return { ready: false, kind: null, reason: 'AI off' };
+    const pid = await getAiProvider();
+    const prov = AI_PROVIDERS[pid] || {};
+    if (prov.kind === 'local') return { ready: !!(_activeLLM && _activeLLM._loaded), kind: 'local' };
+    const cfg = await getAiProviderConfig(pid);
+    return { ready: !!(cfg && cfg.apiKey), kind: 'byok' };
+  } catch (_) { return { ready: false, kind: null }; }
+}
+
+// Light guardrail: every percentage in the answer should appear in a cited entry.
+// Flags hallucinated rates without blocking the answer.
+function caVerifyAnswer(text, citedEntries) {
+  const pcts = String(text || '').match(/\d+(?:\.\d+)?\s*%/g) || [];
+  if (!pcts.length) return null;
+  const hay = citedEntries.map((e) => `${e.rate || ''} ${e.threshold || ''} ${e.body || ''}`).join(' ').replace(/\s+/g, '');
+  const missing = [...new Set(pcts.map((p) => p.replace(/\s+/g, '')))].filter((p) => !hay.includes(p));
+  return missing.length ? `Unverified figure(s) not found in the cited sources: ${missing.join(', ')} — check the cards below.` : null;
+}
+
+async function caAnswer(query, results, onState) {
+  const llm = await getActiveLLM(); // throws AiDisabled if off
+  const isLocal = (llm.provider && llm.provider.kind === 'local') || llm.providerKind === 'local';
+  if (isLocal && !llm._loaded) {
+    if (onState) onState('Loading the on-device model (first run downloads it)…');
+    await llm.loadModel({});
+  }
+  const top = results.slice(0, 5);
+  const context = top.map((r, i) => {
+    const e = r.entry;
+    return `[${i + 1}] ${e.title} (${e.section || e.subtopic || e.topic || ''}). rate: ${e.rate || 'n/a'}. threshold: ${e.threshold || 'n/a'}. effective: ${e.effectiveFrom || 'n/a'}. ${(e.body || '').slice(0, 300)}`;
+  }).join('\n\n');
+  const sys = "You are a careful Indian tax & GST reference assistant inside an accounting app. Answer the user's question ONLY from the CONTEXT entries below. Never use outside knowledge and never invent a rate, threshold, section, or date — if the context does not contain the answer, say you don't have it in the reference. Cite the [n] entry numbers you relied on. Be concise: 2-4 sentences.";
+  const user = `QUESTION: ${query}\n\nCONTEXT:\n${context}`;
+  const schema = {
+    type: 'object', additionalProperties: false,
+    properties: { answer: { type: 'string' }, citations: { type: 'array', items: { type: 'integer' } }, caveat: { type: 'string' } },
+    required: ['answer', 'citations'],
+  };
+  const out = await llm.chat(
+    [{ role: 'system', content: sys }, { role: 'user', content: user }],
+    { schema, schemaName: 'ca_answer', schemaDescription: 'Grounded answer drawn only from the provided CA corpus context', maxTokens: 400 }
+  );
+  return { out: (out && typeof out === 'object') ? out : { answer: String(out || ''), citations: [] }, top };
+}
+
+function caRenderAnswer(state) {
+  if (!_caAnswerEl) return;
+  _caAnswerEl.style.display = 'block';
+  if (state.status === 'ask') {
+    _caAnswerEl.innerHTML = '<button class="ca-askai" id="ca-askai">&#10024; Ask AI for a grounded answer</button>'
+      + (state.hint ? `<div class="ca-ans-hint">${_caEsc(state.hint)}</div>` : '');
+    const b = $('ca-askai'); if (b) b.onclick = state.onAsk;
+    return;
+  }
+  if (state.status === 'loading') {
+    _caAnswerEl.innerHTML = `<div class="ca-ans-label"><span class="ca-spin"></span> AI</div><div class="ca-ans-text">${_caEsc(state.msg || 'Thinking…')}</div>`;
+    return;
+  }
+  if (state.status === 'error') {
+    _caAnswerEl.innerHTML = `<div class="ca-ans-label">AI</div><div class="ca-ans-text">Couldn&rsquo;t generate an answer: ${_caEsc(state.error)}</div><div class="ca-ans-hint">The cited cards below still answer from the corpus.</div>`;
+    return;
+  }
+  // done
+  const out = state.out || {};
+  const top = state.top || [];
+  const citeNums = Array.isArray(out.citations) ? out.citations : [];
+  const cited = citeNums.map((n) => top[n - 1]).filter(Boolean).map((r) => r.entry);
+  const verifyNote = caVerifyAnswer(out.answer, cited.length ? cited : top.map((r) => r.entry));
+  const chips = citeNums.map((n) => {
+    const r = top[n - 1]; if (!r) return '';
+    return `<button class="ca-cite" data-idx="${n - 1}">[${n}] ${_caEsc((r.entry.title || '').slice(0, 40))}</button>`;
+  }).join('');
+  _caAnswerEl.innerHTML =
+    '<div class="ca-ans-label">&#10024; AI answer <span style="font-weight:500;color:var(--ink-2);text-transform:none;letter-spacing:0">&middot; grounded in the corpus</span></div>'
+    + `<div class="ca-ans-text">${_caEsc(out.answer || '(no answer)')}</div>`
+    + (out.caveat ? `<div class="ca-ans-note">${_caEsc(out.caveat)}</div>` : '')
+    + (verifyNote ? `<div class="ca-ans-note">&#9873; ${_caEsc(verifyNote)}</div>` : '')
+    + (chips ? `<div class="ca-ans-cite">${chips}</div>` : '');
+  _caAnswerEl.querySelectorAll('.ca-cite').forEach((btn) => {
+    btn.onclick = () => {
+      const idx = parseInt(btn.getAttribute('data-idx'), 10);
+      const cards = _caResultsEl ? _caResultsEl.querySelectorAll('.ca-card') : [];
+      const card = cards[idx];
+      if (card) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); card.style.outline = '2px solid var(--navy)'; setTimeout(() => { card.style.outline = ''; }, 1200); }
+    };
+  });
+}
+
+async function caDoAnswer(query, results) {
+  const seq = _caSearchSeq;
+  caRenderAnswer({ status: 'loading', msg: 'Thinking…' });
+  try {
+    const { out, top } = await caAnswer(query, results, (msg) => { if (seq === _caSearchSeq) caRenderAnswer({ status: 'loading', msg }); });
+    if (seq !== _caSearchSeq) return;
+    caRenderAnswer({ status: 'done', out, top });
+  } catch (e) {
+    if (seq !== _caSearchSeq) return;
+    caRenderAnswer({ status: 'error', error: String((e && e.message) || e) });
+  }
+}
+
+async function caMaybeAnswer(query, results) {
+  const ready = await caModelReady();
+  if (ready.ready) { caDoAnswer(query, results); return; } // hybrid: auto-run when a model is ready
+  const hint = ready.kind === 'byok'
+    ? 'Add a provider API key in Settings to enable answers.'
+    : 'Uses your on-device model (downloads it on first use).';
+  caRenderAnswer({ status: 'ask', hint, onAsk: () => caDoAnswer(query, results) });
+}
 
 // === Stage 2 — Capture from bill (multi-file queue) ===
 // Module-scope queue holds in-flight bill drafts. Lives in memory only — never

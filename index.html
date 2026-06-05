@@ -3069,17 +3069,37 @@ async function loadCaCorpus() {
   if (_caCorpus) return _caCorpus;
   if (_caCorpusPromise) return _caCorpusPromise;
   _caCorpusPromise = (async () => {
-    const res = await fetch(CA_CORPUS_URL, { cache: 'force-cache' });
-    if (!res.ok) throw new Error('CA corpus fetch failed: ' + res.status);
-    const art = await res.json();
+    let art = null;
+    // 1) Prefer the khata-standard reference channel (versioned + SHA-256 verified),
+    //    exactly like Bahi's other reference data, so corpus updates ship without an
+    //    app redeploy. Falls back to the bundled mirror on any miss.
+    try {
+      const manifest = await fetchKhataStandardManifest();
+      const meta = manifest.datasets && manifest.datasets['ca-corpus'];
+      if (meta && meta.file) {
+        const r = await fetch(KHATA_STANDARD_CDN + 'ca-corpus/' + meta.file, { cache: 'no-cache' });
+        if (r.ok) {
+          const text = await r.text();
+          const expected = (meta.sha256 || '').replace(/^sha256:/, '');
+          if (!expected || (await sha256TextHex(text)) === expected) art = JSON.parse(text);
+          else console.warn('[ca-lookup] khata-standard corpus SHA-256 mismatch — using bundled mirror');
+        }
+      }
+    } catch (e) {
+      console.warn('[ca-lookup] khata-standard corpus unavailable, using bundled mirror:', (e && e.message) || e);
+    }
+    // 2) Bundled mirror (offline / first-run / CDN miss).
+    if (!art) {
+      const res = await fetch(CA_CORPUS_URL, { cache: 'force-cache' });
+      if (!res.ok) throw new Error('CA corpus fetch failed: ' + res.status);
+      art = await res.json();
+    }
     if (!art || !Array.isArray(art.entries) || !art.entries.length) {
       throw new Error('CA corpus is empty or malformed');
     }
     if (art.model !== DEFAULT_EMBED_MODEL_ID) {
       console.warn(`[ca-lookup] corpus model "${art.model}" != embed model "${DEFAULT_EMBED_MODEL_ID}" — scores may be off.`);
     }
-    // TODO(Phase 5/6): verify art.signature (ECDSA) against the pinned corpus
-    // key before trusting it, mirroring the books-signature flow. Unsigned dev artifact for now.
     _caCorpus = art;
     return art;
   })();

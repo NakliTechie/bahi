@@ -1977,6 +1977,11 @@ function setCaAnswerMode(v) { try { localStorage.setItem(CA_ANSWER_LS_KEY, v); }
 // Answer value is 'off' | 'provider' | a local model id. Legacy 'local' = the default local model.
 function caAnswerKind(v) { return (v === 'off' || v === 'provider') ? v : 'local'; }
 function caAnswerModelId(v) { return v === 'local' ? ANSWER_MODEL_ID : v; }
+// Web search (Tavily BYO key, via the same-origin /api/tavily proxy)
+function getCaWebEnabled() { try { return localStorage.getItem('bahi.calookup.web') === '1'; } catch (_) { return false; } }
+function setCaWebEnabled(v) { try { if (v) localStorage.setItem('bahi.calookup.web', '1'); else localStorage.removeItem('bahi.calookup.web'); } catch (_) {} }
+async function getTavilyKey() { try { const r = await idbGet(STORES.settings, 'ai.tavily'); return (r && r.v && r.v.apiKey) || ''; } catch (_) { return ''; } }
+async function setTavilyKey(k) { try { await idbPut(STORES.settings, { k: 'ai.tavily', v: { apiKey: k } }); } catch (_) {} }
 
 // Provider registry for the AI subsystem. Local provider runs on-device via the
 // LocalMind adapter; the BYOK providers share a single fetch-based adapter that
@@ -3337,7 +3342,28 @@ function caVerifyAnswer(text, citedEntries) {
   return missing.length ? `Unverified figure(s) not found in the cited sources: ${missing.join(', ')} — check the cards below.` : null;
 }
 
-async function caAnswer(query, results, onState) {
+const TAVILY_PROXY_URL = '/api/tavily';
+// Web enrichment via the BYO-key Tavily proxy. Returns { results:[{title,url,content}] },
+// { error }, or null (no key). The query + key leave the device — gated on the
+// CA Lookup "search the web" toggle.
+async function tavilySearch(query, opts = {}) {
+  const key = await getTavilyKey();
+  if (!key) return null;
+  try {
+    const res = await fetch(TAVILY_PROXY_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-tavily-key': key },
+      body: JSON.stringify({ query: String(query), max_results: opts.max || 4, search_depth: 'basic' }),
+    });
+    if (!res.ok) return { error: 'web search failed (' + res.status + ')' };
+    const data = await res.json();
+    return { results: Array.isArray(data.results) ? data.results.slice(0, opts.max || 4) : [] };
+  } catch (e) {
+    return { error: String((e && e.message) || e) };
+  }
+}
+
+async function caAnswer(query, results, onState, web) {
   const mode = getCaAnswerMode();
   let llm;
   if (caAnswerKind(mode) === 'local') {
@@ -3362,8 +3388,13 @@ async function caAnswer(query, results, onState) {
     const e = r.entry;
     return `[${i + 1}] ${e.title} (${e.section || e.subtopic || e.topic || ''}). rate: ${e.rate || 'n/a'}. threshold: ${e.threshold || 'n/a'}. effective: ${e.effectiveFrom || 'n/a'}. ${(e.body || '').slice(0, 300)}`;
   }).join('\n\n');
-  const sys = "You are a careful Indian tax & GST reference assistant inside an accounting app. Answer the user's question ONLY from the CONTEXT entries below. Never use outside knowledge and never invent a rate, threshold, section, or date — if the context does not contain the answer, say you don't have it in the reference. Cite the [n] entry numbers you relied on. Be concise: 2-4 sentences.";
-  const user = `QUESTION: ${query}\n\nCONTEXT:\n${context}`;
+  const webArr = Array.isArray(web) ? web : [];
+  const webBlock = webArr.length
+    ? '\n\nWEB RESULTS (live search — secondary; prefer the CA corpus for Indian tax specifics):\n'
+      + webArr.map((r, i) => `[W${i + 1}] ${r.title || ''} — ${String(r.content || '').slice(0, 240)} (${r.url || ''})`).join('\n\n')
+    : '';
+  const sys = "You are a careful Indian tax & GST reference assistant inside an accounting app. Answer using the provided CONTEXT — a CA-reviewed tax corpus, plus (optionally) live WEB RESULTS. PREFER the CA corpus for Indian tax figures; use web results only to fill gaps. Never invent a rate, threshold, section, or date that is not in the provided context; if it isn't there, say so. Cite corpus entries as [n] and web results as [W#]. Be concise: 2-4 sentences.";
+  const user = `QUESTION: ${query}\n\nCONTEXT:\n${context}${webBlock}`;
   const schema = {
     type: 'object', additionalProperties: false,
     properties: { answer: { type: 'string' }, citations: { type: 'array', items: { type: 'integer' } }, caveat: { type: 'string' } },
@@ -3403,12 +3434,19 @@ function caRenderAnswer(state) {
     const r = top[n - 1]; if (!r) return '';
     return `<button class="ca-cite" data-idx="${n - 1}">[${n}] ${_caEsc((r.entry.title || '').slice(0, 40))}</button>`;
   }).join('');
+  const web = Array.isArray(state.web) ? state.web : [];
+  const webHtml = web.length
+    ? '<div class="ca-ans-note" style="color:var(--ink-2)">Web sources (Tavily): '
+      + web.map((r) => `<a href="${_caEsc(r.url)}" target="_blank" rel="noopener noreferrer">${_caEsc(String(r.title || r.url || 'link').slice(0, 36))} &#8599;</a>`).join(' &middot; ')
+      + '</div>'
+    : '';
   _caAnswerEl.innerHTML =
-    '<div class="ca-ans-label">&#10024; AI answer <span style="font-weight:500;color:var(--ink-2);text-transform:none;letter-spacing:0">&middot; grounded in the corpus</span></div>'
+    `<div class="ca-ans-label">&#10024; AI answer <span style="font-weight:500;color:var(--ink-2);text-transform:none;letter-spacing:0">&middot; grounded ${web.length ? 'in corpus + web' : 'in the corpus'}</span></div>`
     + `<div class="ca-ans-text">${_caEsc(out.answer || '(no answer)')}</div>`
     + (out.caveat ? `<div class="ca-ans-note">${_caEsc(out.caveat)}</div>` : '')
     + (verifyNote ? `<div class="ca-ans-note">&#9873; ${_caEsc(verifyNote)}</div>` : '')
-    + (chips ? `<div class="ca-ans-cite">${chips}</div>` : '');
+    + (chips ? `<div class="ca-ans-cite">${chips}</div>` : '')
+    + webHtml;
   _caAnswerEl.querySelectorAll('.ca-cite').forEach((btn) => {
     btn.onclick = () => {
       const idx = parseInt(btn.getAttribute('data-idx'), 10);
@@ -3423,9 +3461,16 @@ async function caDoAnswer(query, results) {
   const seq = _caSearchSeq;
   caRenderAnswer({ status: 'loading', msg: 'Thinking…' });
   try {
-    const { out, top } = await caAnswer(query, results, (msg) => { if (seq === _caSearchSeq) caRenderAnswer({ status: 'loading', msg }); });
+    let web = null;
+    if (getCaWebEnabled()) {
+      caRenderAnswer({ status: 'loading', msg: 'Searching the web…' });
+      const w = await tavilySearch(query);
+      if (seq !== _caSearchSeq) return;
+      web = (w && w.results && w.results.length) ? w.results : null;
+    }
+    const { out, top } = await caAnswer(query, results, (msg) => { if (seq === _caSearchSeq) caRenderAnswer({ status: 'loading', msg }); }, web);
     if (seq !== _caSearchSeq) return;
-    caRenderAnswer({ status: 'done', out, top });
+    caRenderAnswer({ status: 'done', out, top, web });
   } catch (e) {
     if (seq !== _caSearchSeq) return;
     caRenderAnswer({ status: 'error', error: String((e && e.message) || e) });
@@ -21592,6 +21637,30 @@ function renderSettings(main) {
     caBody.appendChild(h('p', { class: 'help', style: 'margin:6px 0 0' }, [
       'Reference data is AI-assembled and CA-reviewed — verify before relying; not tax advice. “Provider” mode sends your question to the provider configured under Smart Capture.'
     ]));
+
+    // Web search (Tavily BYO key) — answer enrichment
+    const webRow = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap' });
+    const webLabel = h('label', { style: 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;font-weight:600' });
+    const webCb = h('input', { type: 'checkbox', style: 'transform:scale(1.1);cursor:pointer' });
+    webCb.checked = getCaWebEnabled();
+    webLabel.appendChild(webCb);
+    webLabel.appendChild(document.createTextNode('Search the web (Tavily) to enrich answers'));
+    webRow.appendChild(webLabel);
+    caBody.appendChild(webRow);
+
+    const keyRow = h('div', { style: 'display:' + (getCaWebEnabled() ? 'flex' : 'none') + ';align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap' });
+    keyRow.appendChild(h('label', { for: 'ca-tavily-key', style: 'font-size:12px;font-weight:600;min-width:90px' }, ['Tavily key']));
+    const keyInput = h('input', { id: 'ca-tavily-key', type: 'password', placeholder: 'tvly-…', autocomplete: 'off', style: 'padding:6px 8px;font-size:12px;min-width:240px;font-family:inherit' });
+    keyRow.appendChild(keyInput);
+    const keyBtn = h('button', {}, ['Save']);
+    keyRow.appendChild(keyBtn);
+    caBody.appendChild(keyRow);
+    caBody.appendChild(h('p', { class: 'help', style: 'margin:6px 0 0' }, [
+      'Web search sends your question + key to Bahi’s proxy and on to Tavily — it leaves your device. The key is stored in this browser only (never in .khata or exports).'
+    ]));
+    (async () => { const k = await getTavilyKey(); if (k) keyInput.value = k; })();
+    webCb.onchange = () => { setCaWebEnabled(webCb.checked); keyRow.style.display = webCb.checked ? 'flex' : 'none'; toast(webCb.checked ? 'Web search on — add a Tavily key below.' : 'Web search off.', ''); };
+    keyBtn.onclick = async () => { await setTavilyKey(keyInput.value.trim()); toast(keyInput.value.trim() ? 'Tavily key saved.' : 'Tavily key cleared.', 'ok'); };
   }
 
   caToggleInput.onchange = () => {

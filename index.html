@@ -2434,7 +2434,9 @@ async function byokFetchWithRetry(url, init, timeoutMs, isAnthropic, schema) {
 // hashes pending real-CDN capture). Per spec §3, models lazy-fetch on first use,
 // never preload at app boot.
 
-const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4/+esm';
+// Pinned to an exact version (not the @4 range) for supply-chain reproducibility
+// [M1]: this CDN module runs with full app privileges, so it must not float.
+const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0/+esm';
 
 const LOCAL_MODEL_REGISTRY = {
   // Gemma 4 E-series (onnx-community ONNX builds). These are MULTIMODAL models —
@@ -3608,7 +3610,7 @@ function captureQueuePending() {
 // follow-up). One worker shared for the session; processor is reentrancy-guarded
 // so adding more files mid-run just extends the queue.
 
-const TESSERACT_VERSION = '5';
+const TESSERACT_VERSION = '5.1.1';  // pinned exact (was '5' range) [M1 supply chain]
 const TESSERACT_CDN = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
 const PDFJS_VERSION = '4.7.76';
 const PDFJS_CDN = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.min.mjs`;
@@ -3682,7 +3684,7 @@ async function captureFileToCanvas(file, kind) {
 // the spec §12 escalation outcome.
 const PADDLE_OCR_VERSION = '1.0.3';
 const PADDLE_OCR_BASE = `https://cdn.jsdelivr.net/npm/paddleocr-browser@${PADDLE_OCR_VERSION}/dist`;
-const ONNX_RUNTIME_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js';
+const ONNX_RUNTIME_URL = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/ort.min.js';  // pinned exact (was floating latest) [M1 supply chain]
 const OPENCV_URL       = 'https://docs.opencv.org/4.8.0/opencv.js';
 const ESEARCH_OCR_URL  = 'https://cdn.jsdelivr.net/npm/esearch-ocr@5.1.5/dist/esearch-ocr.js';
 

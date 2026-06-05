@@ -40,6 +40,18 @@ body{
   line-height:1.45;
   -webkit-font-smoothing:antialiased;
 }
+/* Themed scrollbars (Chromium). Driven by theme vars so they track every theme —
+   light by default (:root), inverted under the Sumi dark theme. Declaring
+   ::-webkit-scrollbar also makes them always-visible (vs macOS overlay). */
+::-webkit-scrollbar{width:12px;height:12px}
+::-webkit-scrollbar-track{background:var(--ash)}
+::-webkit-scrollbar-thumb{
+  background:var(--ink-2);
+  border:3px solid var(--ash); /* track-coloured gutter → a slimmer thumb */
+  border-radius:7px;
+}
+::-webkit-scrollbar-thumb:hover{background:var(--ink)}
+::-webkit-scrollbar-corner{background:var(--ash)}
 button{
   font:inherit;color:inherit;cursor:pointer;
   border:1px solid var(--rule);background:var(--white);

@@ -2442,6 +2442,53 @@ const LOCAL_MODEL_REGISTRY = {
     modelType: 'causal',
     sha256: null,
   },
+  // Liquid LFM2 (causal, text-only). Light answer-tier models for the CA-lookup
+  // sidecar so a grounded answer needn't load the 3.2 GB multimodal Gemma. The
+  // sidecar answer defaults to lfm2-2.6b (see ANSWER_MODEL_ID); the others are
+  // selectable. Thinking variant emits a <think>…</think> trace we strip in the worker.
+  'lfm2-2.6b': {
+    id: 'lfm2-2.6b',
+    displayName: 'LFM2 2.6B (text-only, balanced)',
+    repo: 'onnx-community/LFM2-2.6B-ONNX',
+    dtype: 'q4f16',
+    sizeBytes: 1650 * 1024 * 1024, // ~1.65 GB q4f16
+    role: 'text',
+    modelType: 'causal',
+    sha256: null,
+  },
+  'lfm2.5-1.2b-thinking': {
+    id: 'lfm2.5-1.2b-thinking',
+    displayName: 'LFM2.5 1.2B Thinking (text-only, reasoning)',
+    repo: 'LiquidAI/LFM2.5-1.2B-Thinking-ONNX',
+    dtype: 'q4f16',
+    sizeBytes: 780 * 1024 * 1024, // ~0.76 GB q4f16
+    role: 'text',
+    modelType: 'causal',
+    thinking: true, // emits <think>…</think>; stripped in the worker before parse/display
+    sha256: null,
+  },
+  'lfm2.5-350m': {
+    id: 'lfm2.5-350m',
+    displayName: 'LFM2.5 350M (text-only, featherweight)',
+    repo: 'onnx-community/LFM2.5-350M-ONNX',
+    dtype: 'q4f16',
+    sizeBytes: 256 * 1024 * 1024, // ~0.25 GB q4f16
+    role: 'text',
+    modelType: 'causal',
+    sha256: null,
+  },
+  'lfm2-8b-a1b': {
+    id: 'lfm2-8b-a1b',
+    displayName: 'LFM2 8B-A1B (MoE — high-end only, experimental)',
+    repo: 'LiquidAI/LFM2-8B-A1B-ONNX',
+    dtype: 'q4f16',
+    sizeBytes: 4700 * 1024 * 1024, // ~4.7 GB q4f16 — over the typical ~4 GB per-tab WebGPU budget
+    role: 'text',
+    modelType: 'causal',
+    requiresHighEnd: true, // gate on a VRAM check; may fail to load (no published transformers.js example for the A1B MoE)
+    experimental: true,
+    sha256: null,
+  },
   // Stage 2 adds PaddleOCR (~50 MB) for bill capture.
   // Stage v1.1.2 adds Distil-Whisper Small (~150 MB) for voice.
   // Stage v1.2 adds all-MiniLM-L6-v2 (~22 MB) for reconciliation embeddings.
@@ -2624,7 +2671,11 @@ self.addEventListener('message', async (e) => {
         do_sample: false,
       });
       const generated = output.slice(null, [promptLen, null]);
-      const text = tokenizer.batch_decode(generated, { skip_special_tokens: true })[0];
+      let text = tokenizer.batch_decode(generated, { skip_special_tokens: true })[0];
+      // Strip a reasoning trace if the model emits one (LFM2.5-Thinking etc.) so the
+      // caller sees only the final answer/JSON. No-op when there is no </think>.
+      const _ti = text.lastIndexOf('</think>');
+      if (_ti >= 0) text = text.slice(_ti + 8).trim();
       const t1 = performance.now();
       const newTokens = output.dims[1] - promptLen;
       send({
@@ -2967,6 +3018,17 @@ async function getEmbedAdapter() {
   return _embedAdapter;
 }
 
+// Dedicated adapter + model for the sidecar's local ANSWER generation. Kept
+// separate from the bill-capture model (getActiveLLM) so answers run on a light
+// text model (LFM2 2.6B, ~1.7 GB) without loading/unloading the 3.2 GB multimodal
+// Gemma. BYOK providers answer via getActiveLLM (cloud) instead.
+const ANSWER_MODEL_ID = 'lfm2-2.6b';
+let _answerAdapter = null;
+function getAnswerAdapter() {
+  if (!_answerAdapter) _answerAdapter = new LocalMindAdapter({ providerId: 'localmind', provider: AI_PROVIDERS.localmind || {} });
+  return _answerAdapter;
+}
+
 async function loadCaCorpus() {
   if (_caCorpus) return _caCorpus;
   if (_caCorpusPromise) return _caCorpusPromise;
@@ -3215,7 +3277,7 @@ async function caModelReady() {
     if (!getAiEnabled()) return { ready: false, kind: null, reason: 'AI off' };
     const pid = await getAiProvider();
     const prov = AI_PROVIDERS[pid] || {};
-    if (prov.kind === 'local') return { ready: !!(_activeLLM && _activeLLM._loaded), kind: 'local' };
+    if (prov.kind === 'local') return { ready: !!(_answerAdapter && _answerAdapter._loaded), kind: 'local' };
     const cfg = await getAiProviderConfig(pid);
     return { ready: !!(cfg && cfg.apiKey), kind: 'byok' };
   } catch (_) { return { ready: false, kind: null }; }
@@ -3232,11 +3294,20 @@ function caVerifyAnswer(text, citedEntries) {
 }
 
 async function caAnswer(query, results, onState) {
-  const llm = await getActiveLLM(); // throws AiDisabled if off
-  const isLocal = (llm.provider && llm.provider.kind === 'local') || llm.providerKind === 'local';
-  if (isLocal && !llm._loaded) {
-    if (onState) onState('Loading the on-device model (first run downloads it)…');
-    await llm.loadModel({});
+  if (!getAiEnabled()) { const e = new Error('Smart Capture is disabled.'); e.code = 'AiDisabled'; throw e; }
+  const pid = await getAiProvider();
+  const prov = AI_PROVIDERS[pid] || {};
+  let llm;
+  if (prov.kind === 'local') {
+    // local: answer on the dedicated LIGHT model, not the heavy bill-capture model
+    llm = getAnswerAdapter();
+    if (!llm._loaded) {
+      const m = LOCAL_MODEL_REGISTRY[ANSWER_MODEL_ID];
+      if (onState) onState(`Loading the answer model (${m ? m.displayName : ANSWER_MODEL_ID})…`);
+      await llm.loadModel({ modelId: ANSWER_MODEL_ID });
+    }
+  } else {
+    llm = await getActiveLLM(); // BYOK cloud model
   }
   const top = results.slice(0, 5);
   const context = top.map((r, i) => {
@@ -3318,7 +3389,7 @@ async function caMaybeAnswer(query, results) {
   if (ready.ready) { caDoAnswer(query, results); return; } // hybrid: auto-run when a model is ready
   const hint = ready.kind === 'byok'
     ? 'Add a provider API key in Settings to enable answers.'
-    : 'Uses your on-device model (downloads it on first use).';
+    : 'Runs a small on-device model (LFM2 2.6B, ~1.7 GB on first use).';
   caRenderAnswer({ status: 'ask', hint, onAsk: () => caDoAnswer(query, results) });
 }
 

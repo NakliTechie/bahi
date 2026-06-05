@@ -14,7 +14,7 @@ The app is **Bahi** (बही — the traditional bound ledger of Indian mercha
 
 ## Status
 
-**Alpha — feature-complete for a CA-assisted pilot.** Bahi ships as a single ~900 KB HTML file. Schema is at v9 and round-trips cleanly across owner and CA workflows. The app has a deterministic generator and a 45-test pytest suite that exercises the format end-to-end against three realistic sample files (pharma + manufacturing + consulting); all 45 pass.
+**Alpha — feature-complete for a CA-assisted pilot.** Bahi ships as a single ~1 MB HTML file. Schema is at v12 and round-trips cleanly across owner and CA workflows. The app has a deterministic generator and a 53-test suite that exercises the format end-to-end against three realistic sample files (pharma + manufacturing + consulting); all 53 pass.
 
 The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chain, and report set are stable enough to drive real books. Defaults, copy, ordering, and minor UI affordances will keep moving until v1.
 
@@ -155,9 +155,18 @@ The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chai
 - **Layer 3 ancestry check** on file open — compares audit chain head against `workspace.lastKnownHead`; divergent branches route to the Reconciliation View
 - **Reconciliation View** for divergent branches — side-by-side checkbox lists, replay engine that re-executes picked entries via the existing posting bridges, merged manifest carries `integrity.parentHashes = [localHead, importedHead]`
 
+### Smart Capture & CA Lookup (AI) — optional, on-device, off by default
+
+AI is opt-in (enable in Settings), runs **on-device by default**, and adds nothing to the byte-for-byte-off baseline until you turn it on. Nothing leaves the machine unless you configure a remote provider.
+
+- **Smart Capture** — drop a vendor bill (PDF/JPG/PNG); on-device OCR (Tesseract / PaddleOCR) + a local LLM draft a purchase voucher you review in the normal form. **AI never auto-posts**; accepted drafts are logged with `actor='ai'`.
+- **CA Lookup** — a floating tax/GST reference sidecar (`Ctrl/Cmd+Shift+L`). On-device **semantic search** (bge-small embeddings + a hybrid lexical boost for section / HSN codes) over a **CA-reviewed reference corpus**, with an optional **grounded, cited AI answer** above the results. Answers draw only from the retrieved corpus (never invented), cite their sources, and carry an "AI can make mistakes — double-check" note. Cited snippets render instantly even with no answer model loaded.
+- **Models** — on-device via transformers.js + WebGPU: **Gemma 4 E2B/E4B** (multimodal, bill capture) and **LFM2 2.6B / LFM2.5 / LFM2 8B-A1B / Qwen 2.5** (text — the lighter CA-Lookup answer tier). Or **BYOK** cloud providers (Anthropic / OpenAI / Mistral / OpenRouter / custom). BYOK keys live in IndexedDB only — never in `.khata`, exports, or the audit log.
+- **Web enrichment (optional)** — add your own **Tavily** key to let CA Lookup pull live web results into an answer (direct browser → Tavily; off by default; the query + key leave the device only when you enable it).
+
 ### Ergonomics
 
-- **5 themes**: Crisp paper, Sakura wash, Asagi haze, Kinari washi, Sumi (dark). Auto-picks Sumi if the OS is in dark mode on first boot
+- **5 themes**: Crisp paper (light — the default), Sakura wash, Asagi haze, Kinari washi, Sumi (dark) — switch any time in Settings
 - **Tally keyboard parity** — F4 contra, F5 payment, F6 receipt, F7 journal, F8 sales, F9 purchase, F10 other vouchers, F1 company picker, F3 company info, plus Ctrl+Z undo, Ctrl+Shift+B backup, Ctrl+Shift+M mode toggle, Ctrl+Shift+D debug, `?` help overlay
 - **Shortcut help overlay** with one-click cheat-sheet PDF
 - **BOFH-style action-aware sidebar search** — search the menu by what each route lets you DO, not just by label

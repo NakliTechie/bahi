@@ -2036,12 +2036,17 @@ function applyTheme(themeId) {
 // OS dark-mode preference and default to Sumi if the OS is in dark mode.
 function autoPickTheme() {
   try {
+    // One-time migration: older builds auto-persisted the dark (Sumi) theme on
+    // OS-dark machines. Clear that once so the default is light; deliberate dark
+    // can be re-picked in Settings (and will persist normally).
+    if (!localStorage.getItem('bahi.theme.v2')) {
+      if (localStorage.getItem(THEME_LS_KEY) === 'sumi') localStorage.removeItem(THEME_LS_KEY);
+      localStorage.setItem('bahi.theme.v2', '1');
+    }
     const stored = localStorage.getItem(THEME_LS_KEY);
     if (stored && THEMES[stored]) return stored;
   } catch (_) {}
-  if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-    return 'sumi';
-  }
+  // Default to the light theme regardless of OS appearance; users opt into Sumi (dark) in Settings.
   return DEFAULT_THEME;
 }
 function loadStoredTheme() {

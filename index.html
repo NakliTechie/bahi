@@ -1965,6 +1965,16 @@ function setAiEnabled(v) {
   } catch (_) {}
 }
 
+// === CA Lookup (AI tax/GST reference search) — per-machine settings ===
+// Independent of Smart Capture: the lookup is lightweight (a ~30 MB embed model +
+// an optional small answer model), so it has its own enable + answer-mode config.
+const CA_LOOKUP_LS_KEY = 'bahi.calookup.enabled';
+const CA_ANSWER_LS_KEY = 'bahi.calookup.answer'; // 'off' | 'local' | 'provider'
+function getCaLookupEnabled() { try { return localStorage.getItem(CA_LOOKUP_LS_KEY) === '1'; } catch (_) { return false; } }
+function setCaLookupEnabled(v) { try { if (v) localStorage.setItem(CA_LOOKUP_LS_KEY, '1'); else localStorage.removeItem(CA_LOOKUP_LS_KEY); } catch (_) {} }
+function getCaAnswerMode() { try { return localStorage.getItem(CA_ANSWER_LS_KEY) || 'local'; } catch (_) { return 'local'; } }
+function setCaAnswerMode(v) { try { localStorage.setItem(CA_ANSWER_LS_KEY, v); } catch (_) {} }
+
 // Provider registry for the AI subsystem. Local provider runs on-device via the
 // LocalMind adapter; the BYOK providers share a single fetch-based adapter that
 // switches behaviour via these per-provider configs (auth shape, JSON-mode shape,
@@ -3218,8 +3228,19 @@ function caTogglePanel() {
   if (_caPanelEl && _caPanelEl.classList.contains('open')) caClosePanel(); else caOpenPanel();
 }
 
+// Add or remove the launcher to match the CA Lookup setting (boot + on toggle).
+function refreshCaSidecar() {
+  const on = getCaLookupEnabled();
+  const launcher = document.getElementById('ca-launcher');
+  if (on && !launcher) { initCaSidecar(); return; }
+  if (!on) {
+    if (launcher) launcher.remove();
+    if (_caPanelEl) { _caPanelEl.remove(); _caPanelEl = null; _caInputEl = null; _caResultsEl = null; _caAnswerEl = null; }
+  }
+}
+
 function initCaSidecar() {
-  if (!getAiEnabled()) return;   // respect Bahi's AI-off promise
+  if (!getCaLookupEnabled()) return; // gated on the CA Lookup setting (independent of Smart Capture)
   if ($('ca-launcher')) return;  // already initialized
 
   const launcher = h('button', { id: 'ca-launcher', class: 'ca-launcher', title: 'CA Lookup (Ctrl/Cmd+Shift+L)' }, []);
@@ -3286,12 +3307,16 @@ function caHideAnswer() { if (_caAnswerEl) { _caAnswerEl.style.display = 'none';
 
 async function caModelReady() {
   try {
-    if (!getAiEnabled()) return { ready: false, kind: null, reason: 'AI off' };
+    const mode = getCaAnswerMode();
+    if (mode === 'off') return { ready: false, kind: 'off' };
+    if (mode === 'local') return { ready: !!(_answerAdapter && _answerAdapter._loaded), kind: 'local' };
+    // 'provider' mode → answer via the configured Smart Capture provider
+    if (!getAiEnabled()) return { ready: false, kind: 'provider' };
     const pid = await getAiProvider();
     const prov = AI_PROVIDERS[pid] || {};
-    if (prov.kind === 'local') return { ready: !!(_answerAdapter && _answerAdapter._loaded), kind: 'local' };
+    if (prov.kind === 'local') return { ready: !!(_activeLLM && _activeLLM._loaded), kind: 'provider' };
     const cfg = await getAiProviderConfig(pid);
-    return { ready: !!(cfg && cfg.apiKey), kind: 'byok' };
+    return { ready: !!(cfg && cfg.apiKey), kind: 'provider' };
   } catch (_) { return { ready: false, kind: null }; }
 }
 
@@ -3306,12 +3331,10 @@ function caVerifyAnswer(text, citedEntries) {
 }
 
 async function caAnswer(query, results, onState) {
-  if (!getAiEnabled()) { const e = new Error('Smart Capture is disabled.'); e.code = 'AiDisabled'; throw e; }
-  const pid = await getAiProvider();
-  const prov = AI_PROVIDERS[pid] || {};
+  const mode = getCaAnswerMode();
   let llm;
-  if (prov.kind === 'local') {
-    // local: answer on the dedicated LIGHT model, not the heavy bill-capture model
+  if (mode === 'local') {
+    // on-device: answer on the dedicated LIGHT model, not the heavy bill-capture model
     llm = getAnswerAdapter();
     if (!llm._loaded) {
       const m = LOCAL_MODEL_REGISTRY[ANSWER_MODEL_ID];
@@ -3319,7 +3342,12 @@ async function caAnswer(query, results, onState) {
       await llm.loadModel({ modelId: ANSWER_MODEL_ID });
     }
   } else {
-    llm = await getActiveLLM(); // BYOK cloud model
+    // 'provider' mode: use the configured Smart Capture provider (cloud, or its local model)
+    llm = await getActiveLLM(); // throws AiDisabled if Smart Capture is off / no provider
+    if (llm.provider && llm.provider.kind === 'local' && !llm._loaded) {
+      if (onState) onState('Loading the provider model…');
+      await llm.loadModel({});
+    }
   }
   const top = results.slice(0, 5);
   const context = top.map((r, i) => {
@@ -3397,10 +3425,11 @@ async function caDoAnswer(query, results) {
 }
 
 async function caMaybeAnswer(query, results) {
+  if (getCaAnswerMode() === 'off') { caHideAnswer(); return; } // search-only mode
   const ready = await caModelReady();
   if (ready.ready) { caDoAnswer(query, results); return; } // hybrid: auto-run when a model is ready
-  const hint = ready.kind === 'byok'
-    ? 'Add a provider API key in Settings to enable answers.'
+  const hint = ready.kind === 'provider'
+    ? 'Answers use your Smart Capture provider — enable & configure it in Settings.'
     : 'Runs a small on-device model (LFM2 2.6B, ~1.7 GB on first use).';
   caRenderAnswer({ status: 'ask', hint, onAsk: () => caDoAnswer(query, results) });
 }
@@ -21501,6 +21530,63 @@ function renderSettings(main) {
 
   aiPanel.appendChild(aiBody);
   main.appendChild(aiPanel);
+
+  // === CA Lookup (AI tax / GST reference search) — own panel, independent of Smart Capture ===
+  const caPanel = h('div', { class: 'panel' });
+  caPanel.appendChild(h('div', { class: 'panel-h' }, ['CA Lookup (AI tax / GST search)']));
+  const caBody = h('div', { class: 'panel-b' });
+  const caOn = getCaLookupEnabled();
+
+  const caToggleRow = h('div', { style: 'display:flex;align-items:center;gap:14px;padding:6px 0 4px' });
+  const caToggleLabel = h('label', { style: 'display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600' });
+  const caToggleInput = h('input', { type: 'checkbox', style: 'transform:scale(1.2);cursor:pointer' });
+  caToggleInput.checked = caOn;
+  caToggleLabel.appendChild(caToggleInput);
+  caToggleLabel.appendChild(document.createTextNode(caOn ? 'CA Lookup is on' : 'CA Lookup is off'));
+  caToggleRow.appendChild(caToggleLabel);
+  caToggleRow.appendChild(h('span', {
+    class: 'badge',
+    style: caOn ? 'background:var(--green-soft);color:var(--green)' : 'background:var(--ash-2);color:var(--ink-2)'
+  }, [caOn ? 'ACTIVE' : 'OFF']));
+  caBody.appendChild(caToggleRow);
+  caBody.appendChild(h('p', { class: 'help', style: 'margin:6px 0 0' }, [
+    'Floating tax / GST reference search (Ctrl/Cmd+Shift+L), on-device. Semantic search over a CA-reviewed corpus, with an optional grounded AI answer. First search downloads a ~30 MB search model; nothing leaves your machine.'
+  ]));
+
+  if (caOn) {
+    const ansRow = h('div', { style: 'display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap' });
+    ansRow.appendChild(h('label', { for: 'ca-answer-mode', style: 'font-size:12px;font-weight:600;min-width:90px' }, ['AI answer']));
+    const ansSel = h('select', { id: 'ca-answer-mode', style: 'padding:6px 8px;font-size:12px;min-width:300px;font-family:inherit' });
+    const curMode = getCaAnswerMode();
+    for (const [val, label] of [
+      ['off', 'Off — search results only (lightest)'],
+      ['local', 'On-device — LFM2 2.6B (~1.7 GB, private)'],
+      ['provider', 'Use my Smart Capture provider (cloud / local)'],
+    ]) {
+      const o = h('option', { value: val }, [label]);
+      if (val === curMode) o.selected = true;
+      ansSel.appendChild(o);
+    }
+    ansSel.onchange = () => {
+      setCaAnswerMode(ansSel.value);
+      toast('CA Lookup answer: ' + ansSel.options[ansSel.selectedIndex].text, '');
+    };
+    ansRow.appendChild(ansSel);
+    caBody.appendChild(ansRow);
+    caBody.appendChild(h('p', { class: 'help', style: 'margin:6px 0 0' }, [
+      'Reference data is AI-assembled and CA-reviewed — verify before relying; not tax advice. “Provider” mode sends your question to the provider configured under Smart Capture.'
+    ]));
+  }
+
+  caToggleInput.onchange = () => {
+    setCaLookupEnabled(caToggleInput.checked);
+    refreshCaSidecar();
+    toast(caToggleInput.checked ? 'CA Lookup enabled — launcher is bottom-right (Ctrl/Cmd+Shift+L).' : 'CA Lookup disabled.', caToggleInput.checked ? 'ok' : '');
+    render();
+  };
+
+  caPanel.appendChild(caBody);
+  main.appendChild(caPanel);
 
   // OPFS crash-recovery panel — only shown when an orphan staging file was detected
   if (STATE.pendingStagingRecovery) {

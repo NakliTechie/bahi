@@ -11015,6 +11015,31 @@ function closeModal() {
   m.innerHTML = '';
 }
 
+// Surface a form-validation error INSIDE a modal, not just as a corner toast. A toast alone
+// is easy to miss — it pops in the far bottom-right (the same corner as the CA Lookup
+// launcher) and auto-dismisses while the user's eyes are on the centered dialog. This
+// generalizes the new-company wizard's showNcErr: a red banner appended to the modal body,
+// scrolled into view, with the offending field focused + red-ringed, and the toast kept as a
+// secondary signal. Pass the modal's `.modal-b` element; returns showErr(msg, focusId) to
+// call in place of toast(msg, 'err') at each required-field / format rejection. focusId is
+// optional — when given, that field is focused and red-ringed (and any previously ringed
+// field is cleared, so multi-field forms don't accumulate stale red borders).
+function makeModalErr(bodyEl) {
+  const errBox = h('div', {});
+  errBox.style.cssText = 'display:none;margin:2px 0 10px;padding:8px 11px;border-radius:4px;background:#fdecea;color:#b3261e;border:1px solid #f4c7c3;font-size:12px;line-height:1.4';
+  bodyEl.appendChild(errBox);
+  let lastEl = null;
+  return (msg, focusId) => {
+    errBox.textContent = msg;
+    errBox.style.display = 'block';
+    errBox.scrollIntoView({ block: 'nearest' });
+    if (lastEl) lastEl.style.borderColor = '';
+    const el = focusId ? $(focusId) : null;
+    if (el) { el.focus(); el.style.borderColor = '#b3261e'; lastEl = el; } else { lastEl = null; }
+    toast(msg, 'err');
+  };
+}
+
 // === v1.1 Smart Capture — first-enable confirmation ===
 // Shown the first time the user toggles Smart Capture on in Settings. Explains the
 // model-download size, that models stay on-device after first download, and that the
@@ -11187,13 +11212,14 @@ function showCaProfileSetup(mandatory) {
     ${existing.logoDataUri ? `<div style="margin-top:8px"><img src="${existing.logoDataUri}" style="max-height:60px;border:1px solid var(--rule);padding:4px"></div>` : ''}
   `;
   m.appendChild(body);
+  const showErr = makeModalErr(body);
 
   let logoDataUri = existing.logoDataUri || '';
   setTimeout(() => {
     $('ca-logo').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      if (file.size > 200 * 1024) { toast('Logo must be under 200 KB', 'err'); return; }
+      if (file.size > 200 * 1024) { showErr('Logo must be under 200 KB', 'ca-logo'); return; }
       logoDataUri = await new Promise(resolve => {
         const r = new FileReader();
         r.onload = () => resolve(r.result);
@@ -11215,7 +11241,7 @@ function showCaProfileSetup(mandatory) {
     const name = $('ca-name').value.trim();
     const firm = $('ca-firm').value.trim();
     const mem = $('ca-mem').value.trim();
-    if (!name || !firm || !mem) { toast('Name, firm, and membership are required', 'err'); return; }
+    if (!name || !firm || !mem) { showErr('Name, firm, and membership are required', !name ? 'ca-name' : !firm ? 'ca-firm' : 'ca-mem'); return; }
     const profile = { name, firmName: firm, membershipNo: mem, logoDataUri, createdAt: existing.createdAt || nowIso() };
     await saveCaProfile(profile);
     toast('CA profile saved', 'ok');
@@ -11487,18 +11513,19 @@ function openEditCompanyModal() {
 
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, ['Save changes']);
   save.onclick = async () => {
     const name = $('ec-name').value.trim();
-    if (!name) { toast('Company name is required', 'err'); return; }
+    if (!name) { showErr('Company name is required', 'ec-name'); return; }
     let gstin = $('ec-gstin').value.trim().toUpperCase();
     if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
-      toast('GSTIN format invalid', 'err'); return;
+      showErr('GSTIN format invalid', 'ec-gstin'); return;
     }
     const stateRow = parseStateInput($('ec-state').value);
-    if ($('ec-state').value.trim() && !stateRow) { toast('State not recognised', 'err'); return; }
+    if ($('ec-state').value.trim() && !stateRow) { showErr('State not recognised', 'ec-state'); return; }
     if (gstin && stateRow && gstin.slice(0, 2) !== stateRow[1]) {
-      toast(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'err');
+      showErr(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'ec-gstin');
       return;
     }
     const stateIso = stateRow ? stateRow[0] : null;
@@ -12071,21 +12098,22 @@ function openCustomerModal(customerId) {
 
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add customer']);
   save.onclick = async () => {
     const name = $('cm-name').value.trim();
-    if (!name) { toast('Name is required', 'err'); return; }
+    if (!name) { showErr('Name is required', 'cm-name'); return; }
     let gstin = $('cm-gstin').value.trim().toUpperCase();
     if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
-      toast('GSTIN format invalid', 'err'); return;
+      showErr('GSTIN format invalid', 'cm-gstin'); return;
     }
     const stateRow = parseStateInput($('cm-state').value);
     const stateIso = stateRow ? stateRow[0] : null;
     if ($('cm-state').value.trim() && !stateRow) {
-      toast(`State "${$('cm-state').value}" is not recognised.`, 'err'); return;
+      showErr(`State "${$('cm-state').value}" is not recognised.`, 'cm-state'); return;
     }
     if (gstin && stateRow && gstin.slice(0, 2) !== stateRow[1]) {
-      toast(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'err');
+      showErr(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'cm-gstin');
       return;
     }
     const pan = (gstin && gstin.length >= 12) ? gstin.slice(2, 12) : null;
@@ -12298,10 +12326,11 @@ function openItemModal(itemId) {
   m.appendChild(body);
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add item']);
   save.onclick = async () => {
     const name = $('im-name').value.trim();
-    if (!name) { toast('Name is required', 'err'); return; }
+    if (!name) { showErr('Name is required', 'im-name'); return; }
     const isService = $('im-type').value === 'service' ? 1 : 0;
     const hsnSac = $('im-hsnsac').value.trim() || null;
     const unit = $('im-unit').value.trim() || null;
@@ -13316,15 +13345,16 @@ function openBankAccountModal(onCreated) {
   m.appendChild(body);
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, ['Add']);
   save.onclick = async () => {
     const name = $('ba-name').value.trim();
-    if (!name) { toast('Name is required', 'err'); return; }
+    if (!name) { showErr('Name is required', 'ba-name'); return; }
     try {
       const parentId = getAccountIdByName(STATE.db, 'Bank Accounts');
       // Check for duplicate
       const existing = STATE.db.exec('SELECT id FROM accounts WHERE name = ? AND parent_id = ?', [name, parentId]);
-      if (existing.length && existing[0].values.length) { toast('A bank account with that name already exists', 'err'); return; }
+      if (existing.length && existing[0].values.length) { showErr('A bank account with that name already exists', 'ba-name'); return; }
       STATE.db.run(
         'INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, "asset", 0)',
         [name, parentId]
@@ -14081,12 +14111,13 @@ function openSeriesModal(seriesId) {
   m.appendChild(body);
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save' : 'Add']);
   save.onclick = async () => {
     const name = $('is-name').value.trim();
-    if (!name) { toast('Name is required', 'err'); return; }
+    if (!name) { showErr('Name is required', 'is-name'); return; }
     const prefix = $('is-prefix').value.trim();
-    if (!prefix) { toast('Prefix is required', 'err'); return; }
+    if (!prefix) { showErr('Prefix is required', 'is-prefix'); return; }
     const suffix = $('is-suffix').value.trim() || null;
     const starting = parseInt($('is-start').value, 10) || 1;
     const reset = $('is-reset').value === '1' ? 1 : 0;
@@ -14727,21 +14758,22 @@ function openVendorModal(vendorId) {
   m.appendChild(body);
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add vendor']);
   save.onclick = async () => {
     const name = $('vm-name').value.trim();
-    if (!name) { toast('Name is required', 'err'); return; }
+    if (!name) { showErr('Name is required', 'vm-name'); return; }
     let gstin = $('vm-gstin').value.trim().toUpperCase();
     if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
-      toast('GSTIN format invalid', 'err'); return;
+      showErr('GSTIN format invalid', 'vm-gstin'); return;
     }
     const stateRow = parseStateInput($('vm-state').value);
     const stateIso = stateRow ? stateRow[0] : null;
     if ($('vm-state').value.trim() && !stateRow) {
-      toast(`State "${$('vm-state').value}" is not recognised.`, 'err'); return;
+      showErr(`State "${$('vm-state').value}" is not recognised.`, 'vm-state'); return;
     }
     if (gstin && stateRow && gstin.slice(0, 2) !== stateRow[1]) {
-      toast(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'err');
+      showErr(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'vm-gstin');
       return;
     }
     const pan = (gstin && gstin.length >= 12) ? gstin.slice(2, 12) : null;
@@ -16923,10 +16955,11 @@ function openGodownModal(godownId) {
   m.appendChild(body);
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add godown']);
   save.onclick = async () => {
     const name = $('gd-name').value.trim();
-    if (!name) { toast('Name is required', 'err'); return; }
+    if (!name) { showErr('Name is required', 'gd-name'); return; }
     const stateRow = parseStateInput($('gd-state').value);
     const stateIso = stateRow ? stateRow[0] : null;
     const isDef = parseInt($('gd-def').value, 10) || 0;
@@ -19036,10 +19069,11 @@ function openInlineAnnotationModal(targetType, targetId, targetRef) {
   m.appendChild(body);
   const cancel = h('button', {}, ['Cancel']);
   cancel.onclick = () => closeModal();
+  const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, ['Save annotation']);
   save.onclick = async () => {
     const body = $('ann-body').value.trim();
-    if (!body) { toast('Note body is required', 'err'); return; }
+    if (!body) { showErr('Note body is required', 'ann-body'); return; }
     try {
       await addAnnotation(STATE.db, {
         targetType, targetId, targetRef,

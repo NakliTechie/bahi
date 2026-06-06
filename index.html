@@ -11247,7 +11247,7 @@ function promptNewCompany() {
     const defaultFyStart = `${fyYear}-04-01`;
 
     body.innerHTML = `
-      <div class="field"><label>Legal name</label><input id="nc-name" placeholder="Acme Services Pvt Ltd" autocomplete="off"></div>
+      <div class="field"><label>Legal name <span style="color:#b3261e;font-weight:700" title="required">*</span> <span style="font-weight:400;font-size:10px;color:var(--ink-2)">(required)</span></label><input id="nc-name" placeholder="Acme Services Pvt Ltd" autocomplete="off"></div>
       <div class="field"><label>Trade name</label><input id="nc-trade" placeholder="(optional)"></div>
       <div class="field"><label>Type</label>
         <select id="nc-type">
@@ -11289,27 +11289,44 @@ function promptNewCompany() {
     `;
     m.appendChild(body);
 
+    // In-modal validation error. A corner toast alone is easy to miss: it pops in the
+    // far bottom-right (same corner as the CA Lookup launcher) and auto-dismisses, while
+    // the user's attention is on this centered dialog. So surface the error INSIDE the
+    // modal and focus the offending field — the toast stays as a secondary signal.
+    const ncErr = h('div', {});
+    ncErr.style.cssText = 'display:none;margin:2px 0 10px;padding:8px 11px;border-radius:4px;background:#fdecea;color:#b3261e;border:1px solid #f4c7c3;font-size:12px;line-height:1.4';
+    body.appendChild(ncErr);
+    const showNcErr = (msg, focusId) => {
+      ncErr.textContent = msg;
+      ncErr.style.display = 'block';
+      ncErr.scrollIntoView({ block: 'nearest' });
+      const el = focusId && $(focusId);
+      if (el) { el.focus(); el.style.borderColor = '#b3261e'; }
+      toast(msg, 'err');
+    };
+
     const cancel = h('button', {}, ['Cancel']);
     cancel.onclick = () => { closeModal(); resolve(null); };
     const create = h('button', { class: 'primary' }, ['Create']);
     create.onclick = () => {
+      ncErr.style.display = 'none';
       const name = $('nc-name').value.trim();
-      if (!name) { toast('Company name is required', 'err'); return; }
+      if (!name) { showNcErr('Legal name is required.', 'nc-name'); return; }
       let gstin = $('nc-gstin').value.trim().toUpperCase();
       if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
-        toast('GSTIN format invalid (must be 15 chars: 2 digits + 5 letters + 4 digits + letter + alphanum + Z + alphanum)', 'err');
+        showNcErr('GSTIN format invalid (must be 15 chars: 2 digits + 5 letters + 4 digits + letter + alphanum + Z + alphanum)', 'nc-gstin');
         return;
       }
       const stateRowFromInput = parseStateInput($('nc-state').value);
       const stateIso = stateRowFromInput ? stateRowFromInput[0] : null;
       // Reject typed-but-unmatched values rather than silently dropping them
       if ($('nc-state').value.trim() && !stateRowFromInput) {
-        toast(`State "${$('nc-state').value}" is not recognised. Pick from the suggestions or use the ISO code (e.g. MH).`, 'err');
+        showNcErr(`State "${$('nc-state').value}" is not recognised. Pick from the suggestions or use the ISO code (e.g. MH).`, 'nc-state');
         return;
       }
       // If GSTIN is provided, its first 2 digits MUST match the resolved state's GSTIN code.
       if (gstin && stateRowFromInput && gstin.slice(0, 2) !== stateRowFromInput[1]) {
-        toast(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRowFromInput[2]} has GST code ${stateRowFromInput[1]}. They must match.`, 'err');
+        showNcErr(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRowFromInput[2]} has GST code ${stateRowFromInput[1]}. They must match.`, 'nc-gstin');
         return;
       }
       // If GSTIN is provided but no state was typed, derive state ISO from GSTIN's first 2 digits.
@@ -11318,7 +11335,7 @@ function promptNewCompany() {
         const gstinCode = gstin.slice(0, 2);
         const s = STATE_BY_GSTIN.get(gstinCode);
         if (!s) {
-          toast(`GSTIN starts with ${gstinCode} which is not a valid GST state code.`, 'err');
+          showNcErr(`GSTIN starts with ${gstinCode} which is not a valid GST state code.`, 'nc-gstin');
           return;
         }
         resolvedIso = s[0];

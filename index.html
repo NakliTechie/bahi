@@ -4358,6 +4358,29 @@ async function appendAuditEntry(db, { actor, action, ref, payload }) {
   );
   return { ts, hash, origin };
 }
+// Identity string for an ECDSA public JWK — used to dedupe / compare the trusted-key set.
+function jwkId(jwk) {
+  return jwk ? `${jwk.kty || ''}:${jwk.crv || ''}:${jwk.x || ''}:${jwk.y || ''}` : '';
+}
+// The public keys a .khata trusts = this owner's own Bahi instances. Per-origin keys never
+// leave the browser, so the live site / each browser / each machine has its own key. Back-compat:
+// older files carry only integrity.signedBy → treat that lone key as the trusted set.
+function trustedKeysOf(integrity) {
+  if (!integrity) return [];
+  if (Array.isArray(integrity.trustedKeys) && integrity.trustedKeys.length) return integrity.trustedKeys;
+  return integrity.signedBy ? [integrity.signedBy] : [];
+}
+// Record a public JWK in integrity.trustedKeys (dedup by jwkId). A key only ever joins the set
+// by signing a save THROUGH Bahi, so an out-of-Bahi editor can't quietly add itself.
+function addTrustedKey(integrity, jwk) {
+  if (!integrity || !jwk) return;
+  const list = Array.isArray(integrity.trustedKeys)
+    ? integrity.trustedKeys.slice()
+    : (integrity.signedBy ? [integrity.signedBy] : []);
+  if (!list.some(k => jwkId(k) === jwkId(jwk))) list.push(jwk);
+  integrity.trustedKeys = list;
+}
+
 // Verify the append-only chain. `ok` = chain integrity (hashes recompute + link). When the
 // file's signing JWK (manifest.integrity.signedBy) is passed, also verifies each row's ECDSA
 // signature and reports sigOk/sigBad/sigUnchecked separately — a sig failure means tampering OR
@@ -4372,9 +4395,12 @@ async function verifyAuditChain(db, publicJwk = null) {
   const rows = r[0].values;
   let prev = GENESIS_PREV;
   let bad = 0, sigOk = 0, sigBad = 0, sigUnchecked = 0;
-  let verifyKey = null;
-  if (publicJwk) {
-    try { verifyKey = await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']); } catch (_) {}
+  // Accept a single JWK or an array of trusted JWKs (the owner's own Bahi instances).
+  // A row's signature passes if it verifies against ANY trusted key.
+  const verifyKeys = [];
+  const jwks = Array.isArray(publicJwk) ? publicJwk : (publicJwk ? [publicJwk] : []);
+  for (const jwk of jwks) {
+    try { verifyKeys.push(await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify'])); } catch (_) {}
   }
   for (const row of rows) {
     const [id, ts, actor, action, ref, origin, payload, prevHash, hash, signature] = row;
@@ -4385,9 +4411,12 @@ async function verifyAuditChain(db, publicJwk = null) {
       ? await sha256(auditPreimageV2(prevHash, ts, actor, action, ref, origin, payload))
       : await sha256(prevHash + (origin || '') + payload);
     if (computed !== hash) { bad++; prev = hash; continue; }
-    if (verifyKey && signature) {
+    if (verifyKeys.length && signature) {
       let okSig = false;
-      try { okSig = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifyKey, b64decode(signature), hexToBytes(hash)); } catch (_) {}
+      const sigBytes = b64decode(signature), hashBytes = hexToBytes(hash);
+      for (const vk of verifyKeys) {
+        try { if (await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, vk, sigBytes, hashBytes)) { okSig = true; break; } } catch (_) {}
+      }
       okSig ? sigOk++ : sigBad++;
     } else {
       sigUnchecked++;
@@ -5118,7 +5147,7 @@ async function checkRateChangeResilience(db) {
 // runAllIntegrityChecks — convenience wrapper for the Debug Console panel.
 async function runAllIntegrityChecks(db) {
   const out = [];
-  out.push({ name: 'Audit log chain', result: await verifyAuditChain(db, STATE.manifest?.integrity?.signedBy) });
+  out.push({ name: 'Audit log chain', result: await verifyAuditChain(db, trustedKeysOf(STATE.manifest?.integrity)) });
   out.push({ name: 'Transaction snapshots (Inv 1, 3, 4, 6)', result: checkTransactionSnapshots(db) });
   out.push({ name: 'Entry line account names (Inv 7)', result: checkEntryLineAccountNames(db) });
   out.push({ name: 'Company edit resilience (Inv 1)', result: await checkCompanyEditResilience(db) });
@@ -9736,8 +9765,14 @@ async function persistKhata() {
     STATE.manifest.integrity = STATE.manifest.integrity || {};
     STATE.manifest.integrity.booksHash = booksHash;
     STATE.manifest.integrity.auditHead = getAuditHead(STATE.db);
-    if (STATE.publicJwk && !STATE.manifest.integrity.signedBy) {
+    if (STATE.publicJwk) {
+      // Re-home the primary signer to THIS browser's key AND record it in the trusted-key
+      // set (your own Bahi instances). Per-origin keys never leave the browser, so without
+      // this a file last signed elsewhere (the live site, another machine) would fail its
+      // own books/audit signature forever. An out-of-Bahi editor still can't produce a valid
+      // signature for any trusted key, so tamper detection is unaffected.
       STATE.manifest.integrity.signedBy = STATE.publicJwk;
+      addTrustedKey(STATE.manifest.integrity, STATE.publicJwk);
     }
     // Sign the books hash. booksHash on its own is a plain checksum: an offline editor of
     // the sqlite bytes can simply recompute it. The ECDSA signature can't be reforged
@@ -10456,7 +10491,7 @@ async function openHandle(handle, existingWsId) {
   }
 
   // Audit chain check (+ ECDSA signature verification against the file's signing key)
-  const chain = await verifyAuditChain(db, manifest?.integrity?.signedBy);
+  const chain = await verifyAuditChain(db, trustedKeysOf(manifest?.integrity));
   if (!chain.ok) toast(`Audit chain: ${chain.badCount}/${chain.count} entries failed verification`, 'err');
   else if (chain.sigBad > 0) toast(`Audit log: ${chain.sigBad}/${chain.count} entries have a signature that doesn't match this file's key — possible tampering or a different signing machine.`, 'err');
 
@@ -10473,13 +10508,16 @@ async function openHandle(handle, existingWsId) {
     const actual = await sha256Bytes(dbBytes);
     if (actual !== manifest.integrity.booksHash) {
       toast('Warning: manifest booksHash does not match actual sqlite bytes', 'err');
-    } else if (manifest.integrity.booksSig && manifest.integrity.signedBy) {
+    } else if (manifest.integrity.booksSig && (manifest.integrity.signedBy || manifest.integrity.trustedKeys)) {
       // booksHash matched — but that's only a checksum a tamperer can recompute. The
-      // signature over it can't be reforged without the private key, so verify it. A
-      // mismatch means the ledger was edited outside Bahi (or signed on another machine).
+      // signature over it can't be reforged without a private key, so verify it against
+      // each trusted key (this owner's Bahi instances). Failing ALL of them means the
+      // ledger was edited outside Bahi (or signed by a key this file doesn't trust).
       let booksSigOk = false;
-      try { booksSigOk = await verifyHashHex(manifest.integrity.signedBy, actual, manifest.integrity.booksSig); } catch (_) {}
-      if (!booksSigOk) toast("Books signature doesn't match this file's key — the ledger may have been edited outside Bahi, or signed on a different machine.", 'err');
+      for (const k of trustedKeysOf(manifest.integrity)) {
+        try { if (await verifyHashHex(k, actual, manifest.integrity.booksSig)) { booksSigOk = true; break; } } catch (_) {}
+      }
+      if (!booksSigOk) toast("Books signature doesn't match a key this file trusts — the ledger may have been edited outside Bahi, or signed on a different machine. Saving here will trust this browser.", 'err');
     }
   }
 
@@ -10658,6 +10696,7 @@ async function openHandle(handle, existingWsId) {
       // in the rotation audit entry above for forensic chain-of-custody.
       manifest.integrity = manifest.integrity || {};
       manifest.integrity.signedBy = kp.publicJwk;
+      addTrustedKey(manifest.integrity, kp.publicJwk);
     } catch (e) { console.warn('keypair.rotation audit append failed:', e); }
   }
 
@@ -20999,7 +21038,7 @@ function buildAuditPanel() {
 
   const verifyDiv = h('div', { id: 'audit-verify' }, ['Verifying chain…']);
   body.appendChild(verifyDiv);
-  verifyAuditChain(STATE.db, STATE.manifest?.integrity?.signedBy).then(v => {
+  verifyAuditChain(STATE.db, trustedKeysOf(STATE.manifest?.integrity)).then(v => {
     const sig = v.sigBad > 0
       ? ` · <span class="badge alert">${v.sigBad} BAD SIG</span>`
       : (v.sigOk > 0 ? ` · <span class="badge green">${v.sigOk} sig verified</span>` : '');
@@ -21197,7 +21236,7 @@ async function runRoundTrip(outEl) {
     }
     step(`Entry counts match: ${afterCount} entries, max id ${afterMax}`);
 
-    const chain = await verifyAuditChain(db2, STATE.manifest?.integrity?.signedBy);
+    const chain = await verifyAuditChain(db2, trustedKeysOf(STATE.manifest?.integrity));
     db2.close();
     if (!chain.ok) { step(`Audit chain: ${chain.badCount}/${chain.count} bad`, false); writeOut(false); return; }
     step(`Audit chain verified: ${chain.count} entries`);

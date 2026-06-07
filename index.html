@@ -11395,6 +11395,7 @@ function promptNewCompany() {
     cancel.onclick = () => { closeModal(); resolve(null); };
     const create = h('button', { class: 'primary' }, ['Create']);
     create.onclick = () => {
+     try {
       ncErr.style.display = 'none';
       const name = $('nc-name').value.trim();
       if (!name) { showNcErr('Legal name is required.', 'nc-name'); return; }
@@ -11452,6 +11453,14 @@ function promptNewCompany() {
       };
       closeModal();
       resolve(result);
+     } catch (e) {
+      // Defense-in-depth: a crash in this handler must never leave promptNewCompany()'s promise
+      // forever-pending (the PR #17 failure mode). Surface it and abort cleanly instead.
+      console.error('new-company wizard:', e);
+      toast('Could not create the company: ' + ((e && e.message) || e), 'err');
+      try { closeModal(); } catch (_) {}
+      resolve(null);
+     }
     };
     const footer = h('div', { class: 'modal-f' }, [cancel, create]);
     m.appendChild(footer);

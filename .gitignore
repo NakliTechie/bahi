@@ -44,3 +44,7 @@ corpus/.cache/
 corpus/.transformers-cache/
 corpus/package-lock.json
 corpus/**/.DS_Store
+
+# smoke/ — first-run smoke test (pre-deploy regression guard for create/open flows)
+!smoke
+!smoke/first-run-smoke.js

@@ -11411,8 +11411,11 @@ function promptNewCompany() {
       const compMap = { '0': null, '1': { enabled: true, type: 'trader', rate: 0.01 }, '2': { enabled: true, type: 'restaurant', rate: 0.05 }, '3': { enabled: true, type: 'service', rate: 0.06 } };
       const composition = compMap[compVal] || null;
 
-      closeModal();
-      resolve({
+      // Capture every field value BEFORE closeModal(): closeModal removes the modal from the
+      // DOM, so any $('nc-*') lookup afterwards returns null and ".value" throws ("Cannot read
+      // properties of null"). That threw inside the wizard's own click handler, so the promise
+      // never resolved and Create silently did nothing (no file, no error toast).
+      const result = {
         companyName: name,
         trade_name: $('nc-trade').value.trim() || null,
         company_type: $('nc-type').value || null,
@@ -11425,7 +11428,9 @@ function promptNewCompany() {
         fy_start: $('nc-fy').value || null,
         ui_tier: $('nc-tier').value || 'everything',
         composition,
-      });
+      };
+      closeModal();
+      resolve(result);
     };
     const footer = h('div', { class: 'modal-f' }, [cancel, create]);
     m.appendChild(footer);

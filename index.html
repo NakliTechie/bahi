@@ -11048,6 +11048,27 @@ function toast(msg, kind = '') {
   setTimeout(() => t.remove(), 5000);
 }
 
+// === Global error surface ===
+// Uncaught exceptions and unhandled promise rejections otherwise fail SILENTLY — no toast, no
+// banner. That is exactly how the new-company "Create" crash (PR #17) stayed invisible for the
+// whole v1.0 lifetime: a TypeError thrown inside a click handler produced zero signal. Surface
+// them so any future silent failure is at least visible to the user (and logged). Throttled so a
+// cascade can't spam the toast stack; the reporter itself never throws.
+let _globalErrAt = 0;
+function surfaceGlobalError(kind, errLike) {
+  try {
+    console.error('[' + kind + ']', errLike);
+    const now = Date.now();
+    if (now - _globalErrAt < 2000) return;   // throttle bursts
+    _globalErrAt = now;
+    const msg = (errLike && (errLike.message || (errLike.reason && errLike.reason.message)))
+      || String((errLike && errLike.reason) || errLike || 'unexpected error');
+    if (typeof toast === 'function') toast('Something went wrong — ' + msg + ' (details in console)', 'err');
+  } catch (_) { /* a reporter that throws would mask the original error — swallow */ }
+}
+window.addEventListener('error', (e) => { if (e && (e.error || e.message)) surfaceGlobalError('uncaught error', e.error || e.message); });
+window.addEventListener('unhandledrejection', (e) => surfaceGlobalError('unhandled promise rejection', (e && e.reason) || e));
+
 function closeModal() {
   const m = $('modal');
   m.classList.add('hidden');

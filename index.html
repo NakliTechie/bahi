@@ -7834,6 +7834,16 @@ async function runTallyImport(db, parsed, mapping, opts) {
 
 const SAP_CONTROL_ACCOUNTS = { 'Sundry Debtors': 'C', 'Sundry Creditors': 'V' };
 
+// State code → GST state code (the 2-digit code SAP B1 India uses; also the first two digits of a
+// GSTIN). Derived from STATE_LIST — Bahi's single source of truth (row = [code, gstCode, name]) —
+// so this never drifts from the app's own state master (e.g. AP=37, not the deprecated 28). Bahi
+// stores the BARE code ('MH','KA'); tolerate a legacy 'IN-' prefix defensively.
+function sapGstStateCode(state) {
+  const code = String(state || '').replace(/^IN-/, '');
+  const row = STATE_LIST.find(s => s[0] === code);
+  return row ? row[1] : '';
+}
+
 function sapCsvCell(v) {
   if (v == null) v = '';
   v = String(v);
@@ -8006,19 +8016,25 @@ const SAP_BP_FIELDS = [
   { key: 'FederalTaxID', label: 'Tax ID (GSTIN)' },
   { key: 'Phone1', label: 'Telephone 1' },
   { key: 'E_Mail', label: 'E-Mail' },
+  { key: 'GSTStateCode', label: 'GST State Code' },
   { key: 'Currency', label: 'Currency' },
 ];
 function buildSapBusinessPartners(db) {
+  // Export ALL partners (incl. archived): a posted document may reference a partner archived after
+  // the fact, and SAP's DTW rejects a document whose CardCode has no Business Partner row. An extra
+  // inactive BP is harmless; a missing one is a hard load failure.
   const rows = [];
   let rk = 1;
-  const cR = db.exec(`SELECT id, name, gstin, phone, email FROM customers WHERE archived = 0 ORDER BY id`);
-  for (const [id, name, gstin, phone, email] of (cR.length ? cR[0].values : []))
+  const cR = db.exec(`SELECT id, name, gstin, phone, email, state FROM customers ORDER BY id`);
+  for (const [id, name, gstin, phone, email, state] of (cR.length ? cR[0].values : []))
     rows.push({ RecordKey: rk++, CardCode: 'C' + id, CardName: name, CardType: 'cCustomer',
-      FederalTaxID: gstin || '', Phone1: phone || '', E_Mail: email || '', Currency: 'INR' });
-  const vR = db.exec(`SELECT id, name, gstin, phone, email FROM vendors WHERE archived = 0 ORDER BY id`);
-  for (const [id, name, gstin, phone, email] of (vR.length ? vR[0].values : []))
+      FederalTaxID: gstin || '', Phone1: phone || '', E_Mail: email || '',
+      GSTStateCode: sapGstStateCode(state), Currency: 'INR' });
+  const vR = db.exec(`SELECT id, name, gstin, phone, email, state FROM vendors ORDER BY id`);
+  for (const [id, name, gstin, phone, email, state] of (vR.length ? vR[0].values : []))
     rows.push({ RecordKey: rk++, CardCode: 'V' + id, CardName: name, CardType: 'cSupplier',
-      FederalTaxID: gstin || '', Phone1: phone || '', E_Mail: email || '', Currency: 'INR' });
+      FederalTaxID: gstin || '', Phone1: phone || '', E_Mail: email || '',
+      GSTStateCode: sapGstStateCode(state), Currency: 'INR' });
   return sapDtwFile(SAP_BP_FIELDS, rows);
 }
 
@@ -8043,19 +8059,100 @@ function buildSapItems(db) {
   return sapDtwFile(SAP_ITEM_FIELDS, rows);
 }
 
+// ---- Documents: oInvoices (A/R) and oPurchaseInvoices (A/P) ----
+// Richer than the journal path: preserves per-line item/HSN/quantity/price. GST is left to SAP's
+// tax engine via a TaxCode the consultant supplies (per-install, unknown here) — so TaxCode is
+// emitted BLANK and amounts are pre-tax. LineTotal (= Bahi's exact per-line `taxable`, net of any
+// discount) is the AUTHORITATIVE amount; Price is the effective unit (taxable/qty, 2-dp rounded)
+// for reference and may differ from LineTotal/Qty by a paise when qty doesn't divide evenly.
+const SAP_INV_HEADER_FIELDS = [
+  { key: 'RecordKey', label: 'RecordKey' },
+  { key: 'CardCode', label: 'BP Code' },
+  { key: 'DocDate', label: 'Posting Date' },
+  { key: 'DocDueDate', label: 'Due Date' },
+  { key: 'TaxDate', label: 'Document Date' },
+  { key: 'NumAtCard', label: 'BP Reference No.' },
+  { key: 'U_GSTPOS', label: 'GST Place of Supply (state code)' },
+  { key: 'Comments', label: 'Remarks' },
+];
+const SAP_INV_LINE_FIELDS = [
+  { key: 'RecordKey', label: 'RecordKey' },
+  { key: 'LineNum', label: 'Row No.' },
+  { key: 'ItemCode', label: 'Item No.' },
+  { key: 'Dscription', label: 'Item/Service Description' },
+  { key: 'Quantity', label: 'Quantity' },
+  { key: 'Price', label: 'Unit Price (pre-tax)' },
+  { key: 'TaxCode', label: 'Tax Code' },
+  { key: 'U_HSN', label: 'HSN/SAC' },
+  { key: 'LineTotal', label: 'Line Total (pre-tax)' },
+];
+
+// Shared builder for oInvoices ('sale') and oPurchaseInvoices ('purchase'). Only posted docs.
+function buildSapDocuments(db, kind, { from, to }) {
+  const isSale = kind === 'sale';
+  const table = isSale ? 'invoices' : 'purchases';
+  const lineTable = isSale ? 'invoice_lines' : 'purchase_lines';
+  const fk = isSale ? 'invoice_id' : 'purchase_id';
+  const partyCol = isSale ? 'customer_id' : 'vendor_id';
+  const cardPrefix = isSale ? 'C' : 'V';
+  const dateCol = isSale ? 'invoice_date' : 'bill_date';
+  const numCol = isSale ? 'invoice_number' : 'bill_number';
+  const params = [], where = ["status = 'posted'"];
+  if (from) { where.push(`${dateCol} >= ?`); params.push(from); }
+  if (to)   { where.push(`${dateCol} <= ?`); params.push(to); }
+  const hR = db.exec(`SELECT id, ${partyCol}, ${dateCol}, due_date, ${numCol}, place_of_supply, notes
+    FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${dateCol}, id`, params);
+  const docs = hR.length ? hR[0].values : [];
+  const headerRows = [], lineRows = [];
+  for (const [id, partyId, docDate, dueDate, num, pos, notes] of docs) {
+    const d = sapDate(docDate);
+    headerRows.push({ RecordKey: id, CardCode: cardPrefix + partyId, DocDate: d,
+      DocDueDate: sapDate(dueDate) || d, TaxDate: d, NumAtCard: num || '',
+      U_GSTPOS: sapGstStateCode(pos), Comments: notes || '' });
+    const lR = db.exec(`SELECT line_no, item_id, description, quantity, rate, taxable, hsn_sac
+      FROM ${lineTable} WHERE ${fk} = ? ORDER BY line_no, id`, [id]);
+    let n = 0;
+    for (const [lineNo, itemId, desc, qty, rate, taxable, hsn] of (lR.length ? lR[0].values : [])) {
+      const q = qty || 0;
+      const unit = q ? taxable / q : rate;   // effective unit (paise) so Price*Qty == LineTotal with discounts
+      lineRows.push({ RecordKey: id, LineNum: n++, ItemCode: itemId ? 'I' + itemId : '',
+        Dscription: desc || '', Quantity: q, Price: sapMoney(unit), TaxCode: '',
+        U_HSN: hsn || '', LineTotal: sapMoney(taxable) });
+    }
+  }
+  return {
+    headerCsv: sapDtwFile(SAP_INV_HEADER_FIELDS, headerRows),
+    linesCsv: sapDtwFile(SAP_INV_LINE_FIELDS, lineRows),
+    count: headerRows.length,
+  };
+}
+const buildSapInvoices = (db, opts) => buildSapDocuments(db, 'sale', opts);
+const buildSapPurchaseInvoices = (db, opts) => buildSapDocuments(db, 'purchase', opts);
+
 const SAP_DTW_README = `Bahi → SAP Business One (HANA) — DTW export
 ============================================
 Load order in the Data Transfer Workbench (masters before transactions):
   1. BusinessPartners.csv     (oBusinessPartners)
   2. Items.csv                (oItems)
   3. JournalEntries.csv + JournalEntries_Lines.csv  (oJournalEntries — paired on RecordKey)
+  4. Invoices.csv + Invoices_Lines.csv                (oInvoices — A/R, paired on RecordKey)
+  5. PurchaseInvoices.csv + PurchaseInvoices_Lines.csv (oPurchaseInvoices — A/P, paired on RecordKey)
 
 Format: comma-delimited, UTF-8. Row 1 = DI-API field names, row 2 = labels, then data.
-Money is decimal (INR). Dates are YYYYMMDD. CardCode C<n> = customer, V<n> = vendor.
+Money is decimal (INR). Dates are YYYYMMDD. CardCode C<n> = customer, V<n> = vendor,
+ItemCode I<n> = item. GSTStateCode / U_GSTPOS are 2-digit GST state codes.
 
 Journal lines that hit a receivable/payable control account carry a BP Code (ShortName) instead
 of a G/L account — SAP posts to that partner's control account automatically. All other lines use
 the G/L AccountCode taken from crosswalk.csv (the Bahi-account → SAP-AccountCode map you filled).
+
+DOCUMENT vs JOURNAL — pick ONE path, do not load both for the same period (they'd double-count):
+  • JournalEntries = the G/L effect only; needs no tax code (GST is already split into CGST/SGST/
+    IGST account legs mapped via crosswalk.csv). Safest, works out of the box.
+  • Invoices / PurchaseInvoices = richer (per-line item, HSN, quantity, price) but amounts are
+    PRE-TAX and the Tax Code column is BLANK — you MUST fill each line's Tax Code with your SAP
+    company's GST tax code (e.g. GST18 / IGST18) so SAP recomputes tax. That map is install-specific
+    and Bahi cannot know it; see the parked note in the mapping spec.
 `;
 
 // Bundle the full DTW export set into a zip. crosswalk = Map<bahiAccount, sapCode>.
@@ -8071,8 +8168,14 @@ async function buildSapDtwExportZip(db, { from, to, crosswalk }) {
   zip.file('Items.csv', buildSapItems(db));
   zip.file('JournalEntries.csv', je.headerCsv);
   zip.file('JournalEntries_Lines.csv', je.linesCsv);
+  const inv = buildSapInvoices(db, { from, to });
+  const pur = buildSapPurchaseInvoices(db, { from, to });
+  zip.file('Invoices.csv', inv.headerCsv);
+  zip.file('Invoices_Lines.csv', inv.linesCsv);
+  zip.file('PurchaseInvoices.csv', pur.headerCsv);
+  zip.file('PurchaseInvoices_Lines.csv', pur.linesCsv);
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-  return { blob, report: { journalEntries: je.count, unresolvedBp: je.unresolvedBp } };
+  return { blob, report: { journalEntries: je.count, unresolvedBp: je.unresolvedBp, invoices: inv.count, purchaseInvoices: pur.count } };
 }
 
 // ---- SAP B1 → Bahi import (parse DTW files → normalized IR → post via the ledger engine) ----
@@ -18986,7 +19089,7 @@ function renderExportSap(main) {
   const p2 = h('div', { class: 'panel' });
   p2.appendChild(h('div', { class: 'panel-h' }, ['2 · Download DTW export']));
   const b2 = h('div', { class: 'panel-b' });
-  b2.appendChild(h('p', { class: 'help' }, ['Optional date range (blank = all postings). The zip bundles Business Partners, Items, and Journal Entries (header + lines) plus a README with the DTW load order.']));
+  b2.appendChild(h('p', { class: 'help' }, ['Optional date range (blank = all postings). The zip bundles Business Partners, Items, Journal Entries, and Invoices / Purchase Invoices (each header + lines) plus a README. Note: the invoice/purchase files are pre-tax and need your SAP GST tax codes filled in — load either the journals OR the documents for a period, not both.']));
   const dr = h('div', { class: 'row', style: 'gap:12px;align-items:center' });
   const fromIn = h('input', { type: 'date' });
   const toIn = h('input', { type: 'date' });
@@ -19013,7 +19116,7 @@ function renderExportSap(main) {
         types: [{ description: 'Zip', accept: { 'application/zip': ['.zip'] } }],
       });
       const w = await handle.createWritable(); await w.write(res.blob); await w.close();
-      let msg = `Saved ${handle.name} — ${res.report.journalEntries} journal entries`;
+      let msg = `Saved ${handle.name} — ${res.report.journalEntries} journal entries, ${res.report.invoices} invoices, ${res.report.purchaseInvoices} purchases`;
       if (res.report.unresolvedBp) msg += ` (${res.report.unresolvedBp} control-account line(s) had no linked partner)`;
       toast(msg, 'ok');
     } catch (e) { if (e.name !== 'AbortError') toast('Export failed: ' + e.message, 'err'); }

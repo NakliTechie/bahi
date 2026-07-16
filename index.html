@@ -458,6 +458,7 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/fy-rollover" data-route="#/fy-rollover">FY rollover</a>
       <h4>Data &amp; ERP</h4>
       <a href="#/export/sap" data-route="#/export/sap">Export to SAP B1 (DTW)</a>
+      <a href="#/import/sap" data-route="#/import/sap">Import from SAP B1 (DTW)</a>
       <h4 class="ca-only">CA mode</h4>
       <a href="#/ca/review" data-route="#/ca/review" class="ca-only">Client review</a>
       <a href="#/ca/adjustment/new" data-route="#/ca/adjustment/new" class="ca-only">+ Adjustment voucher</a>
@@ -7899,6 +7900,14 @@ function buildSapCrosswalkCsv(db) {
   return sapDtwFile(SAP_CROSSWALK_FIELDS, buildSapCrosswalkRows(db));
 }
 
+// Crosswalk CSV with the SAP codes filled in from a map — embedded in the export zip so the
+// bundle is self-describing and re-importable (records exactly which codes were used).
+function buildSapCrosswalkCsvFilled(db, crosswalk) {
+  const rows = buildSapCrosswalkRows(db);
+  for (const r of rows) if (crosswalk.has(r.bahi_account)) r.sap_account_code = crosswalk.get(r.bahi_account);
+  return sapDtwFile(SAP_CROSSWALK_FIELDS, rows);
+}
+
 // Parse a filled crosswalk CSV → Map<bahiAccountName, sapAccountCode> (blank codes ignored).
 function parseSapCrosswalkCsv(text) {
   const rows = sapParseCsv(text);
@@ -8057,13 +8066,192 @@ async function buildSapDtwExportZip(db, { from, to, crosswalk }) {
   const JSZip = await loadJSZip();
   const zip = new JSZip();
   zip.file('README.txt', SAP_DTW_README);
-  zip.file('crosswalk.csv', buildSapCrosswalkCsv(db));
+  zip.file('crosswalk.csv', buildSapCrosswalkCsvFilled(db, crosswalk));
   zip.file('BusinessPartners.csv', buildSapBusinessPartners(db));
   zip.file('Items.csv', buildSapItems(db));
   zip.file('JournalEntries.csv', je.headerCsv);
   zip.file('JournalEntries_Lines.csv', je.linesCsv);
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
   return { blob, report: { journalEntries: je.count, unresolvedBp: je.unresolvedBp } };
+}
+
+// ---- SAP B1 → Bahi import (parse DTW files → normalized IR → post via the ledger engine) ----
+//
+// The mirror of the export. Reads the same DTW CSV set (BusinessPartners, Items, JournalEntries +
+// lines, crosswalk) and produces a normalized IR, then posts it through the standard postEntry
+// bridge. The crosswalk is used in REVERSE: SAP AccountCode → Bahi account name.
+
+// Row 1 of a DTW file is the technical field names — build a header→index map so parsing is
+// robust to column order. Returns { idx(key), rows: dataRows }.
+function sapDtwReader(csvText) {
+  const rows = sapParseCsv(csvText || '');
+  if (rows.length < 2) return { idx: () => -1, rows: [] };
+  const header = rows[0];
+  const pos = {};
+  header.forEach((k, i) => { pos[k] = i; });
+  return { idx: k => (k in pos ? pos[k] : -1), rows: rows.slice(2) };
+}
+const sapUnmoney = s => Math.round((parseFloat(s) || 0) * 100);        // decimal string → integer paise
+const sapUndate = s => { const d = String(s || '').trim(); return /^\d{8}$/.test(d) ? `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}` : d; };
+
+// Parse a set of DTW CSV texts into a normalized IR. files = { businessPartners, items,
+// journalHeader, journalLines, crosswalk } (any may be absent).
+function parseSapB1(files) {
+  const ir = { businessPartners: [], items: [], journals: [], reverseCrosswalk: new Map(), errors: [], warnings: [] };
+
+  if (files.crosswalk) {
+    const { idx, rows } = sapDtwReader(files.crosswalk);
+    const ai = idx('bahi_account'), ci = idx('sap_account_code');
+    for (const r of rows) {
+      const acct = (r[ai] || '').trim(), code = (r[ci] || '').trim();
+      if (acct && code) ir.reverseCrosswalk.set(code, acct);
+    }
+  }
+
+  if (files.businessPartners) {
+    const { idx, rows } = sapDtwReader(files.businessPartners);
+    for (const r of rows) {
+      const code = (r[idx('CardCode')] || '').trim();
+      if (!code) continue;
+      ir.businessPartners.push({
+        cardCode: code, cardName: (r[idx('CardName')] || '').trim(),
+        cardType: (r[idx('CardType')] || '').trim() === 'cSupplier' ? 'V' : 'C',
+        gstin: (r[idx('FederalTaxID')] || '').trim() || null,
+        phone: (r[idx('Phone1')] || '').trim() || null,
+        email: (r[idx('E_Mail')] || '').trim() || null,
+      });
+    }
+  }
+
+  if (files.items) {
+    const { idx, rows } = sapDtwReader(files.items);
+    for (const r of rows) {
+      const code = (r[idx('ItemCode')] || '').trim();
+      if (!code) continue;
+      const itemType = (r[idx('ItemType')] || '').trim();
+      const inv = (r[idx('InventoryItem')] || '').trim();
+      ir.items.push({
+        itemCode: code, itemName: (r[idx('ItemName')] || '').trim(),
+        isService: itemType === 'itLabor' || inv === 'tNO',
+        unit: (r[idx('InventoryUOM')] || '').trim() || null,
+      });
+    }
+  }
+
+  if (files.journalHeader) {
+    const { idx, rows } = sapDtwReader(files.journalHeader);
+    const byKey = new Map();
+    for (const r of rows) {
+      const rk = (r[idx('RecordKey')] || '').trim();
+      if (!rk) continue;
+      byKey.set(rk, { recordKey: rk, date: sapUndate(r[idx('ReferenceDate')]),
+        memo: (r[idx('Memo')] || '').trim(), reference: (r[idx('Reference')] || '').trim(), lines: [] });
+    }
+    if (files.journalLines) {
+      const lr = sapDtwReader(files.journalLines);
+      for (const r of lr.rows) {
+        const rk = (r[lr.idx('RecordKey')] || '').trim();
+        const j = byKey.get(rk);
+        if (!j) { ir.warnings.push(`Journal line for unknown RecordKey ${rk} skipped`); continue; }
+        j.lines.push({
+          accountCode: (r[lr.idx('AccountCode')] || '').trim(),
+          shortName: (r[lr.idx('ShortName')] || '').trim(),
+          debit: sapUnmoney(r[lr.idx('Debit')]), credit: sapUnmoney(r[lr.idx('Credit')]),
+          lineMemo: (r[lr.idx('LineMemo')] || '').trim(),
+        });
+      }
+    }
+    ir.journals = [...byKey.values()].filter(j => j.lines.length);
+  }
+  return ir;
+}
+
+// Resolve an imported account: prefer an exact existing name, else create a safe misc account.
+function resolveSapAccount(db, name) {
+  const r = db.exec('SELECT id FROM accounts WHERE name = ? LIMIT 1', [name]);
+  if (r.length && r[0].values.length) return r[0].values[0][0];
+  db.run("INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, NULL, 'expense', 0)", [name]);
+  return lastInsertId(db);
+}
+
+// Import a parsed SAP IR into the ledger. Masters first, then journals via postEntry.
+// Returns a ctx summary; throws (and the caller rolls back) on a hard error.
+async function runSapImport(db, parsed, opts) {
+  const mode = (opts && opts.mode) || 'merge';
+  const ctx = { customers: { created: 0, matched: 0 }, vendors: { created: 0, matched: 0 },
+    items: { created: 0, matched: 0 }, journals: 0, skippedLines: 0 };
+
+  // Pre-flight: every non-BP journal line's AccountCode must reverse-map to a Bahi account.
+  const unmapped = new Set();
+  for (const j of parsed.journals) for (const ln of j.lines) {
+    if (!ln.shortName && ln.accountCode && !parsed.reverseCrosswalk.has(ln.accountCode)) unmapped.add(ln.accountCode);
+  }
+  if (unmapped.size) { const e = new Error('unmapped-codes'); e.unmapped = unmapped; throw e; }
+
+  await appendAuditEntry(db, { actor: auditActor(), action: 'sapb1.import.start', ref: 'sap-dtw',
+    payload: { businessPartners: parsed.businessPartners.length, items: parsed.items.length, journals: parsed.journals.length } });
+
+  db.run('BEGIN');
+  try {
+    for (const bp of parsed.businessPartners) {
+      const table = bp.cardType === 'V' ? 'vendors' : 'customers';
+      const bucket = bp.cardType === 'V' ? ctx.vendors : ctx.customers;
+      if (mode === 'merge') {
+        let ex = null;
+        if (bp.gstin) { const r = db.exec(`SELECT id FROM ${table} WHERE gstin = ? LIMIT 1`, [bp.gstin.toUpperCase()]); if (r.length && r[0].values.length) ex = 1; }
+        if (!ex) { const r = db.exec(`SELECT id FROM ${table} WHERE LOWER(name) = LOWER(?) LIMIT 1`, [bp.cardName]); if (r.length && r[0].values.length) ex = 1; }
+        if (ex) { bucket.matched++; continue; }
+      }
+      const pan = (bp.gstin && bp.gstin.length >= 12) ? bp.gstin.slice(2, 12) : null;
+      db.run(`INSERT INTO ${table} (name, gstin, pan, email, phone, opening_balance, created_at) VALUES (?,?,?,?,?,0,?)`,
+        [bp.cardName, bp.gstin, pan, bp.email, bp.phone, nowIso()]);
+      bucket.created++;
+    }
+
+    for (const it of parsed.items) {
+      if (mode === 'merge') { const r = db.exec('SELECT id FROM items WHERE LOWER(name) = LOWER(?) LIMIT 1', [it.itemName]); if (r.length && r[0].values.length) { ctx.items.matched++; continue; } }
+      db.run('INSERT INTO items (name, is_service, unit, created_at) VALUES (?,?,?,?)', [it.itemName, it.isService ? 1 : 0, it.unit, nowIso()]);
+      ctx.items.created++;
+    }
+
+    for (const j of parsed.journals) {
+      const lines = [];
+      for (const ln of j.lines) {
+        let accountId;
+        if (ln.shortName) {
+          accountId = getAccountIdByName(db, ln.shortName[0] === 'V' ? 'Sundry Creditors' : 'Sundry Debtors');
+        } else if (ln.accountCode) {
+          accountId = resolveSapAccount(db, parsed.reverseCrosswalk.get(ln.accountCode));
+        } else { ctx.skippedLines++; continue; }
+        lines.push({ accountId, debit: ln.debit, credit: ln.credit });
+      }
+      if (lines.length < 2) { ctx.skippedLines++; continue; }
+      await postEntry(db, { voucherType: 'journal', voucherRef: 'SAP-' + j.recordKey,
+        narration: j.memo || `SAP import ${j.recordKey}`, postedAt: j.date || nowIso(), actor: auditActor(), lines });
+      ctx.journals++;
+    }
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    await appendAuditEntry(db, { actor: auditActor(), action: 'sapb1.import.failed', ref: 'sap-dtw', payload: { error: String(e && e.message || e) } });
+    throw e;
+  }
+  await appendAuditEntry(db, { actor: auditActor(), action: 'sapb1.import.commit', ref: 'sap-dtw', payload: ctx });
+  return ctx;
+}
+
+// Read a Bahi/SAP DTW zip → the file-text set parseSapB1 expects.
+async function readSapDtwZip(blob) {
+  const JSZip = await loadJSZip();
+  const zip = await JSZip.loadAsync(blob);
+  const get = async name => { const f = zip.file(name); return f ? await f.async('string') : null; };
+  return {
+    crosswalk: await get('crosswalk.csv'),
+    businessPartners: await get('BusinessPartners.csv'),
+    items: await get('Items.csv'),
+    journalHeader: await get('JournalEntries.csv'),
+    journalLines: await get('JournalEntries_Lines.csv'),
+  };
 }
 
 //------------------------------------------------------------
@@ -12085,6 +12273,7 @@ function render() {
   // Phase 5
   else if (r === '#/import/tally') renderImportTally(main);
   else if (r === '#/export/sap')   renderExportSap(main);
+  else if (r === '#/import/sap')   renderImportSap(main);
   // Phase 6 (CA mode)
   else if (r === '#/ca/review')       renderCaReview(main);
   else if (r === '#/ca/adjustment/new') renderCaAdjustmentForm(main);
@@ -18831,6 +19020,74 @@ function renderExportSap(main) {
   };
   b2.appendChild(dlZip);
   p2.appendChild(b2); main.appendChild(p2);
+}
+
+// SAP import session state — the parsed IR + source zip filename, held between preview and commit.
+const SAP_IMPORT = { parsed: null, filename: '' };
+
+function renderImportSap(main) {
+  if (!requireFileOrPrompt(main, 'Import from SAP Business One')) return;
+  main.appendChild(h('h1', {}, ['Import from SAP Business One (DTW)']));
+  main.appendChild(h('p', { class: 'help' }, [
+    'Upload a SAP DTW export bundle (.zip) — the same file set Bahi produces, or a consultant\'s DTW files zipped together ',
+    '(BusinessPartners, Items, JournalEntries + lines, and the crosswalk). Business partners and items merge by name/GSTIN; ',
+    'journal entries post as journal vouchers (ref SAP-<n>). Nothing uploads anywhere — parsing is local.',
+  ]));
+
+  const panel = h('div', { class: 'panel' });
+  panel.appendChild(h('div', { class: 'panel-h' }, ['1 · Load DTW bundle']));
+  const body = h('div', { class: 'panel-b' });
+  const fileIn = h('input', { type: 'file', accept: '.zip,application/zip' });
+  const status = h('div', { class: 'help', style: 'margin-top:8px' }, ['No bundle loaded.']);
+  const commitWrap = h('div', { style: 'margin-top:12px' });
+
+  const renderPreview = () => {
+    commitWrap.innerHTML = '';
+    const p = SAP_IMPORT.parsed;
+    if (!p) return;
+    const bpC = p.businessPartners.filter(b => b.cardType === 'C').length;
+    const bpV = p.businessPartners.filter(b => b.cardType === 'V').length;
+    const jLines = p.journals.reduce((n, j) => n + j.lines.length, 0);
+    const ul = h('ul', { class: 'help' }, [
+      h('li', {}, [`${bpC} customer(s), ${bpV} vendor(s)`]),
+      h('li', {}, [`${p.items.length} item(s)`]),
+      h('li', {}, [`${p.journals.length} journal entr(ies), ${jLines} line(s)`]),
+      h('li', {}, [`${p.reverseCrosswalk.size} account code(s) in crosswalk`]),
+    ]);
+    commitWrap.appendChild(ul);
+    if (p.warnings.length) commitWrap.appendChild(h('div', { class: 'help', style: 'color:var(--alert)' }, [p.warnings.join(' · ')]));
+    const commit = h('button', { class: 'primary' }, ['Commit import']);
+    commit.onclick = async () => {
+      commit.disabled = true;
+      try {
+        const ctx = await runSapImport(STATE.db, SAP_IMPORT.parsed, { mode: 'merge' });
+        setSaveStatus('unsaved');
+        await persistKhata();
+        toast(`Imported — ${ctx.customers.created} customers, ${ctx.vendors.created} vendors, ${ctx.items.created} items, ${ctx.journals} journals`, 'ok');
+        SAP_IMPORT.parsed = null; nav('#/dashboard');
+      } catch (e) {
+        if (e && e.unmapped) toast(`Import blocked — SAP account codes with no crosswalk mapping: ${[...e.unmapped].join(', ')}`, 'err');
+        else toast('Import failed: ' + (e && e.message || e), 'err');
+        commit.disabled = false;
+      }
+    };
+    commitWrap.appendChild(commit);
+  };
+
+  fileIn.onchange = async () => {
+    const f = fileIn.files && fileIn.files[0];
+    if (!f) return;
+    status.textContent = 'Reading…';
+    try {
+      const files = await readSapDtwZip(f);
+      const parsed = parseSapB1(files);
+      SAP_IMPORT.parsed = parsed; SAP_IMPORT.filename = f.name;
+      status.textContent = `Loaded ${f.name}`;
+      renderPreview();
+    } catch (e) { status.textContent = ''; toast('Could not read bundle: ' + (e && e.message || e), 'err'); }
+  };
+  body.appendChild(fileIn); body.appendChild(status); body.appendChild(commitWrap);
+  panel.appendChild(body); main.appendChild(panel);
 }
 
 function renderImportTally(main) {

@@ -456,6 +456,8 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
       <a href="#/tax-challans" data-route="#/tax-challans">Tax challans</a>
       <a href="#/period-locks" data-route="#/period-locks">Period locks</a>
       <a href="#/fy-rollover" data-route="#/fy-rollover">FY rollover</a>
+      <h4>Data &amp; ERP</h4>
+      <a href="#/export/sap" data-route="#/export/sap">Export to SAP B1 (DTW)</a>
       <h4 class="ca-only">CA mode</h4>
       <a href="#/ca/review" data-route="#/ca/review" class="ca-only">Client review</a>
       <a href="#/ca/adjustment/new" data-route="#/ca/adjustment/new" class="ca-only">+ Adjustment voucher</a>
@@ -7814,6 +7816,257 @@ async function runTallyImport(db, parsed, mapping, opts) {
 }
 
 //------------------------------------------------------------
+// === SAP Business One (HANA) — DTW export ===
+//------------------------------------------------------------
+//
+// File-based export to SAP Business One via the Data Transfer Workbench (DTW). We emit
+// DTW-loadable CSV template sets a SAP consultant runs through DTW — no live Service Layer,
+// so Bahi's "nothing leaves your device" promise holds (the user downloads files and hands
+// them off). Spec: plan/2026-07-16-sap-b1-hana-mapping-spec.md.
+//
+// The load-bearing artifact is the COA CROSSWALK: Bahi accounts have names+type only, no G/L
+// codes; SAP needs an existing AccountCode per line. Bahi cannot invent SAP codes — it emits a
+// crosswalk (every account name, blank SAP code) the consultant fills once and re-uploads.
+//
+// DTW CSV shape: row 1 = technical DI-API field names, row 2 = human labels, then data rows.
+// Comma-delimited, CRLF, UTF-8. Parent+lines objects ship as a pair joined on RecordKey.
+
+const SAP_CONTROL_ACCOUNTS = { 'Sundry Debtors': 'C', 'Sundry Creditors': 'V' };
+
+function sapCsvCell(v) {
+  if (v == null) v = '';
+  v = String(v);
+  return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+
+// Build a DTW file: fields = [{key,label}], rows = [{key:value}]. Two header rows + data, CRLF.
+function sapDtwFile(fields, rows) {
+  const line = cells => cells.join(',');
+  const out = [
+    line(fields.map(f => sapCsvCell(f.key))),
+    line(fields.map(f => sapCsvCell(f.label))),
+  ];
+  for (const r of rows) out.push(line(fields.map(f => sapCsvCell(r[f.key]))));
+  return out.join('\r\n') + '\r\n';
+}
+
+// Minimal RFC-4180-ish CSV parser (handles quoted cells, embedded commas/quotes/newlines).
+function sapParseCsv(text) {
+  const rows = [];
+  let row = [], cell = '', i = 0, inQ = false;
+  text = String(text).replace(/\r\n?/g, '\n');
+  while (i < text.length) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else inQ = false; }
+      else cell += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ',') { row.push(cell); cell = ''; }
+    else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += c;
+    i++;
+  }
+  if (cell.length || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+const sapMoney = paise => ((paise || 0) / 100).toFixed(2);   // integer paise → decimal string
+const sapDate = iso => (iso || '').slice(0, 10).replace(/-/g, '');  // YYYY-MM-DD → YYYYMMDD
+
+// ---- Crosswalk: every account → a blank SAP AccountCode column for the consultant to fill ----
+
+function buildSapCrosswalkRows(db) {
+  const usedR = db.exec(`SELECT DISTINCT COALESCE(account_name,'') FROM entry_lines`);
+  const used = new Set(usedR.length ? usedR[0].values.map(v => v[0]) : []);
+  const accR = db.exec(`SELECT name, type FROM accounts WHERE archived = 0 ORDER BY
+    CASE type WHEN 'asset' THEN 1 WHEN 'liability' THEN 2 WHEN 'equity' THEN 3
+              WHEN 'income' THEN 4 ELSE 5 END, name`);
+  const rows = accR.length ? accR[0].values.map(([name, type]) => ({
+    bahi_account: name, bahi_type: type,
+    used_in_books: used.has(name) ? 'yes' : 'no', sap_account_code: '',
+  })) : [];
+  return rows;
+}
+
+const SAP_CROSSWALK_FIELDS = [
+  { key: 'bahi_account', label: 'Bahi account name' },
+  { key: 'bahi_type', label: 'Type' },
+  { key: 'used_in_books', label: 'Used in books' },
+  { key: 'sap_account_code', label: 'SAP AccountCode (fill this)' },
+];
+
+function buildSapCrosswalkCsv(db) {
+  return sapDtwFile(SAP_CROSSWALK_FIELDS, buildSapCrosswalkRows(db));
+}
+
+// Parse a filled crosswalk CSV → Map<bahiAccountName, sapAccountCode> (blank codes ignored).
+function parseSapCrosswalkCsv(text) {
+  const rows = sapParseCsv(text);
+  const map = new Map();
+  for (let i = 2; i < rows.length; i++) {            // skip the 2 header rows
+    const [account, , , code] = rows[i];
+    if (account && code && code.trim()) map.set(account.trim(), code.trim());
+  }
+  return map;
+}
+
+// ---- BP sub-ledger reconstruction: entry_id → SAP CardCode (party the control-account line belongs to) ----
+// Bahi's ledger line on Sundry Debtors/Creditors doesn't carry the party; it lives on the source
+// document, linked via *.ledger_entry_id. Walk back so control-account JE lines get a ShortName.
+function buildSapEntryPartyMap(db) {
+  const map = new Map();
+  const add = (rows, prefix) => { for (const [eid, pid] of rows) if (eid != null) map.set(eid, prefix + pid); };
+  const q = sql => { const r = db.exec(sql); return r.length ? r[0].values : []; };
+  add(q(`SELECT ledger_entry_id, customer_id FROM invoices WHERE ledger_entry_id IS NOT NULL`), 'C');
+  add(q(`SELECT ledger_entry_id, vendor_id  FROM purchases WHERE ledger_entry_id IS NOT NULL`), 'V');
+  add(q(`SELECT ledger_entry_id, customer_id FROM payments WHERE ledger_entry_id IS NOT NULL AND customer_id IS NOT NULL`), 'C');
+  add(q(`SELECT ledger_entry_id, customer_id FROM advances WHERE ledger_entry_id IS NOT NULL`), 'C');
+  return map;
+}
+
+const SAP_JE_HEADER_FIELDS = [
+  { key: 'RecordKey', label: 'RecordKey' },
+  { key: 'ReferenceDate', label: 'Posting Date' },
+  { key: 'DueDate', label: 'Due Date' },
+  { key: 'TaxDate', label: 'Document Date' },
+  { key: 'Memo', label: 'Remarks' },
+  { key: 'Reference', label: 'Ref. 1' },
+];
+const SAP_JE_LINE_FIELDS = [
+  { key: 'RecordKey', label: 'RecordKey' },
+  { key: 'LineNum', label: 'Row No.' },
+  { key: 'AccountCode', label: 'G/L Account' },
+  { key: 'ShortName', label: 'BP Code' },
+  { key: 'Debit', label: 'Debit' },
+  { key: 'Credit', label: 'Credit' },
+  { key: 'LineMemo', label: 'Line Memo' },
+];
+
+// Build the oJournalEntries header + lines DTW files. Returns { headerCsv, linesCsv, count,
+// unmapped:Set, unresolvedBp:number } or { error, unmapped } if any needed account is unmapped.
+function buildSapJournalEntries(db, { from, to, crosswalk }) {
+  const partyMap = buildSapEntryPartyMap(db);
+  const params = [], where = [];
+  if (from) { where.push('e.posted_at >= ?'); params.push(from); }
+  if (to)   { where.push('e.posted_at <= ?'); params.push(to); }
+  const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const eR = db.exec(`SELECT e.id, e.posted_at, e.voucher_ref, e.narration
+    FROM entries e ${clause} ORDER BY e.posted_at, e.id`, params);
+  const entries = eR.length ? eR[0].values : [];
+  const headerRows = [], lineRows = [];
+  const unmapped = new Set();
+  let unresolvedBp = 0;
+  for (const [eid, postedAt, vref, narr] of entries) {
+    const d = sapDate(postedAt);
+    headerRows.push({ RecordKey: eid, ReferenceDate: d, DueDate: d, TaxDate: d,
+      Memo: narr || '', Reference: vref || '' });
+    const lR = db.exec(`SELECT COALESCE(account_name,''), debit, credit
+      FROM entry_lines WHERE entry_id = ? ORDER BY id`, [eid]);
+    const lines = lR.length ? lR[0].values : [];
+    let lineNum = 0;
+    for (const [acctName, debit, credit] of lines) {
+      const isControl = Object.prototype.hasOwnProperty.call(SAP_CONTROL_ACCOUNTS, acctName);
+      const cardCode = partyMap.get(eid);
+      const row = { RecordKey: eid, LineNum: lineNum++, AccountCode: '', ShortName: '',
+        Debit: sapMoney(debit), Credit: sapMoney(credit), LineMemo: narr || '' };
+      if (isControl && cardCode) {
+        row.ShortName = cardCode;               // SAP posts to the BP's control account automatically
+      } else {
+        const code = crosswalk.get(acctName);
+        if (!code) { unmapped.add(acctName); if (isControl) unresolvedBp++; }
+        row.AccountCode = code || '';
+      }
+      lineRows.push(row);
+    }
+  }
+  if (unmapped.size) return { error: 'unmapped-accounts', unmapped };
+  return {
+    headerCsv: sapDtwFile(SAP_JE_HEADER_FIELDS, headerRows),
+    linesCsv: sapDtwFile(SAP_JE_LINE_FIELDS, lineRows),
+    count: headerRows.length, unmapped, unresolvedBp,
+  };
+}
+
+// ---- Masters: Business Partners (customers + vendors) and Items ----
+
+const SAP_BP_FIELDS = [
+  { key: 'RecordKey', label: 'RecordKey' },
+  { key: 'CardCode', label: 'BP Code' },
+  { key: 'CardName', label: 'BP Name' },
+  { key: 'CardType', label: 'BP Type' },
+  { key: 'FederalTaxID', label: 'Tax ID (GSTIN)' },
+  { key: 'Phone1', label: 'Telephone 1' },
+  { key: 'E_Mail', label: 'E-Mail' },
+  { key: 'Currency', label: 'Currency' },
+];
+function buildSapBusinessPartners(db) {
+  const rows = [];
+  let rk = 1;
+  const cR = db.exec(`SELECT id, name, gstin, phone, email FROM customers WHERE archived = 0 ORDER BY id`);
+  for (const [id, name, gstin, phone, email] of (cR.length ? cR[0].values : []))
+    rows.push({ RecordKey: rk++, CardCode: 'C' + id, CardName: name, CardType: 'cCustomer',
+      FederalTaxID: gstin || '', Phone1: phone || '', E_Mail: email || '', Currency: 'INR' });
+  const vR = db.exec(`SELECT id, name, gstin, phone, email FROM vendors WHERE archived = 0 ORDER BY id`);
+  for (const [id, name, gstin, phone, email] of (vR.length ? vR[0].values : []))
+    rows.push({ RecordKey: rk++, CardCode: 'V' + id, CardName: name, CardType: 'cSupplier',
+      FederalTaxID: gstin || '', Phone1: phone || '', E_Mail: email || '', Currency: 'INR' });
+  return sapDtwFile(SAP_BP_FIELDS, rows);
+}
+
+const SAP_ITEM_FIELDS = [
+  { key: 'RecordKey', label: 'RecordKey' },
+  { key: 'ItemCode', label: 'Item No.' },
+  { key: 'ItemName', label: 'Item Description' },
+  { key: 'ItemType', label: 'Item Type' },
+  { key: 'InventoryItem', label: 'Inventory Item' },
+  { key: 'SalesItem', label: 'Sales Item' },
+  { key: 'PurchaseItem', label: 'Purchase Item' },
+  { key: 'InventoryUOM', label: 'Inventory UoM' },
+];
+function buildSapItems(db) {
+  const iR = db.exec(`SELECT id, name, is_service, unit FROM items WHERE archived = 0 ORDER BY id`);
+  const rows = (iR.length ? iR[0].values : []).map(([id, name, isService, unit], n) => ({
+    RecordKey: n + 1, ItemCode: 'I' + id, ItemName: name,
+    ItemType: isService ? 'itLabor' : 'itItems',
+    InventoryItem: isService ? 'tNO' : 'tYES', SalesItem: 'tYES', PurchaseItem: 'tYES',
+    InventoryUOM: unit || '',
+  }));
+  return sapDtwFile(SAP_ITEM_FIELDS, rows);
+}
+
+const SAP_DTW_README = `Bahi → SAP Business One (HANA) — DTW export
+============================================
+Load order in the Data Transfer Workbench (masters before transactions):
+  1. BusinessPartners.csv     (oBusinessPartners)
+  2. Items.csv                (oItems)
+  3. JournalEntries.csv + JournalEntries_Lines.csv  (oJournalEntries — paired on RecordKey)
+
+Format: comma-delimited, UTF-8. Row 1 = DI-API field names, row 2 = labels, then data.
+Money is decimal (INR). Dates are YYYYMMDD. CardCode C<n> = customer, V<n> = vendor.
+
+Journal lines that hit a receivable/payable control account carry a BP Code (ShortName) instead
+of a G/L account — SAP posts to that partner's control account automatically. All other lines use
+the G/L AccountCode taken from crosswalk.csv (the Bahi-account → SAP-AccountCode map you filled).
+`;
+
+// Bundle the full DTW export set into a zip. crosswalk = Map<bahiAccount, sapCode>.
+// Returns { blob, report } or { error:'unmapped-accounts', unmapped:Set }.
+async function buildSapDtwExportZip(db, { from, to, crosswalk }) {
+  const je = buildSapJournalEntries(db, { from, to, crosswalk });
+  if (je.error) return je;
+  const JSZip = await loadJSZip();
+  const zip = new JSZip();
+  zip.file('README.txt', SAP_DTW_README);
+  zip.file('crosswalk.csv', buildSapCrosswalkCsv(db));
+  zip.file('BusinessPartners.csv', buildSapBusinessPartners(db));
+  zip.file('Items.csv', buildSapItems(db));
+  zip.file('JournalEntries.csv', je.headerCsv);
+  zip.file('JournalEntries_Lines.csv', je.linesCsv);
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  return { blob, report: { journalEntries: je.count, unresolvedBp: je.unresolvedBp } };
+}
+
+//------------------------------------------------------------
 // === Phase 6 — CA mode (engine layer) ===
 //------------------------------------------------------------
 //
@@ -11831,6 +12084,7 @@ function render() {
   else if (r === '#/stock-transfer/in/import') renderStockTransferIn(main);
   // Phase 5
   else if (r === '#/import/tally') renderImportTally(main);
+  else if (r === '#/export/sap')   renderExportSap(main);
   // Phase 6 (CA mode)
   else if (r === '#/ca/review')       renderCaReview(main);
   else if (r === '#/ca/adjustment/new') renderCaAdjustmentForm(main);
@@ -18485,6 +18739,98 @@ async function handleImportFromTally() {
   } catch (e) {
     if (e.name !== 'AbortError') toast('Open failed: ' + e.message, 'err');
   }
+}
+
+// SAP export session state (the uploaded crosswalk lives here until the user navigates away).
+const SAP_EXPORT = { crosswalk: null, crosswalkName: '' };
+
+function renderExportSap(main) {
+  if (!requireFileOrPrompt(main, 'Export to SAP Business One')) return;
+  const db = STATE.db;
+  main.appendChild(h('h1', {}, ['Export to SAP Business One (DTW)']));
+  main.appendChild(h('p', { class: 'help' }, [
+    'Generates Data Transfer Workbench template files a SAP consultant loads into SAP B1 (version for HANA). ',
+    'Nothing is sent anywhere — you download a .zip and hand it off. Journal entries need a one-time ',
+    'account-code map (SAP requires G/L codes; Bahi accounts have names only).',
+  ]));
+
+  // --- Step 1: crosswalk template ---
+  const p1 = h('div', { class: 'panel' });
+  p1.appendChild(h('div', { class: 'panel-h' }, ['1 · Account crosswalk']));
+  const b1 = h('div', { class: 'panel-b' });
+  b1.appendChild(h('p', { class: 'help' }, ['Download the template, fill the "SAP AccountCode" column against your SAP chart of accounts, then upload it back.']));
+  const dlCw = h('button', {}, ['Download crosswalk template (.csv)']);
+  dlCw.onclick = async () => {
+    if (await verifyExportIdentity()) { toast('Export blocked: identity check failed', 'err'); return; }
+    try {
+      const blob = new Blob([buildSapCrosswalkCsv(db)], { type: 'text/csv' });
+      if (!(await scrubExportBlob(blob, 'Crosswalk'))) return;
+      const slug = slugify(STATE.manifest.company?.name || 'company');
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `sap-crosswalk-${slug}.csv`,
+        types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }],
+      });
+      const w = await handle.createWritable(); await w.write(blob); await w.close();
+      toast(`Saved ${handle.name}`, 'ok');
+    } catch (e) { if (e.name !== 'AbortError') toast('Download failed: ' + e.message, 'err'); }
+  };
+  b1.appendChild(dlCw);
+  const upRow = h('div', { class: 'row', style: 'margin-top:10px;align-items:center;gap:8px' });
+  const fileIn = h('input', { type: 'file', accept: '.csv,text/csv' });
+  const cwStatus = h('span', { class: 'help' }, [SAP_EXPORT.crosswalk ? `Loaded: ${SAP_EXPORT.crosswalkName} (${SAP_EXPORT.crosswalk.size} mapped)` : 'No crosswalk uploaded yet.']);
+  fileIn.onchange = async () => {
+    const f = fileIn.files && fileIn.files[0];
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const map = parseSapCrosswalkCsv(text);
+      SAP_EXPORT.crosswalk = map; SAP_EXPORT.crosswalkName = f.name;
+      cwStatus.textContent = `Loaded: ${f.name} (${map.size} account${map.size === 1 ? '' : 's'} mapped)`;
+      toast(`Crosswalk loaded — ${map.size} accounts mapped`, 'ok');
+    } catch (e) { toast('Could not read crosswalk: ' + e.message, 'err'); }
+  };
+  upRow.appendChild(fileIn); upRow.appendChild(cwStatus);
+  b1.appendChild(upRow);
+  p1.appendChild(b1); main.appendChild(p1);
+
+  // --- Step 2: date range + export ---
+  const p2 = h('div', { class: 'panel' });
+  p2.appendChild(h('div', { class: 'panel-h' }, ['2 · Download DTW export']));
+  const b2 = h('div', { class: 'panel-b' });
+  b2.appendChild(h('p', { class: 'help' }, ['Optional date range (blank = all postings). The zip bundles Business Partners, Items, and Journal Entries (header + lines) plus a README with the DTW load order.']));
+  const dr = h('div', { class: 'row', style: 'gap:12px;align-items:center' });
+  const fromIn = h('input', { type: 'date' });
+  const toIn = h('input', { type: 'date' });
+  dr.appendChild(h('label', { class: 'help' }, ['From ', fromIn]));
+  dr.appendChild(h('label', { class: 'help' }, ['To ', toIn]));
+  b2.appendChild(dr);
+  const dlZip = h('button', { class: 'primary', style: 'margin-top:10px' }, ['Download DTW export (.zip)']);
+  dlZip.onclick = async () => {
+    if (!SAP_EXPORT.crosswalk) { toast('Upload a filled crosswalk first (Step 1)', 'err'); return; }
+    if (await verifyExportIdentity()) { toast('Export blocked: identity check failed', 'err'); return; }
+    try {
+      const res = await buildSapDtwExportZip(db, {
+        from: fromIn.value || null, to: toIn.value || null, crosswalk: SAP_EXPORT.crosswalk,
+      });
+      if (res.error === 'unmapped-accounts') {
+        const names = [...res.unmapped].join(', ');
+        toast(`Export blocked — these accounts have no SAP code in the crosswalk: ${names}`, 'err');
+        return;
+      }
+      if (!(await scrubExportBlob(res.blob, 'SAP DTW export'))) return;
+      const slug = slugify(STATE.manifest.company?.name || 'company');
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `sap-b1-dtw-${slug}.zip`,
+        types: [{ description: 'Zip', accept: { 'application/zip': ['.zip'] } }],
+      });
+      const w = await handle.createWritable(); await w.write(res.blob); await w.close();
+      let msg = `Saved ${handle.name} — ${res.report.journalEntries} journal entries`;
+      if (res.report.unresolvedBp) msg += ` (${res.report.unresolvedBp} control-account line(s) had no linked partner)`;
+      toast(msg, 'ok');
+    } catch (e) { if (e.name !== 'AbortError') toast('Export failed: ' + e.message, 'err'); }
+  };
+  b2.appendChild(dlZip);
+  p2.appendChild(b2); main.appendChild(p2);
 }
 
 function renderImportTally(main) {

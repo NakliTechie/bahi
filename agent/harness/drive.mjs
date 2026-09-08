@@ -145,6 +145,16 @@ export async function runCalls({ book = 'fresh', bookFile = null, calls = [], ta
 
   const results = [];
   for (const c of calls) {
+    // A step may drive the UI door instead of the agent door: `evalJs` runs in the page
+    // and its value is returned. The parity checks need this — a harness that can only
+    // reach window.bahi cannot prove the form and the agent produce the same rows.
+    if (c.evalJs) {
+      const r = await page.evaluate((src) => (new Function(`return (async () => { ${src} })()`))(), c.evalJs)
+        .then((value) => ({ evalJs: c.label || 'eval', value }))
+        .catch((e) => ({ evalJs: c.label || 'eval', threw: String((e && e.message) || e) }));
+      results.push(r);
+      continue;
+    }
     const r = await page.evaluate(
       async ({ command, args, argsJson }) => {
         const a = argsJson === null ? args : JSON.parse(argsJson);

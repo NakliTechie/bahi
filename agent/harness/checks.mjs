@@ -412,10 +412,115 @@ async function batchReconcile() {
   return run;
 }
 
+
+// --- batch 5: two doors, one core -------------------------------------------
+// The reason the voucher engine exists. C28 asserts the form no longer carries its own
+// posting path; C29 drives BOTH doors with identical input and requires identical rows.
+// A structural check alone would pass a form that calls the engine and then also does
+// something extra; a behavioural check alone would pass a form that quietly re-inlined
+// the logic and happens to still agree today. Both, or neither is worth much.
+async function batchTwoDoors() {
+  const src = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+
+  // C28 — the invoice form must delegate. Reintroduce by inlining a posting path back
+  // into renderInvoiceForm.
+  const formStart = src.indexOf('function renderInvoiceForm(main) {');
+  const formEnd = src.indexOf('\nfunction renderInvoices(main) {', formStart);
+  const formSrc = formStart > -1 && formEnd > -1 ? src.slice(formStart, formEnd) : '';
+  const banned = ['INSERT INTO invoices', 'postInvoiceToLedger(', 'postInvoiceStockEffects(', "db.run('BEGIN')", "STATE.db.run('BEGIN')"];
+  const found = banned.filter((b) => formSrc.includes(b));
+  record('C28', 'the invoice form delegates: no posting path of its own',
+    formSrc.length > 0 && found.length === 0 && formSrc.includes('createInvoice(STATE.db'),
+    formSrc.length === 0 ? 'could not locate renderInvoiceForm' : `formBytes=${formSrc.length} callsEngine=${formSrc.includes('createInvoice(STATE.db')} banned=${found.join(',') || 'none'}`);
+
+  // C29 — post the same invoice through the UI form and through window.bahi, then compare
+  // the stored rows. Reintroduce by changing anything the agent path does differently.
+  const setValSrc = `
+    const setVal = (el, v) => {
+      const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+      el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+    };
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));`;
+
+  const UI_POST = `${setValSrc}
+    nav('#/invoice/new');
+    await sleep(400);
+    setVal(document.getElementById('iv-customer'), '1');
+    await sleep(150);
+    setVal(document.getElementById('iv-date'), '2026-02-11');
+    let row = null;
+    for (const tr of document.querySelectorAll('table tbody tr')) { if (tr.querySelector('td:nth-child(4) input')) { row = tr; break; } }
+    if (!row) return { error: 'no line row found' };
+    setVal(row.querySelector('td:nth-child(1) input'), 'Parity probe line');
+    setVal(row.querySelector('td:nth-child(2) input'), '3004');
+    setVal(row.querySelector('td:nth-child(3) input'), '10');
+    setVal(row.querySelector('td:nth-child(4) input'), '150.00');
+    const taxSel = row.querySelector('td:nth-child(5) select');
+    if (taxSel) setVal(taxSel, '0.12');
+    await sleep(250);
+    const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Post invoice & save');
+    if (!btn) return { error: 'post button not found' };
+    if (btn.disabled) return { error: 'post button disabled — the preview did not compute a total' };
+    btn.click();
+    await sleep(1800);
+    return { route: location.hash };`;
+
+  const READ = (door) => `
+    const r = STATE.db.exec('SELECT id, invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, ledger_entry_id FROM invoices ORDER BY id DESC LIMIT 1');
+    if (!r.length) return { door: '${door}', error: 'no invoice rows' };
+    const inv = Object.fromEntries(r[0].columns.map((c, i) => [c, r[0].values[0][i]]));
+    const lr = STATE.db.exec('SELECT line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no', [inv.id]);
+    const lines = lr.length ? lr[0].values.map(v => Object.fromEntries(lr[0].columns.map((c, i) => [c, v[i]]))) : [];
+    const er = STATE.db.exec('SELECT account_id, account_name, debit, credit FROM entry_lines WHERE entry_id = ? ORDER BY id', [inv.ledger_entry_id]);
+    const entry = er.length ? er[0].values.map(v => Object.fromEntries(er[0].columns.map((c, i) => [c, v[i]]))) : [];
+    const ar = STATE.db.exec('SELECT actor FROM audit_log ORDER BY id DESC LIMIT 1');
+    return { door: '${door}', inv, lines, entry, actor: ar.length ? ar[0].values[0][0] : null };`;
+
+  const run = await runCalls({ book: 'pharma', calls: [
+    { evalJs: UI_POST, label: 'ui-post' },
+    { evalJs: READ('ui'), label: 'ui-read' },
+    { command: 'invoice.create', args: { customerId: 1, invoiceDate: '2026-02-11', agentName: 'parity',
+        lines: [{ description: 'Parity probe line', hsnSac: '3004', quantity: 10, rate: 15000, taxRate: 0.12 }] } },
+    { evalJs: READ('agent'), label: 'agent-read' },
+  ] });
+
+  const uiPost = run.results[0].value || {};
+  const ui = run.results[1].value || {};
+  const agentCall = run.results[2];
+  const ag = run.results[3].value || {};
+
+  // id, number and ledger_entry_id must differ — they are two different invoices.
+  const VOLATILE = new Set(['id', 'invoice_number', 'ledger_entry_id']);
+  const diffs = [];
+  if (ui.inv && ag.inv) {
+    for (const k of Object.keys(ui.inv)) if (!VOLATILE.has(k) && ui.inv[k] !== ag.inv[k]) diffs.push(`inv.${k}: ${JSON.stringify(ui.inv[k])} vs ${JSON.stringify(ag.inv[k])}`);
+    if (ui.lines.length !== ag.lines.length) diffs.push(`lineCount ${ui.lines.length} vs ${ag.lines.length}`);
+    else ui.lines.forEach((l, i) => { for (const k of Object.keys(l)) if (l[k] !== ag.lines[i][k]) diffs.push(`line[${i}].${k}: ${JSON.stringify(l[k])} vs ${JSON.stringify(ag.lines[i][k])}`); });
+    if (ui.entry.length !== ag.entry.length) diffs.push(`ledgerLegs ${ui.entry.length} vs ${ag.entry.length}`);
+    else ui.entry.forEach((e, i) => { for (const k of Object.keys(e)) if (e[k] !== ag.entry[i][k]) diffs.push(`entry[${i}].${k}: ${JSON.stringify(e[k])} vs ${JSON.stringify(ag.entry[i][k])}`); });
+  }
+
+  const bothPosted = !uiPost.error && !!ui.inv && ok(agentCall) && !!ag.inv;
+  // The books must match; the ATTRIBUTION must not. A form post is the owner's, an agent
+  // post is the agent's — identical rows, different hands, and the log has to say so.
+  const attribution = ui.actor === 'owner' && ag.actor === 'agent:parity';
+  const nonTrivial = !!ui.inv && ui.inv.total > 0 && ui.lines.length > 0 && ui.entry.length >= 3;
+
+  record('C29', 'the form and window.bahi produce identical invoices, with different audit actors',
+    bothPosted && diffs.length === 0 && attribution && nonTrivial,
+    bothPosted
+      ? `total=${ui.inv.total} lines=${ui.lines.length} legs=${ui.entry.length} diffs=${diffs.length ? diffs.join(' | ') : 'none'} actors=${ui.actor}/${ag.actor}`
+      : `ui=${uiPost.error || (ui.error || 'ok')} agent=${ok(agentCall) ? 'ok' : JSON.stringify(err(agentCall))}`);
+
+  return run;
+}
+
 const r1 = await batchNoFile();
 const r2 = await batchSample();
 const r3 = await batchReadOnly();
 const r4 = await batchReconcile();
+const r5 = await batchTwoDoors();
 
 const shown = only ? results.filter((r) => r.id === only) : results;
 let red = 0;

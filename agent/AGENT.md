@@ -66,6 +66,7 @@ Branch on `error.code`, never on the message text.
 | `report.trialBalance` `report.balanceSheet` `report.dayBook` `report.accountLedger` `report.receivablesAging` `report.stockOnHand` `report.valuationSummary` | | Reports, as of a date or over a range. |
 | `gst.gstr1` `gst.gstr3b` `tds.form26q` | | Return data for a period or quarter. |
 | `journal.post` | **M** | Post a balanced double-entry voucher. |
+| `invoice.create` | **M** | Raise and post a sales invoice: header, lines, GST routing, ledger entry and stock effect. |
 | `ui.routes` `ui.navigate` | | The first door's route index, and navigation to a known route. |
 
 ### `journal.post`
@@ -86,6 +87,36 @@ Posting into a **filed (locked) period** is allowed and flagged, exactly as the 
 the entry is marked an amendment rather than refused. The response tells you:
 `{ amendment: true, periodLock: { return_type, period_start, period_end } }`. A second door
 that is stricter than the first is still a divergence.
+
+### `invoice.create`
+
+```js
+await bahi.call('invoice.create', {
+  customerId: 12,
+  invoiceDate: '2026-02-11',                 // defaults to today
+  lines: [{
+    description: 'Paracetamol 500mg strip',
+    quantity: 10,                            // a number, not paise
+    rate: 15000,                             // ₹150.00 per unit, in paise
+    taxRate: 0.12,                           // a decimal fraction, not 12
+    hsnSac: '3004',                          // optional
+    itemId: 1,                               // optional; links the line to an item master
+    discount: 0,                             // optional, paise
+    cess: null,                              // optional; null derives it from the HSN table
+  }],
+  series: 'Domestic',                        // invoiceNumber is generated if you omit it
+  placeOfSupply: 'KA',                       // optional ISO state code; defaults to the customer's
+  agentName: 'my-agent',
+});
+```
+
+Intra-state supply splits into CGST and SGST, inter-state routes to IGST, and the ledger entry,
+the frozen company/customer snapshots and the stock effect all happen exactly as they do when a
+person fills the form. That is not an aspiration: check **C29** posts the same invoice through both
+doors and compares the stored header, every line and every ledger leg. They are identical, and the
+audit actor is the only thing that differs — `owner` from the form, `agent:<name>` from here.
+
+`taxRate` is a fraction (`0.18`), not a percentage. Passing `18` is refused rather than interpreted.
 
 ## What is deliberately not here
 

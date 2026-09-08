@@ -6806,6 +6806,195 @@ function postChallanStockEffects(db, challan, computedLines) {
   }
 }
 
+//------------------------------------------------------------
+// === Voucher engine — door-neutral voucher creation ===
+//------------------------------------------------------------
+//
+// One core, two doors (doctrine 6). Until this section existed, creating an invoice
+// meant running the form's click handler: the validation, the frozen snapshots, the
+// transaction and the ledger bridge all lived inside a DOM callback, reachable only by
+// a human with a mouse. The agent face could post a journal voucher but could not raise
+// an invoice, so `#/invoice/new` was a declared gap rather than a covered route.
+//
+// These functions take resolved values and return a result. They never read the DOM,
+// never toast, and never navigate. The form handler gathers its fields and calls one;
+// window.bahi validates its arguments and calls the same one. Neither is privileged,
+// and `agent/harness/checks.mjs` asserts both doors produce byte-identical rows.
+//
+// MONEY IS INTEGER PAISE at this boundary. The form parses its own text inputs with
+// parseRupees BEFORE calling in; the engine never sees a typed string.
+
+// Line taxable in paise: qty × rate − discount, floored at zero.
+// Shared by every voucher type so the form preview and the posted row cannot diverge.
+function voucherLineTaxable({ quantity, rate, discount }) {
+  const qty = Number(quantity) || 0;
+  const rt = Number(rate) || 0;
+  const disc = Number(discount) || 0;
+  return Math.max(0, Math.round(qty * rt - disc));
+}
+
+// Per-line compensation cess in paise. An explicit value wins; null/undefined means
+// "derive from the HSN cess table as of this date".
+function voucherLineCess({ cess, hsnSac, taxable, quantity, date }) {
+  if (cess !== null && cess !== undefined) return Math.max(0, Math.round(Number(cess) || 0));
+  return cessForLine(hsnSac || null, taxable, Number(quantity) || 0, date || nowIso());
+}
+
+// Frozen customer snapshot (Invariants 1/3/4/6): editing the customer master later must
+// never change what an already-posted invoice prints.
+function freezeCustomerSnapshot(db, customerId) {
+  const r = db.exec('SELECT name, gstin, pan, state, email, phone, address FROM customers WHERE id = ?', [customerId]);
+  const cv = (r.length && r[0].values.length) ? r[0].values[0] : [];
+  const st = cv[3] && STATE_BY_ISO.has(cv[3]) ? STATE_BY_ISO.get(cv[3]) : null;
+  return JSON.stringify({
+    name: cv[0] || null, gstin: cv[1] || null, pan: cv[2] || null,
+    state: cv[3] || null, stateName: st ? st[2] : null, gstinStateCode: st ? st[1] : null,
+    email: cv[4] || null, phone: cv[5] || null, address: cv[6] || null,
+  });
+}
+
+// Frozen HSN/SAC description at posting time (Invariant 3). Reference data updates later
+// must not retroactively relabel a posted line.
+function freezeHsnDescription(code) {
+  if (!code) return null;
+  const found = REF.hsnCommon.data.find(([c]) => c === code) || REF.sacCommon.data.find(([c]) => c === code);
+  return found ? found[1] : null;
+}
+
+class VoucherError extends Error {
+  constructor(message, field) { super(message); this.name = 'VoucherError'; this.field = field || null; }
+}
+
+// Raise and post a sales invoice.
+//
+//   lines[]: { description, quantity, rate (paise), taxRate (0..0.28 decimal),
+//              itemId?, hsnSac?, discount? (paise), cess? (paise, null = auto from HSN) }
+//   advanceAllocations[]: { advanceId, amount (paise) }
+//
+// Returns { invoiceId, invoiceNumber, entryId, totals, advancesApplied, warnings }.
+// `warnings` carries non-fatal failures the caller should surface — today that is a
+// stock/COGS effect that failed AFTER the voucher committed. That post-commit ordering is
+// the pre-existing L2 behaviour and is deliberately preserved here: moving stock inside
+// the transaction changes save-blocking semantics and is a separate, test-gated decision.
+async function createInvoice(db, input) {
+  const {
+    customerId, invoiceDate, invoiceNumber, series = 'Domestic', placeOfSupply = null,
+    notes = null, isComposition = false, lines = [], advanceAllocations = [],
+    company = (typeof STATE !== 'undefined' && STATE.manifest ? STATE.manifest.company : null),
+  } = input || {};
+
+  if (!Number.isInteger(customerId) || customerId < 1) throw new VoucherError('customerId must be a positive integer', 'customerId');
+  const custR = db.exec('SELECT id, name, gstin, state FROM customers WHERE id = ?', [customerId]);
+  if (!custR.length || !custR[0].values.length) throw new VoucherError(`No customer with id ${customerId}`, 'customerId');
+  const [cid, cname, cgstin, cstate] = custR[0].values[0];
+  const customer = { id: cid, name: cname, gstin: cgstin, state: cstate };
+
+  if (!invoiceDate) throw new VoucherError('invoiceDate is required', 'invoiceDate');
+  if (!Array.isArray(lines) || !lines.length) throw new VoucherError('At least one line is required', 'lines');
+
+  const companyState = (company && company.state) || null;
+  const customerState = placeOfSupply || customer.state || null;
+
+  // Composition dealers issue a Bill of Supply: no GST, no cess. Zeroing here (rather than
+  // in the caller) is what keeps the form preview and the posted row in agreement.
+  const computedLines = lines.map((ln, i) => {
+    const effRate = isComposition ? 0 : (Number(ln.taxRate) || 0);
+    const taxable = voucherLineTaxable(ln);
+    return {
+      line_no: i + 1,
+      item_id: (ln.itemId === null || ln.itemId === undefined) ? null : Number(ln.itemId),
+      description: ln.description || '',
+      hsn_sac: ln.hsnSac || null,
+      quantity: Number(ln.quantity) || 0,
+      rate: Math.round(Number(ln.rate) || 0),
+      discount: Math.round(Number(ln.discount) || 0),
+      taxable,
+      tax_rate: effRate,
+      cess: isComposition ? 0 : voucherLineCess({ cess: ln.cess, hsnSac: ln.hsnSac, taxable, quantity: ln.quantity, date: invoiceDate }),
+      rate_id: rateIdForDecimal(effRate, invoiceDate),
+    };
+  }).filter(ln => ln.taxable > 0 && ln.description);
+
+  if (!computedLines.length) throw new VoucherError('No valid line: each needs a description and a taxable amount above zero', 'lines');
+
+  const totals = computeInvoiceTax({
+    companyStateIso: companyState,
+    customerStateIso: customerState,
+    isExport: false,
+    isSez: false,
+    lines: computedLines,
+  });
+
+  const number = invoiceNumber || nextInvoiceNumber(db, series);
+  const companySnapshot = JSON.stringify(company || {});
+  const customerSnapshot = freezeCustomerSnapshot(db, customer.id);
+  const posRow = customerState && STATE_BY_ISO.has(customerState) ? STATE_BY_ISO.get(customerState) : null;
+  const placeOfSupplyName = posRow ? posRow[2] : null;
+
+  const warnings = [];
+  let invoiceId = null;
+  let entryId = null;
+
+  db.run('BEGIN');
+  try {
+    db.run(
+      'INSERT INTO invoices (invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [number, series || 'Domestic', customer.id, invoiceDate, customerState, placeOfSupplyName,
+       totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.cess, totals.total,
+       notes, 'posted', companySnapshot, customerSnapshot, nowIso()]
+    );
+    invoiceId = lastInsertId(db);
+    const lineStmt = db.prepare('INSERT INTO invoice_lines (invoice_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    for (const ln of computedLines) {
+      lineStmt.run([invoiceId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, freezeHsnDescription(ln.hsn_sac),
+        ln.quantity, null, ln.rate, ln.discount, ln.taxable, ln.tax_rate, ln.rate_id,
+        ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.cess || 0, ln.total]);
+    }
+    lineStmt.free();
+
+    // Ledger post in the SAME transaction — postEntry uses a SAVEPOINT and nests under
+    // this BEGIN, so header + lines + ledger entry commit or roll back together.
+    entryId = await postInvoiceToLedger(db, {
+      invoice_number: number, invoice_date: invoiceDate,
+      subtotal: totals.subtotal, cgst: totals.cgst, sgst: totals.sgst,
+      igst: totals.igst, cess: totals.cess, total: totals.total,
+    }, customer, computedLines);
+    db.run('UPDATE invoices SET ledger_entry_id = ? WHERE id = ?', [entryId, invoiceId]);
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+
+  // Stock + COGS, after the commit. Pre-existing ordering, preserved deliberately —
+  // see the note in this function's header comment.
+  try {
+    await postInvoiceStockEffects(db, { id: invoiceId, invoice_number: number, invoice_date: invoiceDate }, computedLines, customer);
+  } catch (stockErr) {
+    warnings.push({ stage: 'stock', message: String(stockErr && stockErr.message || stockErr) });
+  }
+
+  // Advance adjustments, each re-read fresh so a stale allocation cannot over-apply.
+  let advancesApplied = 0;
+  for (const alloc of advanceAllocations) {
+    const advanceId = alloc && alloc.advanceId;
+    const applyAmt = alloc && Math.round(Number(alloc.amount) || 0);
+    if (!advanceId || !applyAmt || applyAmt <= 0) continue;
+    const advR = db.exec(
+      'SELECT id, advance_number, amount, taxable, tax_rate, cgst, sgst, igst, adjusted_amount, remaining_balance FROM advances WHERE id = ?',
+      [advanceId]
+    );
+    if (!advR.length || !advR[0].values.length) { warnings.push({ stage: 'advance', message: `advance ${advanceId} not found` }); continue; }
+    const [aid, anum, aamt, ataxable, ataxRate, acgst, asgst, aigst, aadjusted, aremaining] = advR[0].values[0];
+    await postAdvanceAdjustment(db,
+      { id: aid, advance_number: anum, amount: aamt, taxable: ataxable, tax_rate: ataxRate, cgst: acgst, sgst: asgst, igst: aigst, adjusted_amount: aadjusted, remaining_balance: aremaining },
+      { id: invoiceId, invoice_number: number, invoice_date: invoiceDate }, applyAmt, customer);
+    advancesApplied += applyAmt;
+  }
+
+  return { invoiceId, invoiceNumber: number, entryId, totals, advancesApplied, warnings };
+}
+
 // === E-way bill builders ===
 
 // Build the NIC bulk-upload JSON for one EWB.
@@ -8404,7 +8593,19 @@ async function saveCaProfile(profile) {
 //                                 (the CA-mode case keeps 'ca' so accountability stays
 //                                 on the human; the caller adds aiAssisted: true to
 //                                 the audit payload to preserve AI provenance)
+// Who is acting right now. The posting bridges (invoice, purchase, payment, credit and
+// debit note) all attribute through here rather than taking an actor parameter, so this
+// is the one place that can answer "a human or a machine did this".
+//
+// AGENT_ACTOR_OVERRIDE is set by window.bahi for the duration of one mutating call and
+// cleared in a finally block. Without it an agent-raised invoice would be logged as
+// 'owner' — indistinguishable from a person at the keyboard, which is precisely the
+// promise the agent surface makes it must not break. Agent calls are serialised, so this
+// can never be set by two callers at once.
+let AGENT_ACTOR_OVERRIDE = null;
+
 function auditActor(aiAssisted = false) {
+  if (AGENT_ACTOR_OVERRIDE) return AGENT_ACTOR_OVERRIDE;
   if (STATE.mode === 'ca' && STATE.caProfile) return 'ca';
   return aiAssisted ? 'ai' : 'owner';
 }
@@ -13323,17 +13524,15 @@ function renderInvoiceForm(main) {
     recomputeTotals();
   }
 
+  // Parse the form's text inputs, then defer to the voucher engine's arithmetic. The
+  // preview and the posted row must come from the same code — two implementations of
+  // "qty x rate - discount" is exactly how a preview starts lying about the total.
   function computeLineTaxable(ln) {
-    const qty = parseFloat(ln.quantity) || 0;
-    const rate = parseRupees(ln.rate);
-    const disc = parseRupees(ln.discount);
-    return Math.max(0, Math.round(qty * rate - disc));
+    return voucherLineTaxable({ quantity: parseFloat(ln.quantity) || 0, rate: parseRupees(ln.rate), discount: parseRupees(ln.discount) });
   }
-  // Per-line compensation cess in paise. Manual entry (any non-empty value) wins; otherwise
-  // auto from the HSN cess table (cessForLine — 0 until CESS_RATES is seeded).
   function computeLineCess(ln) {
-    if (ln.cess != null && String(ln.cess).trim() !== '') return Math.max(0, parseRupees(ln.cess));
-    return cessForLine(ln.hsnSac || null, computeLineTaxable(ln), parseFloat(ln.quantity) || 0, form.invoiceDate || nowIso());
+    const explicit = (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null;
+    return voucherLineCess({ cess: explicit, hsnSac: ln.hsnSac, taxable: computeLineTaxable(ln), quantity: parseFloat(ln.quantity) || 0, date: form.invoiceDate || nowIso() });
   }
 
   function recomputeTotals() {
@@ -13376,164 +13575,55 @@ function renderInvoiceForm(main) {
     postBtn.disabled = totals.total <= 0;
   }
 
+  // Gather the form's fields, hand them to the voucher engine, and report. Everything
+  // between validation and the ledger post now lives in createInvoice(), which
+  // window.bahi calls too — so the button and the agent cannot drift apart.
   async function doPostInvoice() {
     try {
       const customer = customers.find(c => c.id === form.customerId);
       if (!customer) { toast('Pick a customer', 'err'); return; }
-      const invoiceDateForLookup = $('iv-date').value || nowIso();
-      const computedLines = form.lines
-        .map((ln, i) => {
-          // Composition dealers collect neither GST nor cess (Bill of Supply) — zero both,
-          // matching the live preview in recomputeTotals. (Previously doPostInvoice did NOT
-          // zero the rate under composition, and the cess field was missing entirely so a
-          // typed cess never persisted.)
-          const effRate = form.isComposition ? 0 : (ln.tax_rate || 0);
-          return {
-            line_no: i + 1,
-            item_id: ln.itemId ? parseInt(ln.itemId, 10) : null,
-            description: ln.description || '',
-            hsn_sac: ln.hsnSac || null,
-            quantity: parseFloat(ln.quantity) || 0,
-            rate: parseRupees(ln.rate),
-            discount: parseRupees(ln.discount),
-            taxable: computeLineTaxable(ln),
-            tax_rate: effRate,
-            cess: form.isComposition ? 0 : computeLineCess(ln),
-            // Forensic key. Resolved against REF.gstRates as of the invoice date so
-            // backdated invoices get the correct historical rateId.
-            rate_id: rateIdForDecimal(effRate, invoiceDateForLookup),
-          };
-        })
-        .filter(ln => ln.taxable > 0 && ln.description);
-      if (!computedLines.length) { toast('Add at least one valid line (description + qty + rate)', 'err'); return; }
 
-      const customerState = form.placeOfSupply || customer.state || null;
-      const totals = computeInvoiceTax({
-        companyStateIso: companyState,
-        customerStateIso: customerState,
-        isExport: false,
-        isSez: false,
-        lines: computedLines,
+      const result = await createInvoice(STATE.db, {
+        customerId: customer.id,
+        invoiceDate: $('iv-date').value || nowIso().slice(0, 10),
+        invoiceNumber: $('iv-number').value,
+        series: form.seriesName || 'Domestic',
+        placeOfSupply: form.placeOfSupply || null,
+        notes: $('iv-notes').value.trim() || null,
+        isComposition: !!form.isComposition,
+        // Text inputs are parsed HERE; the engine boundary is integer paise.
+        lines: form.lines.map(ln => ({
+          itemId: ln.itemId ? parseInt(ln.itemId, 10) : null,
+          description: ln.description || '',
+          hsnSac: ln.hsnSac || null,
+          quantity: parseFloat(ln.quantity) || 0,
+          rate: parseRupees(ln.rate),
+          discount: parseRupees(ln.discount),
+          taxRate: ln.tax_rate || 0,
+          cess: (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null,
+        })),
+        advanceAllocations: [...form.advanceAllocations.entries()].map(([advanceId, amount]) => ({ advanceId, amount })),
       });
 
-      const invoiceNumber = $('iv-number').value;
-      const invoiceDate = $('iv-date').value;
-      const notes = $('iv-notes').value.trim() || null;
-
-      // === FROZEN SNAPSHOTS at posting time (Invariants 1, 3, 4, 6) ===
-      // company_snapshot — full company block from the manifest as of NOW. Reprints, GSTR-1
-      // export, and any historical view will read from this column. Editing the company
-      // profile after posting will NOT change what this invoice prints.
-      const companySnapshot = JSON.stringify(STATE.manifest.company || {});
-      // customer_snapshot — frozen customer fields. Editing the customer master after
-      // posting will NOT change this invoice's "Bill To".
-      const fullCustomerRow = STATE.db.exec(
-        'SELECT name, gstin, pan, state, email, phone, address FROM customers WHERE id = ?',
-        [customer.id]
-      );
-      const cv = (fullCustomerRow.length && fullCustomerRow[0].values.length) ? fullCustomerRow[0].values[0] : [];
-      const customerStateRow = cv[3] && STATE_BY_ISO.has(cv[3]) ? STATE_BY_ISO.get(cv[3]) : null;
-      const customerSnapshot = JSON.stringify({
-        name: cv[0] || null,
-        gstin: cv[1] || null,
-        pan: cv[2] || null,
-        state: cv[3] || null,
-        stateName: customerStateRow ? customerStateRow[2] : null,
-        gstinStateCode: customerStateRow ? customerStateRow[1] : null,
-        email: cv[4] || null,
-        phone: cv[5] || null,
-        address: cv[6] || null,
-      });
-      // place_of_supply_name — frozen state name (Invariant 4: Orissa→Odisha case).
-      const posRow = customerState && STATE_BY_ISO.has(customerState) ? STATE_BY_ISO.get(customerState) : null;
-      const placeOfSupplyName = posRow ? posRow[2] : null;
-      // hsn_description — frozen per line via REF.hsnCommon / REF.sacCommon lookup at posting
-      // time (Invariant 3). REF data is bundled and Phase 2 will lazy-fetch updates; either
-      // way, the description we capture HERE is what reprints will show forever.
-      function lookupHsnDescription(code) {
-        if (!code) return null;
-        const found = REF.hsnCommon.data.find(([c]) => c === code) || REF.sacCommon.data.find(([c]) => c === code);
-        return found ? found[1] : null;
+      for (const w of result.warnings) {
+        if (w.stage === 'stock') toast('Invoice posted, but stock effect failed: ' + w.message, 'err');
+        else toast('Invoice posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
       }
 
-      // Insert invoice header
-      STATE.db.run('BEGIN');
-      try {
-        STATE.db.run(
-          'INSERT INTO invoices (invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [invoiceNumber, form.seriesName || 'Domestic', customer.id, invoiceDate, customerState, placeOfSupplyName, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.cess, totals.total, notes, 'posted', companySnapshot, customerSnapshot, nowIso()]
-        );
-        const invoiceId = lastInsertId(STATE.db);
-        const lineStmt = STATE.db.prepare('INSERT INTO invoice_lines (invoice_id, line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-        for (const ln of computedLines) {
-          const hsnDesc = lookupHsnDescription(ln.hsn_sac);
-          lineStmt.run([invoiceId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, hsnDesc, ln.quantity, null, ln.rate, ln.discount, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.cess || 0, ln.total]);
-        }
-        lineStmt.free();
-
-        // Post to the ledger in the SAME transaction — postEntry uses a SAVEPOINT, so it
-        // nests under this BEGIN. Invoice header + lines + ledger entry now commit (or roll
-        // back) atomically, so a posting failure can't leave an invoice with no ledger entry.
-        // Pass computedLines so the bridge can group by rate and route to per-rate
-        // sub-accounts (CGST Output @ 9%, IGST Output @ 18%, etc.) — auto-created on first use.
-        const entryId = await postInvoiceToLedger(STATE.db, {
-          invoice_number: invoiceNumber,
-          invoice_date: invoiceDate,
-          subtotal: totals.subtotal,
-          cgst: totals.cgst,
-          sgst: totals.sgst,
-          igst: totals.igst,
-          cess: totals.cess,
-          total: totals.total,
-        }, customer, computedLines);
-        STATE.db.run('UPDATE invoices SET ledger_entry_id = ? WHERE id = ?', [entryId, invoiceId]);
-        STATE.db.run('COMMIT');
-
-        // === Phase 4: stock effects + COGS posting (skipped for service-only items) ===
-        try {
-          await postInvoiceStockEffects(STATE.db, {
-            id: invoiceId, invoice_number: invoiceNumber, invoice_date: invoiceDate,
-          }, computedLines, customer);
-        } catch (stockErr) {
-          console.error('Stock effect failed:', stockErr);
-          toast('Invoice posted, but stock effect failed: ' + stockErr.message, 'err');
-        }
-
-        // === Apply any advance allocations the user picked ===
-        let advancesAppliedAmt = 0;
-        if (form.advanceAllocations.size) {
-          // Re-fetch each advance row to get fresh adjusted_amount + remaining_balance
-          for (const [advanceId, applyAmt] of form.advanceAllocations.entries()) {
-            if (applyAmt <= 0) continue;
-            const advR = STATE.db.exec(
-              'SELECT id, advance_number, amount, taxable, tax_rate, cgst, sgst, igst, adjusted_amount, remaining_balance FROM advances WHERE id = ?',
-              [advanceId]
-            );
-            if (!advR.length || !advR[0].values.length) continue;
-            const [aid, anum, aamt, ataxable, ataxRate, acgst, asgst, aigst, aadjusted, aremaining] = advR[0].values[0];
-            const advance = { id: aid, advance_number: anum, amount: aamt, taxable: ataxable, tax_rate: ataxRate, cgst: acgst, sgst: asgst, igst: aigst, adjusted_amount: aadjusted, remaining_balance: aremaining };
-            await postAdvanceAdjustment(STATE.db, advance, { id: invoiceId, invoice_number: invoiceNumber, invoice_date: invoiceDate }, applyAmt, customer);
-            advancesAppliedAmt += applyAmt;
-          }
-        }
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        const msg = advancesAppliedAmt > 0
-          ? `Invoice ${invoiceNumber} posted (${fmtINR(totals.total)}, ${fmtINR(advancesAppliedAmt)} advance applied) and saved`
-          : `Invoice ${invoiceNumber} posted (${fmtINR(totals.total)}) and saved`;
-        toast(msg, 'ok');
-        nav('#/invoices');
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      const msg = result.advancesApplied > 0
+        ? `Invoice ${result.invoiceNumber} posted (${fmtINR(result.totals.total)}, ${fmtINR(result.advancesApplied)} advance applied) and saved`
+        : `Invoice ${result.invoiceNumber} posted (${fmtINR(result.totals.total)}) and saved`;
+      toast(msg, 'ok');
+      nav('#/invoices');
     } catch (e) {
       console.error(e);
       toast('Post failed: ' + e.message, 'err');
     }
   }
+
 }
 
 //------------------------------------------------------------
@@ -22865,6 +22955,22 @@ const BAHI_AGENT_COMMAND_SPECS = {
     },
   },
 
+  'invoice.create': {
+    summary: 'Raise and post a sales invoice: header, lines, GST routing, ledger entry and stock effect.',
+    mutating: true, scope: 'file', route: '#/invoice/new',
+    params: {
+      customerId:    { type: 'int', required: true, min: 1 },
+      lines:         { type: 'array', required: true, minItems: 1, maxItems: 500 },
+      invoiceDate:   { type: 'date' },
+      invoiceNumber: { type: 'string', maxLength: 60 },
+      series:        { type: 'string', maxLength: 60 },
+      placeOfSupply: { type: 'string', maxLength: 8, pattern: '^[A-Z]{2}$' },
+      notes:         { type: 'string', maxLength: 2000 },
+      isComposition: { type: 'bool', default: false },
+      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },
+    },
+  },
+
   'ui.routes':   { summary: 'Every UI route with its group, keywords and actions (the first door\'s index).', mutating: false, scope: 'app', params: {} },
   'ui.navigate': { summary: 'Navigate the UI to a known route. Route must exist in the route index.', mutating: false, scope: 'app', params: { route: { type: 'string', required: true, maxLength: 80 } } },
 };
@@ -22874,19 +22980,18 @@ const BAHI_AGENT_COMMAND_SPECS = {
 // so a new UI route cannot quietly appear without someone deciding about it.
 const BAHI_AGENT_GAPS = [
   { route: '#/workspace', reason: 'File create/open/restore need the native file picker — no headless path.' },
-  { route: '#/invoice/new', reason: 'Invoice creation lives in the form handler, not a pure engine function. Post the ledger effect via journal.post meanwhile.' },
-  { route: '#/credit-note/new', reason: 'As #/invoice/new.' },
-  { route: '#/purchase/new', reason: 'As #/invoice/new.' },
-  { route: '#/debit-note/new', reason: 'As #/invoice/new.' },
-  { route: '#/payment/new', reason: 'As #/invoice/new.' },
-  { route: '#/vendor-payment/new', reason: 'As #/invoice/new.' },
-  { route: '#/tcs-collection/new', reason: 'As #/invoice/new.' },
-  { route: '#/advance/new', reason: 'As #/invoice/new.' },
-  { route: '#/delivery-challan/new', reason: 'As #/invoice/new.' },
-  { route: '#/eway-bill/new', reason: 'As #/invoice/new.' },
-  { route: '#/stock-transfer/out/new', reason: 'As #/invoice/new.' },
+  { route: '#/credit-note/new', reason: 'Creation still lives in the form handler; no engine function yet. Post the ledger effect via journal.post meanwhile.' },
+  { route: '#/purchase/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/debit-note/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/payment/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/vendor-payment/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/tcs-collection/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/advance/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/delivery-challan/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/eway-bill/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
+  { route: '#/stock-transfer/out/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/stock-transfer/in/import', reason: 'Needs a file import.' },
-  { route: '#/ca/adjustment/new', reason: 'As #/invoice/new.' },
+  { route: '#/ca/adjustment/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/pnl', reason: 'P&L is computed inside renderPnL and has no pure engine function yet. Derive from report.trialBalance meanwhile.' },
   { route: '#/invoices', reason: 'Read-only list not yet exposed; report.dayBook covers the ledger effect.' },
   { route: '#/purchases', reason: 'As #/invoices.' },
@@ -23082,7 +23187,7 @@ const BAHI_AGENT_HANDLERS = {
       }
     } catch (_) { /* period_locks absent on a very old file — treat as unlocked */ }
 
-    const actor = a.agentName ? `agent:${a.agentName}` : 'agent';
+    const actor = agentActorFor(a);
     const res = await postEntry(STATE.db, {
       voucherType: 'journal',
       voucherRef: a.voucherRef || null,
@@ -23092,6 +23197,50 @@ const BAHI_AGENT_HANDLERS = {
       actor,
     });
     return { entryId: res.entryId, postedAt, actor, lineCount: lines.length, amendment: !!periodLock, periodLock };
+  },
+
+  'invoice.create': async (a) => {
+    const lines = [];
+    for (let i = 0; i < a.lines.length; i++) {
+      const ln = a.lines[i];
+      if (!ln || typeof ln !== 'object' || Array.isArray(ln)) throw new AgentBadArgs(`lines[${i}] must be an object`);
+      if (typeof ln.description !== 'string' || !ln.description.trim()) throw new AgentBadArgs(`lines[${i}].description is required`);
+      if (ln.description.length > 500) throw new AgentBadArgs(`lines[${i}].description exceeds 500 characters`);
+      const qty = ln.quantity;
+      if (typeof qty !== 'number' || !Number.isFinite(qty) || qty <= 0) throw new AgentBadArgs(`lines[${i}].quantity must be a positive number`);
+      for (const [field, required] of [['rate', true], ['discount', false], ['cess', false]]) {
+        const v = ln[field];
+        if (v === undefined || v === null) { if (required) throw new AgentBadArgs(`lines[${i}].${field} is required (integer paise)`); continue; }
+        if (typeof v !== 'number' || !Number.isInteger(v)) throw new AgentBadArgs(`lines[${i}].${field} must be an integer number of paise, got ${JSON.stringify(v)}`);
+        if (v < 0) throw new AgentBadArgs(`lines[${i}].${field} must not be negative`);
+        if (v > MAX_AGENT_PAISE) throw new AgentBadArgs(`lines[${i}].${field} exceeds the ${MAX_AGENT_PAISE} paise ceiling this engine can post without 32-bit truncation`);
+      }
+      const tr = ln.taxRate;
+      if (tr !== undefined && tr !== null && (typeof tr !== 'number' || !(tr >= 0 && tr <= 1))) {
+        throw new AgentBadArgs(`lines[${i}].taxRate must be a decimal fraction between 0 and 1 (0.18 for 18%), got ${JSON.stringify(tr)}`);
+      }
+      if (ln.itemId !== undefined && ln.itemId !== null && (!Number.isSafeInteger(ln.itemId) || ln.itemId < 1)) {
+        throw new AgentBadArgs(`lines[${i}].itemId must be a positive integer or null`);
+      }
+      if (ln.hsnSac !== undefined && ln.hsnSac !== null && typeof ln.hsnSac !== 'string') throw new AgentBadArgs(`lines[${i}].hsnSac must be a string or null`);
+      lines.push({
+        itemId: ln.itemId ?? null, description: ln.description, hsnSac: ln.hsnSac ?? null,
+        quantity: qty, rate: ln.rate, discount: ln.discount ?? 0,
+        taxRate: tr ?? 0, cess: ln.cess ?? null,
+      });
+    }
+
+    const invoiceDate = a.invoiceDate || nowIso().slice(0, 10);
+    const r = await createInvoice(STATE.db, {
+      customerId: a.customerId, invoiceDate, invoiceNumber: a.invoiceNumber || undefined,
+      series: a.series || 'Domestic', placeOfSupply: a.placeOfSupply || null,
+      notes: a.notes || null, isComposition: !!a.isComposition, lines,
+    });
+    return {
+      invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, entryId: r.entryId,
+      invoiceDate, actor: agentActorFor(a), totals: r.totals,
+      lineCount: lines.length, warnings: r.warnings,
+    };
   },
 
   'ui.routes':   async () => Object.entries(ROUTE_INDEX).map(([route, m]) => ({ route, name: m.name, group: m.group, keywords: m.keywords || [], actions: m.actions || [] })),
@@ -23180,6 +23329,10 @@ function runAgentSelftest() {
 // nest incorrectly under a concurrent BEGIN.
 let _agentQueue = Promise.resolve();
 
+function agentActorFor(args) {
+  return (args && args.agentName) ? `agent:${args.agentName}` : 'agent';
+}
+
 function agentFail(code, message, extra) {
   return { ok: false, error: Object.assign({ code, message }, extra || {}) };
 }
@@ -23209,12 +23362,19 @@ async function agentDispatch(command, args) {
     return agentFail('E_READONLY', AGENT_ERRORS.E_READONLY, { command });
   }
 
+  // A mutating call runs with the audit actor pinned to this agent, so every ledger
+  // entry the posting bridges write underneath is attributable. Cleared in `finally`:
+  // a leaked override would silently label the next human action as a machine's.
+  const priorActor = AGENT_ACTOR_OVERRIDE;
+  if (spec.mutating) AGENT_ACTOR_OVERRIDE = agentActorFor(v.value);
   try {
     const data = await BAHI_AGENT_HANDLERS[command](v.value);
     return { ok: true, data };
   } catch (e) {
-    const code = (e && e.agentCode) || 'E_ENGINE';
-    return agentFail(code, String((e && e.message) || e), { command });
+    const code = (e && e.agentCode) || (e && e.name === 'VoucherError' ? 'E_BAD_ARGS' : 'E_ENGINE');
+    return agentFail(code, String((e && e.message) || e), { command, ...(e && e.field ? { problems: [`${e.field}: ${e.message}`] } : {}) });
+  } finally {
+    AGENT_ACTOR_OVERRIDE = priorActor;
   }
 }
 

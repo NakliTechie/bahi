@@ -508,8 +508,36 @@ const VOUCHERS = [
   },
 ];
 
+// Forms that delegate but carry no behavioural parity check. Each behavioural check costs
+// two browser sessions in every suite run and every defect-prover iteration, so parity is
+// proven on the two vouchers with the most computation (invoice, purchase) and the rest are
+// held structurally. That is a trade-off, not an oversight — see the run record.
+const STRUCTURAL_ONLY = [
+  { id: 'payment', check: 'C33', formFn: 'renderPaymentForm', engineCall: 'createPayment(STATE.db',
+    banned: ['INSERT INTO payments', 'postPaymentToLedger(', "STATE.db.run('BEGIN')"] },
+  { id: 'credit note', check: 'C34', formFn: 'renderCreditNoteForm', engineCall: 'createCreditNote(STATE.db',
+    banned: ['INSERT INTO credit_notes', 'postCreditNoteToLedger(', 'postCreditNoteStockEffects(', "STATE.db.run('BEGIN')"] },
+  { id: 'debit note', check: 'C35', formFn: 'renderDebitNoteForm', engineCall: 'createDebitNote(STATE.db',
+    banned: ['INSERT INTO debit_notes', 'postDebitNoteToLedger(', 'postDebitNoteStockEffects(', "STATE.db.run('BEGIN')"] },
+];
+
 async function batchTwoDoors() {
   const src = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+
+  const formSourceOf = (formFn) => {
+    const a = src.indexOf(`function ${formFn}(`);
+    if (a < 0) return '';
+    const m = src.slice(a + 10).match(/\nfunction [A-Za-z0-9_]+\(/);
+    return m ? src.slice(a, a + 10 + m.index) : '';
+  };
+
+  for (const v of STRUCTURAL_ONLY) {
+    const formSrc = formSourceOf(v.formFn);
+    const found = v.banned.filter((t) => formSrc.includes(t));
+    record(v.check, `the ${v.id} form delegates: no posting path of its own`,
+      formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
+      formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
+  }
 
   for (const v of VOUCHERS) {
     // Structural: the form delegates and carries no posting path of its own.
@@ -568,11 +596,40 @@ async function batchTwoDoors() {
   return null;
 }
 
+
+// --- batch 6: signing keys survive a save -----------------------------------
+// Found while exercising the voucher engine: opening a file on a new browser and saving
+// it dropped the ORIGINAL signer from the trusted-key set, so every historical audit
+// entry failed signature verification from that moment on. The audit log's per-entry
+// signatures are the tamper evidence; losing them silently is the worst kind of failure.
+async function batchSigningKeys() {
+  const run = await runCalls({ book: 'pharma', calls: [
+    { command: 'file.verifyIntegrity' },
+    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 500 }, { accountId: 2, credit: 500 }], agentName: 'keys' } },
+    { command: 'file.save' },
+    { command: 'file.verifyIntegrity' },
+  ] });
+  const [before, , save, after] = run.results;
+
+  // C32 — after a save on a browser the file has not seen before, EVERY entry still
+  // verifies: the historical ones against the original signer, the new ones against this
+  // browser's key. Reintroduce by re-homing integrity.signedBy before banking the outgoing
+  // signer, which is the ordering the bug had.
+  const b = ok(before) ? data(before) : null;
+  const a = ok(after) ? data(after) : null;
+  record('C32', 'a save keeps every historical signature verifiable (outgoing signer stays trusted)',
+    !!a && ok(save) && a.chainOk === true && a.signaturesBad === 0 && a.signaturesOk === a.entries && a.entries > 1000,
+    b && a ? `before ${b.signaturesOk}/${b.entries} ok (${b.signaturesBad} bad) -> after ${a.signaturesOk}/${a.entries} ok (${a.signaturesBad} bad)` : 'call failed');
+
+  return run;
+}
+
 const r1 = await batchNoFile();
 const r2 = await batchSample();
 const r3 = await batchReadOnly();
 const r4 = await batchReconcile();
 const r5 = await batchTwoDoors();
+const r6 = await batchSigningKeys();
 
 const shown = only ? results.filter((r) => r.id === only) : results;
 let red = 0;

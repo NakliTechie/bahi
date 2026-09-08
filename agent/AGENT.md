@@ -68,6 +68,9 @@ Branch on `error.code`, never on the message text.
 | `journal.post` | **M** | Post a balanced double-entry voucher. |
 | `invoice.create` | **M** | Raise and post a sales invoice: header, lines, GST routing, ledger entry and stock effect. |
 | `purchase.create` | **M** | Record and post a vendor purchase, with ITC and reverse-charge routing. |
+| `payment.create` | **M** | Record and post a customer receipt, allocated against one or more invoices. |
+| `creditNote.create` | **M** | Raise and post a credit note against an invoice — full reversal or partial by amount. |
+| `debitNote.create` | **M** | Raise and post a debit note against a purchase — full reversal or partial by amount. |
 | `ui.routes` `ui.navigate` | | The first door's route index, and navigation to a known route. |
 
 ### `journal.post`
@@ -123,6 +126,16 @@ audit actor is the only thing that differs — `owner` from the form, `agent:<na
 document number), plus `reverseCharge` and `itcEligible`. Purchase lines carry no `discount` and
 passing one is refused rather than ignored. `internalRef` is generated if you omit it. Check
 **C31** holds it to the same both-doors comparison as the invoice.
+
+`payment.create` takes `allocations: [{ invoiceId, amount }]` and the payment's amount is their
+sum — an unallocated receipt is an advance, a different voucher with different GST consequences.
+Every allocation must name an invoice belonging to that customer, which the API enforces and the
+form never did.
+
+`creditNote.create` and `debitNote.create` reverse a posted invoice or purchase, inheriting its
+frozen snapshots and place of supply. Omit `amount` for a full reversal or give paise for a
+partial one, which pro-rates every line. **Known gap, inherited:** the copied lines carry no
+cess, so a cess invoice's cess is not reversed on its credit note.
 
 ## What is deliberately not here
 

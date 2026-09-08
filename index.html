@@ -7117,6 +7117,262 @@ async function createPurchase(db, input) {
   return { purchaseId, internalRef: ref, billNumber: String(billNumber).trim(), entryId, totals, warnings };
 }
 
+// Record and post a customer receipt, allocated against one or more invoices.
+//
+//   allocations[]: { invoiceId, amount (paise) }
+//
+// The payment's amount is the sum of its allocations — a receipt that is not allocated
+// is an advance, which is a different voucher with different GST consequences.
+//
+// Returns { paymentId, paymentNumber, entryId, amount, allocations, warnings }.
+async function createPayment(db, input) {
+  const {
+    customerId, bankAccountId, paymentDate, paymentNumber, paymentMode = 'NEFT',
+    reference = null, notes = null, allocations = [],
+  } = input || {};
+
+  if (!Number.isInteger(customerId) || customerId < 1) throw new VoucherError('customerId must be a positive integer', 'customerId');
+  const custR = db.exec('SELECT id, name, gstin, state FROM customers WHERE id = ?', [customerId]);
+  if (!custR.length || !custR[0].values.length) throw new VoucherError(`No customer with id ${customerId}`, 'customerId');
+  const [cid, cname, cgstin, cstate] = custR[0].values[0];
+  const customer = { id: cid, name: cname, gstin: cgstin, state: cstate };
+
+  if (!Number.isInteger(bankAccountId) || bankAccountId < 1) throw new VoucherError('bankAccountId must be a positive integer', 'bankAccountId');
+  const bankR = db.exec('SELECT id, name FROM accounts WHERE id = ?', [bankAccountId]);
+  if (!bankR.length || !bankR[0].values.length) throw new VoucherError(`No account with id ${bankAccountId}`, 'bankAccountId');
+  const bankAcc = { id: bankR[0].values[0][0], name: bankR[0].values[0][1] };
+
+  if (!paymentDate) throw new VoucherError('paymentDate is required', 'paymentDate');
+
+  const allocs = [];
+  let totalAmount = 0;
+  for (const a of allocations) {
+    const invoiceId = a && a.invoiceId;
+    const amount = a && Math.round(Number(a.amount) || 0);
+    if (!invoiceId || !amount || amount <= 0) continue;
+    allocs.push({ invoiceId, amount });
+    totalAmount += amount;
+  }
+  if (!allocs.length) throw new VoucherError('At least one allocation with a positive amount is required — an unallocated receipt is an advance, not a payment', 'allocations');
+
+  // Every allocation must name a real invoice belonging to this customer. Without this the
+  // ledger would balance while the sub-ledger pointed at someone else's document.
+  const ids = allocs.map(a => a.invoiceId);
+  const invR = db.exec(`SELECT id, invoice_number, customer_id FROM invoices WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+  const invById = new Map();
+  if (invR.length) for (const [id, num, custId] of invR[0].values) invById.set(id, { number: num, customerId: custId });
+  for (const a of allocs) {
+    const inv = invById.get(a.invoiceId);
+    if (!inv) throw new VoucherError(`No invoice with id ${a.invoiceId}`, 'allocations');
+    if (inv.customerId !== customer.id) throw new VoucherError(`Invoice ${a.invoiceId} belongs to a different customer`, 'allocations');
+  }
+
+  const number = paymentNumber || nextPaymentNumber(db);
+  const customerSnap = freezeCustomerSnapshot(db, customer.id);
+
+  let paymentId = null;
+  let entryId = null;
+  db.run('BEGIN');
+  try {
+    db.run(
+      'INSERT INTO payments (payment_number, payment_date, customer_id, bank_account_id, amount, payment_mode, reference, notes, status, customer_snapshot, bank_account_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [number, paymentDate, customer.id, bankAcc.id, totalAmount, paymentMode, reference, notes, 'posted', customerSnap, bankAcc.name, nowIso()]
+    );
+    paymentId = lastInsertId(db);
+    const allocStmt = db.prepare('INSERT INTO payment_allocations (payment_id, invoice_id, amount, invoice_number_snapshot) VALUES (?,?,?,?)');
+    for (const a of allocs) allocStmt.run([paymentId, a.invoiceId, a.amount, (invById.get(a.invoiceId) || {}).number || null]);
+    allocStmt.free();
+
+    entryId = await postPaymentToLedger(db, {
+      payment_number: number, payment_date: paymentDate,
+      amount: totalAmount, payment_mode: paymentMode,
+    }, customer, bankAcc);
+    db.run('UPDATE payments SET ledger_entry_id = ? WHERE id = ?', [entryId, paymentId]);
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+
+  return { paymentId, paymentNumber: number, entryId, amount: totalAmount, allocations: allocs, warnings: [] };
+}
+
+// Credit and debit notes reverse an existing document, in full or pro rata. They inherit
+// the original's snapshots and place of supply deliberately: a note must print with the
+// identity the original carried, not with whatever the masters say today.
+//
+// KNOWN GAP, preserved rather than fixed here: the copied lines carry no cess, so a cess
+// invoice's cess is not reversed on its credit note. That is the pre-existing behaviour
+// (pending.md, "Cess in credit-notes / reprint"), and an extraction is the wrong moment
+// to change what a voucher posts.
+
+// Pro-rate a document's tax block by `ratio`, or take it whole when ratio is 1.
+function proRateDocumentTotals(doc, ratio, full) {
+  if (full) return { subtotal: doc.subtotal, cgst: doc.cgst || 0, sgst: doc.sgst || 0, igst: doc.igst || 0, total: doc.total };
+  return {
+    subtotal: Math.round(doc.subtotal * ratio),
+    cgst: Math.round((doc.cgst || 0) * ratio),
+    sgst: Math.round((doc.sgst || 0) * ratio),
+    igst: Math.round((doc.igst || 0) * ratio),
+    total: doc.amountRequested,
+  };
+}
+
+// Raise and post a credit note against a posted invoice.
+//   amount: omit for a full reversal, or give paise for a partial one.
+// Returns { cnId, cnNumber, entryId, totals, ratio, warnings }.
+async function createCreditNote(db, input) {
+  const { invoiceId, cnDate, cnNumber, reason = 'sales-return', notes = null, amount = null } = input || {};
+
+  if (!Number.isInteger(invoiceId) || invoiceId < 1) throw new VoucherError('invoiceId must be a positive integer', 'invoiceId');
+  const r = db.exec('SELECT id, invoice_number, customer_id, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, company_snapshot, customer_snapshot FROM invoices WHERE id = ?', [invoiceId]);
+  if (!r.length || !r[0].values.length) throw new VoucherError(`No invoice with id ${invoiceId}`, 'invoiceId');
+  const [id, invNumber, customerId, pos, posName, subtotal, cgst, sgst, igst, total, companySnap, customerSnap] = r[0].values[0];
+  const inv = { id, invoice_number: invNumber, subtotal, cgst, sgst, igst, total };
+
+  if (!cnDate) throw new VoucherError('cnDate is required', 'cnDate');
+
+  const full = amount === null || amount === undefined;
+  if (!full) {
+    if (!Number.isInteger(amount)) throw new VoucherError('amount must be an integer number of paise, or omitted for a full reversal', 'amount');
+    if (amount <= 0 || amount > total) throw new VoucherError(`amount must be between 1 and the invoice total (${total} paise)`, 'amount');
+  }
+  const ratio = full ? 1 : (total > 0 ? amount / total : 0);
+  inv.amountRequested = full ? total : amount;
+  const t = proRateDocumentTotals(inv, ratio, full);
+
+  const custR = db.exec('SELECT id, name FROM customers WHERE id = ?', [customerId]);
+  const customer = (custR.length && custR[0].values.length)
+    ? { id: custR[0].values[0][0], name: custR[0].values[0][1] }
+    : { id: customerId, name: 'Customer' };
+
+  const number = cnNumber || nextCreditNoteNumber(db);
+  const warnings = [];
+  let cnId = null;
+  let entryId = null;
+
+  db.run('BEGIN');
+  try {
+    db.run(
+      'INSERT INTO credit_notes (cn_number, cn_date, original_invoice_id, original_invoice_number, customer_id, reason, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [number, cnDate, inv.id, inv.invoice_number, customerId, reason, pos, posName,
+       t.subtotal, t.cgst, t.sgst, t.igst, t.total, notes, 'posted', companySnap, customerSnap, nowIso()]
+    );
+    cnId = lastInsertId(db);
+
+    const linesR = db.exec('SELECT line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no', [inv.id]);
+    const computedLines = [];
+    if (linesR.length && linesR[0].values.length) {
+      const lineStmt = db.prepare('INSERT INTO credit_note_lines (cn_id, line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      for (const lv of linesR[0].values) {
+        const [ln, desc, hsn, hsnD, qty, rate, taxable, taxR, rateId, c, sg, ig] = lv;
+        const aSub = Math.round((taxable || 0) * ratio);
+        const aC = Math.round((c || 0) * ratio);
+        const aS = Math.round((sg || 0) * ratio);
+        const aI = Math.round((ig || 0) * ratio);
+        lineStmt.run([cnId, ln, desc, hsn, hsnD, qty, rate, aSub, taxR, rateId, aC, aS, aI, aSub + aC + aS + aI]);
+        computedLines.push({ cgst: aC, sgst: aS, igst: aI, tax_rate: taxR });
+      }
+      lineStmt.free();
+    }
+
+    entryId = await postCreditNoteToLedger(db, {
+      cn_number: number, cn_date: cnDate, original_invoice_number: inv.invoice_number,
+      subtotal: t.subtotal, cgst: t.cgst, sgst: t.sgst, igst: t.igst, total: t.total,
+    }, customer, computedLines);
+    db.run('UPDATE credit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, cnId]);
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+
+  try {
+    await postCreditNoteStockEffects(db, { id: cnId, cn_number: number, cn_date: cnDate }, inv.id, ratio);
+  } catch (stockErr) {
+    warnings.push({ stage: 'stock', message: String(stockErr && stockErr.message || stockErr) });
+  }
+
+  return { cnId, cnNumber: number, entryId, totals: t, ratio, warnings };
+}
+
+// Raise and post a debit note against a posted purchase — the mirror of createCreditNote.
+// Returns { dnId, dnNumber, entryId, totals, ratio, warnings }.
+async function createDebitNote(db, input) {
+  const { purchaseId, dnDate, dnNumber, reason = 'purchase-return', notes = null, amount = null } = input || {};
+
+  if (!Number.isInteger(purchaseId) || purchaseId < 1) throw new VoucherError('purchaseId must be a positive integer', 'purchaseId');
+  const r = db.exec('SELECT id, bill_number, vendor_id, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, company_snapshot, vendor_snapshot FROM purchases WHERE id = ?', [purchaseId]);
+  if (!r.length || !r[0].values.length) throw new VoucherError(`No purchase with id ${purchaseId}`, 'purchaseId');
+  const [id, billNumber, vendorId, pos, posName, subtotal, cgst, sgst, igst, total, companySnap, vendorSnap] = r[0].values[0];
+  const pur = { id, bill_number: billNumber, subtotal, cgst, sgst, igst, total };
+
+  if (!dnDate) throw new VoucherError('dnDate is required', 'dnDate');
+
+  const full = amount === null || amount === undefined;
+  if (!full) {
+    if (!Number.isInteger(amount)) throw new VoucherError('amount must be an integer number of paise, or omitted for a full reversal', 'amount');
+    if (amount <= 0 || amount > total) throw new VoucherError(`amount must be between 1 and the purchase total (${total} paise)`, 'amount');
+  }
+  const ratio = full ? 1 : (total > 0 ? amount / total : 0);
+  pur.amountRequested = full ? total : amount;
+  const t = proRateDocumentTotals(pur, ratio, full);
+
+  const vR = db.exec('SELECT id, name FROM vendors WHERE id = ?', [vendorId]);
+  const vendor = (vR.length && vR[0].values.length)
+    ? { id: vR[0].values[0][0], name: vR[0].values[0][1] }
+    : { id: vendorId, name: 'Vendor' };
+
+  const number = dnNumber || nextDebitNoteNumber(db);
+  const warnings = [];
+  let dnId = null;
+  let entryId = null;
+
+  db.run('BEGIN');
+  try {
+    db.run(
+      'INSERT INTO debit_notes (dn_number, dn_date, original_purchase_id, original_bill_number, vendor_id, reason, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [number, dnDate, pur.id, pur.bill_number, vendorId, reason, pos, posName,
+       t.subtotal, t.cgst, t.sgst, t.igst, t.total, notes, 'posted', companySnap, vendorSnap, nowIso()]
+    );
+    dnId = lastInsertId(db);
+
+    const linesR = db.exec('SELECT line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total FROM purchase_lines WHERE purchase_id = ? ORDER BY line_no', [pur.id]);
+    const computedLines = [];
+    if (linesR.length && linesR[0].values.length) {
+      const lineStmt = db.prepare('INSERT INTO debit_note_lines (dn_id, line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      for (const lv of linesR[0].values) {
+        const [ln, desc, hsn, hsnD, qty, rate, taxable, taxR, rateId, c, sg, ig] = lv;
+        const aSub = Math.round((taxable || 0) * ratio);
+        const aC = Math.round((c || 0) * ratio);
+        const aS = Math.round((sg || 0) * ratio);
+        const aI = Math.round((ig || 0) * ratio);
+        lineStmt.run([dnId, ln, desc, hsn, hsnD, qty, rate, aSub, taxR, rateId, aC, aS, aI, aSub + aC + aS + aI]);
+        computedLines.push({ cgst: aC, sgst: aS, igst: aI, tax_rate: taxR });
+      }
+      lineStmt.free();
+    }
+
+    entryId = await postDebitNoteToLedger(db, {
+      dn_number: number, dn_date: dnDate, original_bill_number: pur.bill_number,
+      subtotal: t.subtotal, cgst: t.cgst, sgst: t.sgst, igst: t.igst, total: t.total,
+    }, vendor, computedLines);
+    db.run('UPDATE debit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, dnId]);
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+
+  try {
+    await postDebitNoteStockEffects(db, { id: dnId, dn_number: number, dn_date: dnDate }, pur.id, ratio);
+  } catch (stockErr) {
+    warnings.push({ stage: 'stock', message: String(stockErr && stockErr.message || stockErr) });
+  }
+
+  return { dnId, dnNumber: number, entryId, totals: t, ratio, warnings };
+}
+
 // === E-way bill builders ===
 
 // Build the NIC bulk-upload JSON for one EWB.
@@ -10638,6 +10894,14 @@ async function persistKhata() {
       // this a file last signed elsewhere (the live site, another machine) would fail its
       // own books/audit signature forever. An out-of-Bahi editor still can't produce a valid
       // signature for any trusted key, so tamper detection is unaffected.
+      //
+      // ORDER IS LOAD-BEARING. addTrustedKey falls back to reading integrity.signedBy when
+      // the file carries no trustedKeys array yet — which every file written before that
+      // field existed does, including all three shipped samples. Overwriting signedBy first
+      // therefore made addTrustedKey re-add the NEW key and silently drop the ORIGINAL one,
+      // so every historical audit entry failed signature verification from the first save on
+      // a new browser onward. Bank the outgoing signer before re-homing.
+      addTrustedKey(STATE.manifest.integrity, STATE.manifest.integrity.signedBy);
       STATE.manifest.integrity.signedBy = STATE.publicJwk;
       addTrustedKey(STATE.manifest.integrity, STATE.publicJwk);
     }
@@ -11560,8 +11824,11 @@ async function openHandle(handle, existingWsId) {
         },
       });
       // Update the manifest's signedBy to the new public key. The previous one is preserved
-      // in the rotation audit entry above for forensic chain-of-custody.
+      // in the rotation audit entry above for forensic chain-of-custody — and, from here,
+      // in trustedKeys as well, so its entries keep verifying. Same ordering trap as the
+      // save path: bank the outgoing signer before overwriting it.
       manifest.integrity = manifest.integrity || {};
+      addTrustedKey(manifest.integrity, manifest.integrity.signedBy);
       manifest.integrity.signedBy = kp.publicJwk;
       addTrustedKey(manifest.integrity, kp.publicJwk);
     } catch (e) { console.warn('keypair.rotation audit append failed:', e); }
@@ -14409,83 +14676,29 @@ function renderPaymentForm(main) {
     postBtn.disabled = total <= 0 || !form.bankAccountId;
   }
 
+  // Gather, delegate, report. createPayment() is what window.bahi calls too.
   async function doPostPayment() {
     try {
       const customer = customers.find(c => c.id === form.customerId);
       if (!customer) { toast('Pick a customer', 'err'); return; }
       if (!form.bankAccountId) { toast('Pick a bank/cash account', 'err'); return; }
 
-      const allocations = [];
-      let totalAmount = 0;
-      for (const [invoiceId, amount] of form.allocations.entries()) {
-        if (amount > 0) {
-          allocations.push({ invoiceId, amount });
-          totalAmount += amount;
-        }
-      }
-      if (!allocations.length) { toast('Select at least one invoice to allocate against', 'err'); return; }
-
-      // Read fresh bank account name + customer fields for snapshots
-      const bankR = STATE.db.exec('SELECT id, name FROM accounts WHERE id = ?', [form.bankAccountId]);
-      if (!bankR.length || !bankR[0].values.length) { toast('Bank account missing', 'err'); return; }
-      const bankAcc = { id: bankR[0].values[0][0], name: bankR[0].values[0][1] };
-
-      const cR2 = STATE.db.exec('SELECT name, gstin, pan, state, email, phone, address FROM customers WHERE id = ?', [customer.id]);
-      const cv = (cR2.length && cR2[0].values.length) ? cR2[0].values[0] : [];
-      const csRow = cv[3] && STATE_BY_ISO.has(cv[3]) ? STATE_BY_ISO.get(cv[3]) : null;
-      const customerSnap = JSON.stringify({
-        name: cv[0], gstin: cv[1], pan: cv[2], state: cv[3],
-        stateName: csRow ? csRow[2] : null,
-        gstinStateCode: csRow ? csRow[1] : null,
-        email: cv[4], phone: cv[5], address: cv[6],
+      const result = await createPayment(STATE.db, {
+        customerId: customer.id,
+        bankAccountId: form.bankAccountId,
+        paymentDate: $('pf-date').value,
+        paymentNumber: $('pf-number').value,
+        paymentMode: $('pf-mode').value,
+        reference: $('pf-ref').value.trim() || null,
+        notes: $('pf-notes').value.trim() || null,
+        allocations: [...form.allocations.entries()].map(([invoiceId, amount]) => ({ invoiceId, amount })),
       });
 
-      const paymentNumber = $('pf-number').value;
-      const paymentDate = $('pf-date').value;
-      const reference = $('pf-ref').value.trim() || null;
-      const notes = $('pf-notes').value.trim() || null;
-      const mode = $('pf-mode').value;
-
-      // Snapshot the invoice numbers for the allocation rows
-      const invIds = allocations.map(a => a.invoiceId);
-      const invNumR = STATE.db.exec(
-        `SELECT id, invoice_number FROM invoices WHERE id IN (${invIds.map(() => '?').join(',')})`,
-        invIds
-      );
-      const invNumByIdLocal = new Map();
-      if (invNumR.length) for (const [id, num] of invNumR[0].values) invNumByIdLocal.set(id, num);
-
-      STATE.db.run('BEGIN');
-      try {
-        STATE.db.run(
-          'INSERT INTO payments (payment_number, payment_date, customer_id, bank_account_id, amount, payment_mode, reference, notes, status, customer_snapshot, bank_account_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-          [paymentNumber, paymentDate, customer.id, bankAcc.id, totalAmount, mode, reference, notes, 'posted', customerSnap, bankAcc.name, nowIso()]
-        );
-        const paymentId = lastInsertId(STATE.db);
-        const allocStmt = STATE.db.prepare('INSERT INTO payment_allocations (payment_id, invoice_id, amount, invoice_number_snapshot) VALUES (?,?,?,?)');
-        for (const a of allocations) {
-          allocStmt.run([paymentId, a.invoiceId, a.amount, invNumByIdLocal.get(a.invoiceId) || null]);
-        }
-        allocStmt.free();
-
-        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
-        // payment row + allocations + ledger entry commit (or roll back) atomically.
-        const entryId = await postPaymentToLedger(STATE.db, {
-          payment_number: paymentNumber, payment_date: paymentDate,
-          amount: totalAmount, payment_mode: mode,
-        }, customer, bankAcc);
-        STATE.db.run('UPDATE payments SET ledger_entry_id = ? WHERE id = ?', [entryId, paymentId]);
-        STATE.db.run('COMMIT');
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        toast(`Payment ${paymentNumber} posted (${fmtINR(totalAmount)}) and saved`, 'ok');
-        nav('#/payments');
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`Payment ${result.paymentNumber} posted (${fmtINR(result.amount)}) and saved`, 'ok');
+      nav('#/payments');
     } catch (e) {
       console.error(e);
       toast('Post failed: ' + e.message, 'err');
@@ -16957,86 +17170,33 @@ function renderCreditNoteForm(main) {
     recomputeSummary();
   }, 0);
 
+  // Gather, delegate, report. createCreditNote() is what window.bahi calls too.
   async function doPostCN() {
     try {
       const inv = invoices.find(i => i.id === form.invoiceId);
       if (!inv) { toast('Pick an invoice', 'err'); return; }
       const isPartial = $('cn-mode').value === 'partial';
-      let cnSub, cnCgst, cnSgst, cnIgst, cnTotal;
-      if (isPartial) {
-        cnTotal = parseRupees($('cn-partial').value);
-        if (cnTotal <= 0 || cnTotal > inv.total) {
-          toast(`Partial amount must be between ₹0.01 and ${fmtINR(inv.total)}`, 'err'); return;
-        }
-        const ratio = cnTotal / inv.total;
-        cnSub = Math.round(inv.subtotal * ratio);
-        cnCgst = Math.round((inv.cgst || 0) * ratio);
-        cnSgst = Math.round((inv.sgst || 0) * ratio);
-        cnIgst = Math.round((inv.igst || 0) * ratio);
-      } else {
-        cnSub = inv.subtotal; cnCgst = inv.cgst || 0; cnSgst = inv.sgst || 0; cnIgst = inv.igst || 0; cnTotal = inv.total;
+      const partialAmount = isPartial ? parseRupees($('cn-partial').value) : null;
+      if (isPartial && (partialAmount <= 0 || partialAmount > inv.total)) {
+        toast(`Partial amount must be between ₹0.01 and ${fmtINR(inv.total)}`, 'err'); return;
       }
-      const custR = STATE.db.exec('SELECT id, name FROM customers WHERE id = ?', [inv.customer_id]);
-      const customer = (custR.length && custR[0].values.length) ? { id: custR[0].values[0][0], name: custR[0].values[0][1] } : { id: inv.customer_id, name: 'Customer' };
 
-      const cnNumber = $('cn-num').value;
-      const cnDate = $('cn-date').value;
-      const reason = $('cn-reason').value;
-      const notes = $('cn-notes').value.trim() || null;
+      const result = await createCreditNote(STATE.db, {
+        invoiceId: inv.id,
+        cnDate: $('cn-date').value,
+        cnNumber: $('cn-num').value,
+        reason: $('cn-reason').value,
+        notes: $('cn-notes').value.trim() || null,
+        amount: partialAmount,
+      });
 
-      STATE.db.run('BEGIN');
-      try {
-        STATE.db.run(
-          'INSERT INTO credit_notes (cn_number, cn_date, original_invoice_id, original_invoice_number, customer_id, reason, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, customer_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [cnNumber, cnDate, inv.id, inv.invoice_number, inv.customer_id, reason, inv.place_of_supply, inv.place_of_supply_name, cnSub, cnCgst, cnSgst, cnIgst, cnTotal, notes, 'posted', inv.company_snapshot, inv.customer_snapshot, nowIso()]
-        );
-        const cnId = lastInsertId(STATE.db);
-        const linesR = STATE.db.exec('SELECT line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no', [inv.id]);
-        const ratio = inv.total > 0 ? cnTotal / inv.total : 0;
-        const computedLines = [];
-        if (linesR.length && linesR[0].values.length) {
-          const lineStmt = STATE.db.prepare('INSERT INTO credit_note_lines (cn_id, line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-          for (const lv of linesR[0].values) {
-            const [ln, desc, hsn, hsnD, qty, rate, taxable, taxR, rateId, c, s, i, t] = lv;
-            const aSub = Math.round((taxable || 0) * ratio);
-            const aC = Math.round((c || 0) * ratio);
-            const aS = Math.round((s || 0) * ratio);
-            const aI = Math.round((i || 0) * ratio);
-            const aT = aSub + aC + aS + aI;
-            lineStmt.run([cnId, ln, desc, hsn, hsnD, qty, rate, aSub, taxR, rateId, aC, aS, aI, aT]);
-            computedLines.push({ cgst: aC, sgst: aS, igst: aI, tax_rate: taxR });
-          }
-          lineStmt.free();
-        }
+      for (const w of result.warnings) toast('Credit note posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
 
-        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
-        // credit note + lines + ledger entry commit (or roll back) atomically.
-        const entryId = await postCreditNoteToLedger(STATE.db, {
-          cn_number: cnNumber, cn_date: cnDate,
-          original_invoice_number: inv.invoice_number,
-          subtotal: cnSub, cgst: cnCgst, sgst: cnSgst, igst: cnIgst, total: cnTotal,
-        }, customer, computedLines);
-        STATE.db.run('UPDATE credit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, cnId]);
-        STATE.db.run('COMMIT');
-
-        // === Phase 4: stock effects (stock back in) ===
-        try {
-          const ratio = inv.total > 0 ? cnTotal / inv.total : 0;
-          await postCreditNoteStockEffects(STATE.db, { id: cnId, cn_number: cnNumber, cn_date: cnDate }, inv.id, ratio);
-        } catch (stockErr) {
-          console.error('Stock effect failed:', stockErr);
-          toast('Credit note posted, but stock effect failed: ' + stockErr.message, 'err');
-        }
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        toast(`Credit note ${cnNumber} posted (${fmtINR(cnTotal)})`, 'ok');
-        nav('#/credit-notes');
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`Credit note ${result.cnNumber} posted (${fmtINR(result.totals.total)})`, 'ok');
+      nav('#/credit-notes');
     } catch (e) {
       console.error(e);
       toast('Post failed: ' + e.message, 'err');
@@ -17176,84 +17336,33 @@ function renderDebitNoteForm(main) {
     recomputeSummary();
   }, 0);
 
+  // Gather, delegate, report. createDebitNote() is what window.bahi calls too.
   async function doPostDN() {
     try {
       const pur = purchases.find(p => p.id === form.purchaseId);
       if (!pur) { toast('Pick a purchase', 'err'); return; }
       const isPartial = $('dn-mode').value === 'partial';
-      let dnSub, dnCgst, dnSgst, dnIgst, dnTotal;
-      if (isPartial) {
-        dnTotal = parseRupees($('dn-partial').value);
-        if (dnTotal <= 0 || dnTotal > pur.total) { toast(`Amount must be between ₹0.01 and ${fmtINR(pur.total)}`, 'err'); return; }
-        const ratio = dnTotal / pur.total;
-        dnSub = Math.round(pur.subtotal * ratio);
-        dnCgst = Math.round((pur.cgst || 0) * ratio);
-        dnSgst = Math.round((pur.sgst || 0) * ratio);
-        dnIgst = Math.round((pur.igst || 0) * ratio);
-      } else {
-        dnSub = pur.subtotal; dnCgst = pur.cgst || 0; dnSgst = pur.sgst || 0; dnIgst = pur.igst || 0; dnTotal = pur.total;
+      const partialAmount = isPartial ? parseRupees($('dn-partial').value) : null;
+      if (isPartial && (partialAmount <= 0 || partialAmount > pur.total)) {
+        toast(`Amount must be between ₹0.01 and ${fmtINR(pur.total)}`, 'err'); return;
       }
-      const vR = STATE.db.exec('SELECT id, name FROM vendors WHERE id = ?', [pur.vendor_id]);
-      const vendor = (vR.length && vR[0].values.length) ? { id: vR[0].values[0][0], name: vR[0].values[0][1] } : { id: pur.vendor_id, name: 'Vendor' };
 
-      const dnNumber = $('dn-num').value;
-      const dnDate = $('dn-date').value;
-      const reason = $('dn-reason').value;
-      const notes = $('dn-notes').value.trim() || null;
+      const result = await createDebitNote(STATE.db, {
+        purchaseId: pur.id,
+        dnDate: $('dn-date').value,
+        dnNumber: $('dn-num').value,
+        reason: $('dn-reason').value,
+        notes: $('dn-notes').value.trim() || null,
+        amount: partialAmount,
+      });
 
-      STATE.db.run('BEGIN');
-      try {
-        STATE.db.run(
-          'INSERT INTO debit_notes (dn_number, dn_date, original_purchase_id, original_bill_number, vendor_id, reason, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [dnNumber, dnDate, pur.id, pur.bill_number, pur.vendor_id, reason, pur.place_of_supply, pur.place_of_supply_name, dnSub, dnCgst, dnSgst, dnIgst, dnTotal, notes, 'posted', pur.company_snapshot, pur.vendor_snapshot, nowIso()]
-        );
-        const dnId = lastInsertId(STATE.db);
-        const linesR = STATE.db.exec('SELECT line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total FROM purchase_lines WHERE purchase_id = ? ORDER BY line_no', [pur.id]);
-        const ratio = pur.total > 0 ? dnTotal / pur.total : 0;
-        const computedLines = [];
-        if (linesR.length && linesR[0].values.length) {
-          const lineStmt = STATE.db.prepare('INSERT INTO debit_note_lines (dn_id, line_no, description, hsn_sac, hsn_description, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-          for (const lv of linesR[0].values) {
-            const [ln, desc, hsn, hsnD, qty, rate, taxable, taxR, rateId, c, s, i, t] = lv;
-            const aSub = Math.round((taxable || 0) * ratio);
-            const aC = Math.round((c || 0) * ratio);
-            const aS = Math.round((s || 0) * ratio);
-            const aI = Math.round((i || 0) * ratio);
-            const aT = aSub + aC + aS + aI;
-            lineStmt.run([dnId, ln, desc, hsn, hsnD, qty, rate, aSub, taxR, rateId, aC, aS, aI, aT]);
-            computedLines.push({ cgst: aC, sgst: aS, igst: aI, tax_rate: taxR });
-          }
-          lineStmt.free();
-        }
+      for (const w of result.warnings) toast('Debit note posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
 
-        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
-        // debit note + lines + ledger entry commit (or roll back) atomically.
-        const entryId = await postDebitNoteToLedger(STATE.db, {
-          dn_number: dnNumber, dn_date: dnDate,
-          original_bill_number: pur.bill_number,
-          subtotal: dnSub, cgst: dnCgst, sgst: dnSgst, igst: dnIgst, total: dnTotal,
-        }, vendor, computedLines);
-        STATE.db.run('UPDATE debit_notes SET ledger_entry_id = ? WHERE id = ?', [entryId, dnId]);
-        STATE.db.run('COMMIT');
-
-        // === Phase 4: stock effects (stock out — purchase return) ===
-        try {
-          const ratio = pur.total > 0 ? dnTotal / pur.total : 0;
-          await postDebitNoteStockEffects(STATE.db, { id: dnId, dn_number: dnNumber, dn_date: dnDate }, pur.id, ratio);
-        } catch (stockErr) {
-          console.error('Stock effect failed:', stockErr);
-          toast('Debit note posted, but stock effect failed: ' + stockErr.message, 'err');
-        }
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        toast(`Debit note ${dnNumber} posted (${fmtINR(dnTotal)})`, 'ok');
-        nav('#/debit-notes');
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`Debit note ${result.dnNumber} posted (${fmtINR(result.totals.total)})`, 'ok');
+      nav('#/debit-notes');
     } catch (e) {
       console.error(e);
       toast('Post failed: ' + e.message, 'err');
@@ -23037,6 +23146,50 @@ const BAHI_AGENT_COMMAND_SPECS = {
     },
   },
 
+  'payment.create': {
+    summary: 'Record and post a customer receipt, allocated against one or more invoices.',
+    mutating: true, scope: 'file', route: '#/payment/new',
+    params: {
+      customerId:    { type: 'int', required: true, min: 1 },
+      bankAccountId: { type: 'int', required: true, min: 1 },
+      allocations:   { type: 'array', required: true, minItems: 1, maxItems: 500 },
+      paymentDate:   { type: 'date' },
+      paymentNumber: { type: 'string', maxLength: 60 },
+      paymentMode:   { type: 'string', maxLength: 20, enum: ['NEFT', 'RTGS', 'IMPS', 'UPI', 'Cheque', 'Cash', 'Card', 'Other'] },
+      reference:     { type: 'string', maxLength: 120 },
+      notes:         { type: 'string', maxLength: 2000 },
+      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },
+    },
+  },
+
+  'creditNote.create': {
+    summary: 'Raise and post a credit note against an invoice — full reversal, or partial by amount.',
+    mutating: true, scope: 'file', route: '#/credit-note/new',
+    params: {
+      invoiceId: { type: 'int', required: true, min: 1 },
+      cnDate:    { type: 'date' },
+      cnNumber:  { type: 'string', maxLength: 60 },
+      reason:    { type: 'string', maxLength: 60, enum: ['sales-return', 'rate-difference', 'discount', 'deficiency', 'other'] },
+      notes:     { type: 'string', maxLength: 2000 },
+      amount:    { type: 'int', min: 1 },
+      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },
+    },
+  },
+
+  'debitNote.create': {
+    summary: 'Raise and post a debit note against a purchase — full reversal, or partial by amount.',
+    mutating: true, scope: 'file', route: '#/debit-note/new',
+    params: {
+      purchaseId: { type: 'int', required: true, min: 1 },
+      dnDate:     { type: 'date' },
+      dnNumber:   { type: 'string', maxLength: 60 },
+      reason:     { type: 'string', maxLength: 60, enum: ['purchase-return', 'rate-difference', 'quality-issue', 'other'] },
+      notes:      { type: 'string', maxLength: 2000 },
+      amount:     { type: 'int', min: 1 },
+      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },
+    },
+  },
+
   'ui.routes':   { summary: 'Every UI route with its group, keywords and actions (the first door\'s index).', mutating: false, scope: 'app', params: {} },
   'ui.navigate': { summary: 'Navigate the UI to a known route. Route must exist in the route index.', mutating: false, scope: 'app', params: { route: { type: 'string', required: true, maxLength: 80 } } },
 };
@@ -23046,9 +23199,6 @@ const BAHI_AGENT_COMMAND_SPECS = {
 // so a new UI route cannot quietly appear without someone deciding about it.
 const BAHI_AGENT_GAPS = [
   { route: '#/workspace', reason: 'File create/open/restore need the native file picker — no headless path.' },
-  { route: '#/credit-note/new', reason: 'Creation still lives in the form handler; no engine function yet. Post the ledger effect via journal.post meanwhile.' },
-  { route: '#/debit-note/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
-  { route: '#/payment/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/vendor-payment/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/tcs-collection/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/advance/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
@@ -23293,6 +23443,52 @@ const BAHI_AGENT_HANDLERS = {
       entryId: r.entryId, billDate, actor: agentActorFor(a), totals: r.totals,
       lineCount: lines.length, warnings: r.warnings,
     };
+  },
+
+  'payment.create': async (a) => {
+    const allocations = [];
+    for (let i = 0; i < a.allocations.length; i++) {
+      const al = a.allocations[i];
+      if (!al || typeof al !== 'object' || Array.isArray(al)) throw new AgentBadArgs(`allocations[${i}] must be an object`);
+      if (!Number.isSafeInteger(al.invoiceId) || al.invoiceId < 1) throw new AgentBadArgs(`allocations[${i}].invoiceId must be a positive integer`);
+      if (!Number.isInteger(al.amount)) throw new AgentBadArgs(`allocations[${i}].amount must be an integer number of paise, got ${JSON.stringify(al.amount)}`);
+      if (al.amount <= 0) throw new AgentBadArgs(`allocations[${i}].amount must be greater than zero`);
+      if (al.amount > MAX_AGENT_PAISE) throw new AgentBadArgs(`allocations[${i}].amount exceeds the ${MAX_AGENT_PAISE} paise ceiling this engine can post without 32-bit truncation`);
+      allocations.push({ invoiceId: al.invoiceId, amount: al.amount });
+    }
+    const paymentDate = a.paymentDate || nowIso().slice(0, 10);
+    const r = await createPayment(STATE.db, {
+      customerId: a.customerId, bankAccountId: a.bankAccountId, paymentDate,
+      paymentNumber: a.paymentNumber || undefined, paymentMode: a.paymentMode || 'NEFT',
+      reference: a.reference || null, notes: a.notes || null, allocations,
+    });
+    return {
+      paymentId: r.paymentId, paymentNumber: r.paymentNumber, entryId: r.entryId,
+      paymentDate, actor: agentActorFor(a), amount: r.amount,
+      allocationCount: r.allocations.length, warnings: r.warnings,
+    };
+  },
+
+  'creditNote.create': async (a) => {
+    const cnDate = a.cnDate || nowIso().slice(0, 10);
+    const r = await createCreditNote(STATE.db, {
+      invoiceId: a.invoiceId, cnDate, cnNumber: a.cnNumber || undefined,
+      reason: a.reason || 'sales-return', notes: a.notes || null,
+      amount: a.amount === undefined ? null : a.amount,
+    });
+    return { cnId: r.cnId, cnNumber: r.cnNumber, entryId: r.entryId, cnDate,
+      actor: agentActorFor(a), totals: r.totals, full: r.ratio === 1, warnings: r.warnings };
+  },
+
+  'debitNote.create': async (a) => {
+    const dnDate = a.dnDate || nowIso().slice(0, 10);
+    const r = await createDebitNote(STATE.db, {
+      purchaseId: a.purchaseId, dnDate, dnNumber: a.dnNumber || undefined,
+      reason: a.reason || 'purchase-return', notes: a.notes || null,
+      amount: a.amount === undefined ? null : a.amount,
+    });
+    return { dnId: r.dnId, dnNumber: r.dnNumber, entryId: r.entryId, dnDate,
+      actor: agentActorFor(a), totals: r.totals, full: r.ratio === 1, warnings: r.warnings };
   },
 
   'ui.routes':   async () => Object.entries(ROUTE_INDEX).map(([route, m]) => ({ route, name: m.name, group: m.group, keywords: m.keywords || [], actions: m.actions || [] })),

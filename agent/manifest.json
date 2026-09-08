@@ -641,6 +641,195 @@
       ]
     },
     {
+      "name": "payment.create",
+      "summary": "Record and post a customer receipt, allocated against one or more invoices.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/payment/new",
+      "params": [
+        {
+          "name": "customerId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "bankAccountId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "allocations",
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "maxItems": 500
+        },
+        {
+          "name": "paymentDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "paymentNumber",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "paymentMode",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "NEFT",
+            "RTGS",
+            "IMPS",
+            "UPI",
+            "Cheque",
+            "Cash",
+            "Card",
+            "Other"
+          ],
+          "maxLength": 20
+        },
+        {
+          "name": "reference",
+          "type": "string",
+          "required": false,
+          "maxLength": 120
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
+      "name": "creditNote.create",
+      "summary": "Raise and post a credit note against an invoice — full reversal, or partial by amount.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/credit-note/new",
+      "params": [
+        {
+          "name": "invoiceId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "cnDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "cnNumber",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "sales-return",
+            "rate-difference",
+            "discount",
+            "deficiency",
+            "other"
+          ],
+          "maxLength": 60
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "amount",
+          "type": "int",
+          "required": false,
+          "min": 1
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
+      "name": "debitNote.create",
+      "summary": "Raise and post a debit note against a purchase — full reversal, or partial by amount.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/debit-note/new",
+      "params": [
+        {
+          "name": "purchaseId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "dnDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "dnNumber",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "purchase-return",
+            "rate-difference",
+            "quality-issue",
+            "other"
+          ],
+          "maxLength": 60
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "amount",
+          "type": "int",
+          "required": false,
+          "min": 1
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
       "name": "ui.routes",
       "summary": "Every UI route with its group, keywords and actions (the first door's index).",
       "mutating": false,
@@ -668,18 +857,6 @@
     {
       "route": "#/workspace",
       "reason": "File create/open/restore need the native file picker — no headless path."
-    },
-    {
-      "route": "#/credit-note/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. Post the ledger effect via journal.post meanwhile."
-    },
-    {
-      "route": "#/debit-note/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
-    },
-    {
-      "route": "#/payment/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/vendor-payment/new",

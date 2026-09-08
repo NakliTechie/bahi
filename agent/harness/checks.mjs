@@ -414,106 +414,158 @@ async function batchReconcile() {
 
 
 // --- batch 5: two doors, one core -------------------------------------------
-// The reason the voucher engine exists. C28 asserts the form no longer carries its own
-// posting path; C29 drives BOTH doors with identical input and requires identical rows.
-// A structural check alone would pass a form that calls the engine and then also does
-// something extra; a behavioural check alone would pass a form that quietly re-inlined
-// the logic and happens to still agree today. Both, or neither is worth much.
+// The reason the voucher engine exists. For each voucher type: a structural check that
+// the form carries no posting path of its own, and a behavioural check that posts the
+// SAME voucher through the form and through window.bahi and compares the stored rows.
+//
+// Either check alone is weak. Structural alone would pass a form that calls the engine
+// and then also does something extra. Behavioural alone would pass a form that quietly
+// re-inlined the logic and happens to still agree today. Together they hold.
+
+const SET_VAL = `
+  // Fire BOTH events, the way a real user does. Some fields bind on 'input' (they read
+  // the element back at submit time) and some on 'change' (they update the form's own
+  // state object). Firing only one silently skipped place-of-supply and made the parity
+  // check compare two different inputs — a harness bug that looked exactly like a product bug.
+  const setVal = (el, v) => {
+    const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const fillLine = (cells) => {
+    let row = null;
+    for (const tr of document.querySelectorAll('table tbody tr')) { if (tr.querySelector('td:nth-child(4) input')) { row = tr; break; } }
+    if (!row) return 'no line row found';
+    setVal(row.querySelector('td:nth-child(1) input'), cells.description);
+    setVal(row.querySelector('td:nth-child(2) input'), cells.hsn);
+    setVal(row.querySelector('td:nth-child(3) input'), cells.qty);
+    setVal(row.querySelector('td:nth-child(4) input'), cells.rate);
+    const taxSel = row.querySelector('td:nth-child(5) select');
+    if (taxSel) setVal(taxSel, cells.tax);
+    return null;
+  };`;
+
+// One voucher type's parity spec: how to drive its form, how to read the row back, and
+// what the agent call is that should match.
+const VOUCHERS = [
+  {
+    id: 'invoice', checkStructural: 'C28', checkParity: 'C29',
+    formFn: 'renderInvoiceForm',
+    engineCall: 'createInvoice(STATE.db',
+    banned: ['INSERT INTO invoices', 'postInvoiceToLedger(', 'postInvoiceStockEffects(', "STATE.db.run('BEGIN')"],
+    uiScript: `${SET_VAL}
+      nav('#/invoice/new'); await sleep(400);
+      setVal(document.getElementById('iv-customer'), '1'); await sleep(150);
+      setVal(document.getElementById('iv-date'), '2026-02-11');
+      const e = fillLine({ description: 'Parity probe line', hsn: '3004', qty: '10', rate: '150.00', tax: '0.12' });
+      if (e) return { error: e };
+      await sleep(250);
+      const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Post invoice & save');
+      if (!btn) return { error: 'post button not found' };
+      if (btn.disabled) return { error: 'post button disabled — the preview computed no total' };
+      btn.click(); await sleep(1800);
+      return { route: location.hash };`,
+    readSql: {
+      head: "SELECT id, invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, ledger_entry_id FROM invoices ORDER BY id DESC LIMIT 1",
+      lines: "SELECT line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no",
+      volatile: ['id', 'invoice_number', 'ledger_entry_id'],
+    },
+    agentCall: { command: 'invoice.create', args: { customerId: 1, invoiceDate: '2026-02-11', agentName: 'parity',
+      lines: [{ description: 'Parity probe line', hsnSac: '3004', quantity: 10, rate: 15000, taxRate: 0.12 }] } },
+  },
+  {
+    id: 'purchase', checkStructural: 'C30', checkParity: 'C31',
+    formFn: 'renderPurchaseForm',
+    engineCall: 'createPurchase(STATE.db',
+    banned: ['INSERT INTO purchases', 'postPurchaseToLedger(', 'postPurchaseStockEffects(', "STATE.db.run('BEGIN')"],
+    uiScript: `${SET_VAL}
+      nav('#/purchase/new'); await sleep(400);
+      setVal(document.getElementById('pu-vendor'), '1'); await sleep(150);
+      setVal(document.getElementById('pu-bill'), 'VB-PARITY-UI');
+      setVal(document.getElementById('pu-date'), '2026-02-12');
+      setVal(document.getElementById('pu-pos'), 'MH');
+      await sleep(150);
+      const e = fillLine({ description: 'API bulk drum', hsn: '2941', qty: '5', rate: '2500.00', tax: '0.18' });
+      if (e) return { error: e };
+      await sleep(250);
+      const btn = [...document.querySelectorAll('button')].find(b => /Post purchase/i.test(b.textContent.trim()));
+      if (!btn) return { error: 'post button not found: ' + [...document.querySelectorAll('button')].map(b => b.textContent.trim()).join('|') };
+      if (btn.disabled) return { error: 'post button disabled — the preview computed no total' };
+      btn.click(); await sleep(1800);
+      return { route: location.hash };`,
+    readSql: {
+      head: "SELECT id, bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, vendor_snapshot, ledger_entry_id FROM purchases ORDER BY id DESC LIMIT 1",
+      lines: "SELECT line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, itc_eligible, total FROM purchase_lines WHERE purchase_id = ? ORDER BY line_no",
+      // bill_number is the vendor's own number and differs per document, as does the
+      // generated internal_ref — two different purchases, deliberately.
+      volatile: ['id', 'bill_number', 'internal_ref', 'ledger_entry_id'],
+    },
+    agentCall: { command: 'purchase.create', args: { vendorId: 1, billNumber: 'VB-PARITY-API', billDate: '2026-02-12',
+      placeOfSupply: 'MH', agentName: 'parity',
+      lines: [{ description: 'API bulk drum', hsnSac: '2941', quantity: 5, rate: 250000, taxRate: 0.18 }] } },
+  },
+];
+
 async function batchTwoDoors() {
   const src = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
 
-  // C28 — the invoice form must delegate. Reintroduce by inlining a posting path back
-  // into renderInvoiceForm.
-  const formStart = src.indexOf('function renderInvoiceForm(main) {');
-  const formEnd = src.indexOf('\nfunction renderInvoices(main) {', formStart);
-  const formSrc = formStart > -1 && formEnd > -1 ? src.slice(formStart, formEnd) : '';
-  const banned = ['INSERT INTO invoices', 'postInvoiceToLedger(', 'postInvoiceStockEffects(', "db.run('BEGIN')", "STATE.db.run('BEGIN')"];
-  const found = banned.filter((b) => formSrc.includes(b));
-  record('C28', 'the invoice form delegates: no posting path of its own',
-    formSrc.length > 0 && found.length === 0 && formSrc.includes('createInvoice(STATE.db'),
-    formSrc.length === 0 ? 'could not locate renderInvoiceForm' : `formBytes=${formSrc.length} callsEngine=${formSrc.includes('createInvoice(STATE.db')} banned=${found.join(',') || 'none'}`);
+  for (const v of VOUCHERS) {
+    // Structural: the form delegates and carries no posting path of its own.
+    const a = src.indexOf(`function ${v.formFn}(`);
+    const rest = a > -1 ? src.slice(a + 10) : '';
+    const m = rest.match(/\nfunction [A-Za-z0-9_]+\(/);
+    const formSrc = (a > -1 && m) ? src.slice(a, a + 10 + m.index) : '';
+    const found = v.banned.filter((t) => formSrc.includes(t));
+    record(v.checkStructural, `the ${v.id} form delegates: no posting path of its own`,
+      formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
+      formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
 
-  // C29 — post the same invoice through the UI form and through window.bahi, then compare
-  // the stored rows. Reintroduce by changing anything the agent path does differently.
-  const setValSrc = `
-    const setVal = (el, v) => {
-      const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
-      el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
-    };
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));`;
+    // Behavioural: same voucher, both doors, compare every stored field.
+    const READ = (door) => `
+      const r = STATE.db.exec(${JSON.stringify(v.readSql.head)});
+      if (!r.length) return { door: '${door}', error: 'no rows' };
+      const head = Object.fromEntries(r[0].columns.map((c, i) => [c, r[0].values[0][i]]));
+      const lr = STATE.db.exec(${JSON.stringify(v.readSql.lines)}, [head.id]);
+      const lines = lr.length ? lr[0].values.map(x => Object.fromEntries(lr[0].columns.map((c, i) => [c, x[i]]))) : [];
+      const er = STATE.db.exec('SELECT account_id, account_name, debit, credit FROM entry_lines WHERE entry_id = ? ORDER BY id', [head.ledger_entry_id]);
+      const entry = er.length ? er[0].values.map(x => Object.fromEntries(er[0].columns.map((c, i) => [c, x[i]]))) : [];
+      const ar = STATE.db.exec('SELECT actor FROM audit_log ORDER BY id DESC LIMIT 1');
+      return { door: '${door}', head, lines, entry, actor: ar.length ? ar[0].values[0][0] : null };`;
 
-  const UI_POST = `${setValSrc}
-    nav('#/invoice/new');
-    await sleep(400);
-    setVal(document.getElementById('iv-customer'), '1');
-    await sleep(150);
-    setVal(document.getElementById('iv-date'), '2026-02-11');
-    let row = null;
-    for (const tr of document.querySelectorAll('table tbody tr')) { if (tr.querySelector('td:nth-child(4) input')) { row = tr; break; } }
-    if (!row) return { error: 'no line row found' };
-    setVal(row.querySelector('td:nth-child(1) input'), 'Parity probe line');
-    setVal(row.querySelector('td:nth-child(2) input'), '3004');
-    setVal(row.querySelector('td:nth-child(3) input'), '10');
-    setVal(row.querySelector('td:nth-child(4) input'), '150.00');
-    const taxSel = row.querySelector('td:nth-child(5) select');
-    if (taxSel) setVal(taxSel, '0.12');
-    await sleep(250);
-    const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Post invoice & save');
-    if (!btn) return { error: 'post button not found' };
-    if (btn.disabled) return { error: 'post button disabled — the preview did not compute a total' };
-    btn.click();
-    await sleep(1800);
-    return { route: location.hash };`;
+    const run = await runCalls({ book: 'pharma', calls: [
+      { evalJs: v.uiScript, label: 'ui-post' },
+      { evalJs: READ('ui'), label: 'ui-read' },
+      v.agentCall,
+      { evalJs: READ('agent'), label: 'agent-read' },
+    ] });
 
-  const READ = (door) => `
-    const r = STATE.db.exec('SELECT id, invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, ledger_entry_id FROM invoices ORDER BY id DESC LIMIT 1');
-    if (!r.length) return { door: '${door}', error: 'no invoice rows' };
-    const inv = Object.fromEntries(r[0].columns.map((c, i) => [c, r[0].values[0][i]]));
-    const lr = STATE.db.exec('SELECT line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no', [inv.id]);
-    const lines = lr.length ? lr[0].values.map(v => Object.fromEntries(lr[0].columns.map((c, i) => [c, v[i]]))) : [];
-    const er = STATE.db.exec('SELECT account_id, account_name, debit, credit FROM entry_lines WHERE entry_id = ? ORDER BY id', [inv.ledger_entry_id]);
-    const entry = er.length ? er[0].values.map(v => Object.fromEntries(er[0].columns.map((c, i) => [c, v[i]]))) : [];
-    const ar = STATE.db.exec('SELECT actor FROM audit_log ORDER BY id DESC LIMIT 1');
-    return { door: '${door}', inv, lines, entry, actor: ar.length ? ar[0].values[0][0] : null };`;
+    const uiPost = run.results[0].value || {};
+    const ui = run.results[1].value || {};
+    const agentCall = run.results[2];
+    const ag = run.results[3].value || {};
+    const VOLATILE = new Set(v.readSql.volatile);
+    const diffs = [];
+    if (ui.head && ag.head) {
+      for (const k of Object.keys(ui.head)) if (!VOLATILE.has(k) && ui.head[k] !== ag.head[k]) diffs.push(`${k}: ${JSON.stringify(ui.head[k])} vs ${JSON.stringify(ag.head[k])}`);
+      if (ui.lines.length !== ag.lines.length) diffs.push(`lineCount ${ui.lines.length} vs ${ag.lines.length}`);
+      else ui.lines.forEach((l, i) => { for (const k of Object.keys(l)) if (l[k] !== ag.lines[i][k]) diffs.push(`line[${i}].${k}: ${JSON.stringify(l[k])} vs ${JSON.stringify(ag.lines[i][k])}`); });
+      if (ui.entry.length !== ag.entry.length) diffs.push(`ledgerLegs ${ui.entry.length} vs ${ag.entry.length}`);
+      else ui.entry.forEach((e, i) => { for (const k of Object.keys(e)) if (e[k] !== ag.entry[i][k]) diffs.push(`entry[${i}].${k}: ${JSON.stringify(e[k])} vs ${JSON.stringify(ag.entry[i][k])}`); });
+    }
+    const bothPosted = !uiPost.error && !!ui.head && ok(agentCall) && !!ag.head;
+    // Identical books, different hands — and the log must say which.
+    const attribution = ui.actor === 'owner' && ag.actor === 'agent:parity';
+    const nonTrivial = !!ui.head && ui.head.total > 0 && ui.lines.length > 0 && ui.entry.length >= 3;
 
-  const run = await runCalls({ book: 'pharma', calls: [
-    { evalJs: UI_POST, label: 'ui-post' },
-    { evalJs: READ('ui'), label: 'ui-read' },
-    { command: 'invoice.create', args: { customerId: 1, invoiceDate: '2026-02-11', agentName: 'parity',
-        lines: [{ description: 'Parity probe line', hsnSac: '3004', quantity: 10, rate: 15000, taxRate: 0.12 }] } },
-    { evalJs: READ('agent'), label: 'agent-read' },
-  ] });
-
-  const uiPost = run.results[0].value || {};
-  const ui = run.results[1].value || {};
-  const agentCall = run.results[2];
-  const ag = run.results[3].value || {};
-
-  // id, number and ledger_entry_id must differ — they are two different invoices.
-  const VOLATILE = new Set(['id', 'invoice_number', 'ledger_entry_id']);
-  const diffs = [];
-  if (ui.inv && ag.inv) {
-    for (const k of Object.keys(ui.inv)) if (!VOLATILE.has(k) && ui.inv[k] !== ag.inv[k]) diffs.push(`inv.${k}: ${JSON.stringify(ui.inv[k])} vs ${JSON.stringify(ag.inv[k])}`);
-    if (ui.lines.length !== ag.lines.length) diffs.push(`lineCount ${ui.lines.length} vs ${ag.lines.length}`);
-    else ui.lines.forEach((l, i) => { for (const k of Object.keys(l)) if (l[k] !== ag.lines[i][k]) diffs.push(`line[${i}].${k}: ${JSON.stringify(l[k])} vs ${JSON.stringify(ag.lines[i][k])}`); });
-    if (ui.entry.length !== ag.entry.length) diffs.push(`ledgerLegs ${ui.entry.length} vs ${ag.entry.length}`);
-    else ui.entry.forEach((e, i) => { for (const k of Object.keys(e)) if (e[k] !== ag.entry[i][k]) diffs.push(`entry[${i}].${k}: ${JSON.stringify(e[k])} vs ${JSON.stringify(ag.entry[i][k])}`); });
+    record(v.checkParity, `the ${v.id} form and window.bahi produce identical rows, with different audit actors`,
+      bothPosted && diffs.length === 0 && attribution && nonTrivial,
+      bothPosted
+        ? `total=${ui.head.total} lines=${ui.lines.length} legs=${ui.entry.length} diffs=${diffs.length ? diffs.join(' | ') : 'none'} actors=${ui.actor}/${ag.actor}`
+        : `ui=${uiPost.error || ui.error || 'ok'} agent=${ok(agentCall) ? 'ok' : JSON.stringify(err(agentCall))}`);
   }
-
-  const bothPosted = !uiPost.error && !!ui.inv && ok(agentCall) && !!ag.inv;
-  // The books must match; the ATTRIBUTION must not. A form post is the owner's, an agent
-  // post is the agent's — identical rows, different hands, and the log has to say so.
-  const attribution = ui.actor === 'owner' && ag.actor === 'agent:parity';
-  const nonTrivial = !!ui.inv && ui.inv.total > 0 && ui.lines.length > 0 && ui.entry.length >= 3;
-
-  record('C29', 'the form and window.bahi produce identical invoices, with different audit actors',
-    bothPosted && diffs.length === 0 && attribution && nonTrivial,
-    bothPosted
-      ? `total=${ui.inv.total} lines=${ui.lines.length} legs=${ui.entry.length} diffs=${diffs.length ? diffs.join(' | ') : 'none'} actors=${ui.actor}/${ag.actor}`
-      : `ui=${uiPost.error || (ui.error || 'ok')} agent=${ok(agentCall) ? 'ok' : JSON.stringify(err(agentCall))}`);
-
-  return run;
+  return null;
 }
 
 const r1 = await batchNoFile();

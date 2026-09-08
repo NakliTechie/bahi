@@ -570,6 +570,77 @@
       ]
     },
     {
+      "name": "purchase.create",
+      "summary": "Record and post a vendor purchase: header, lines, ITC/RCM routing, ledger entry and stock effect.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/purchase/new",
+      "params": [
+        {
+          "name": "vendorId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "billNumber",
+          "type": "string",
+          "required": true,
+          "maxLength": 60
+        },
+        {
+          "name": "lines",
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "maxItems": 500
+        },
+        {
+          "name": "billDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "internalRef",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "placeOfSupply",
+          "type": "string",
+          "required": false,
+          "maxLength": 8,
+          "pattern": "^[A-Z]{2}$"
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "reverseCharge",
+          "type": "bool",
+          "required": false,
+          "default": false
+        },
+        {
+          "name": "itcEligible",
+          "type": "bool",
+          "required": false,
+          "default": true
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
       "name": "ui.routes",
       "summary": "Every UI route with its group, keywords and actions (the first door's index).",
       "mutating": false,
@@ -601,10 +672,6 @@
     {
       "route": "#/credit-note/new",
       "reason": "Creation still lives in the form handler; no engine function yet. Post the ledger effect via journal.post meanwhile."
-    },
-    {
-      "route": "#/purchase/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/debit-note/new",

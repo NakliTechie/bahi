@@ -71,6 +71,15 @@ const DEFECTS = [
   { id: 'C29', target: 'C29', note: 'the two doors drift — the agent defaults a different invoice series',
     find: "      series: a.series || 'Domestic', placeOfSupply: a.placeOfSupply || null,",
     replace: "      series: a.series || 'Export', placeOfSupply: a.placeOfSupply || null," },
+  { id: 'C30', target: 'C30', note: 'purchase form stops delegating — the engine call is replaced by its own path',
+    find: "      const result = await createPurchase(STATE.db, {",
+    replace: "      const result = await createPurchaseLegacyInlinePath(STATE.db, {" },
+  // First attempt used the itcEligible default, which is DEAD CODE: the validator fills a
+  // declared default, so `a.itcEligible === undefined` is never true. Reverse charge is
+  // reachable and changes both the header flag and the ledger legs.
+  { id: 'C31', target: 'C31', note: 'the two doors drift — the agent flips reverse-charge treatment',
+    find: "      notes: a.notes || null, reverseCharge: !!a.reverseCharge,",
+    replace: "      notes: a.notes || null, reverseCharge: !a.reverseCharge," },
   { id: 'C23', target: 'C23', note: 'make the day-book range exclusive at the start, dropping each period\'s first day',
     find: "    FROM entries e\n    WHERE e.posted_at BETWEEN ? AND ?\n    ORDER BY e.posted_at, e.id",
     replace: "    FROM entries e\n    WHERE e.posted_at > ? AND e.posted_at <= ?\n    ORDER BY e.posted_at, e.id" },

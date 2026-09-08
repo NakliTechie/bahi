@@ -67,6 +67,7 @@ Branch on `error.code`, never on the message text.
 | `gst.gstr1` `gst.gstr3b` `tds.form26q` | | Return data for a period or quarter. |
 | `journal.post` | **M** | Post a balanced double-entry voucher. |
 | `invoice.create` | **M** | Raise and post a sales invoice: header, lines, GST routing, ledger entry and stock effect. |
+| `purchase.create` | **M** | Record and post a vendor purchase, with ITC and reverse-charge routing. |
 | `ui.routes` `ui.navigate` | | The first door's route index, and navigation to a known route. |
 
 ### `journal.post`
@@ -117,6 +118,11 @@ doors and compares the stored header, every line and every ledger leg. They are 
 audit actor is the only thing that differs — `owner` from the form, `agent:<name>` from here.
 
 `taxRate` is a fraction (`0.18`), not a percentage. Passing `18` is refused rather than interpreted.
+
+`purchase.create` is the mirror, taking `vendorId` and a required `billNumber` (the vendor's own
+document number), plus `reverseCharge` and `itcEligible`. Purchase lines carry no `discount` and
+passing one is refused rather than ignored. `internalRef` is generated if you omit it. Check
+**C31** holds it to the same both-doors comparison as the invoice.
 
 ## What is deliberately not here
 

@@ -6995,6 +6995,128 @@ async function createInvoice(db, input) {
   return { invoiceId, invoiceNumber: number, entryId, totals, advancesApplied, warnings };
 }
 
+// Frozen vendor snapshot. Carries rcm_applicable and tds_section as well, because a
+// purchase's reverse-charge treatment must be readable from the voucher forever, even
+// after the vendor master changes.
+function freezeVendorSnapshot(db, vendorId) {
+  const r = db.exec('SELECT name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section FROM vendors WHERE id = ?', [vendorId]);
+  const vv = (r.length && r[0].values.length) ? r[0].values[0] : [];
+  const st = vv[3] && STATE_BY_ISO.has(vv[3]) ? STATE_BY_ISO.get(vv[3]) : null;
+  return JSON.stringify({
+    name: vv[0] || null, gstin: vv[1] || null, pan: vv[2] || null,
+    state: vv[3] || null, stateName: st ? st[2] : null,
+    email: vv[4] || null, phone: vv[5] || null, address: vv[6] || null,
+    rcm_applicable: vv[7] || 0, tds_section: vv[8] || null,
+  });
+}
+
+// Record and post a vendor purchase — the mirror of createInvoice.
+//
+//   lines[]: { description, quantity, rate (paise), taxRate, itemId?, hsnSac?, cess? }
+//
+// Purchase lines carry no discount: taxable is quantity x rate, which is why the shared
+// voucherLineTaxable is called without one rather than with a zero the caller invented.
+// Place of supply comes from the caller, not the vendor — for a purchase it is the
+// receiving branch's state, which is a decision, not a lookup.
+//
+// Returns { purchaseId, internalRef, billNumber, entryId, totals, warnings }.
+async function createPurchase(db, input) {
+  const {
+    vendorId, billNumber, billDate, internalRef, placeOfSupply = null, notes = null,
+    reverseCharge = false, itcEligible = true, lines = [], aiAssisted = false,
+    company = (typeof STATE !== 'undefined' && STATE.manifest ? STATE.manifest.company : null),
+  } = input || {};
+
+  if (!Number.isInteger(vendorId) || vendorId < 1) throw new VoucherError('vendorId must be a positive integer', 'vendorId');
+  const venR = db.exec('SELECT id, name, gstin, state FROM vendors WHERE id = ?', [vendorId]);
+  if (!venR.length || !venR[0].values.length) throw new VoucherError(`No vendor with id ${vendorId}`, 'vendorId');
+  const [vid, vname, vgstin, vstate] = venR[0].values[0];
+  const vendor = { id: vid, name: vname, gstin: vgstin, state: vstate };
+
+  if (!billNumber || !String(billNumber).trim()) throw new VoucherError('billNumber is required — it is the vendor\'s own document number', 'billNumber');
+  if (!billDate) throw new VoucherError('billDate is required', 'billDate');
+  if (!Array.isArray(lines) || !lines.length) throw new VoucherError('At least one line is required', 'lines');
+
+  const companyState = (company && company.state) || null;
+  const posIso = placeOfSupply || null;
+  const rcm = reverseCharge ? 1 : 0;
+  const itc = itcEligible ? 1 : 0;
+
+  const computedLines = lines.map((ln, i) => {
+    const taxable = voucherLineTaxable({ quantity: ln.quantity, rate: ln.rate, discount: 0 });
+    const effRate = Number(ln.taxRate) || 0;
+    return {
+      line_no: i + 1,
+      item_id: (ln.itemId === null || ln.itemId === undefined) ? null : Number(ln.itemId),
+      description: ln.description || '',
+      hsn_sac: ln.hsnSac || null,
+      quantity: Number(ln.quantity) || 0,
+      rate: Math.round(Number(ln.rate) || 0),
+      taxable,
+      tax_rate: effRate,
+      cess: voucherLineCess({ cess: ln.cess, hsnSac: ln.hsnSac, taxable, quantity: ln.quantity, date: billDate }),
+      rate_id: rateIdForDecimal(effRate, billDate),
+    };
+  }).filter(ln => ln.taxable > 0 && ln.description);
+
+  if (!computedLines.length) throw new VoucherError('No valid line: each needs a description and a taxable amount above zero', 'lines');
+
+  const totals = computeInvoiceTax({
+    companyStateIso: companyState, customerStateIso: posIso,
+    isExport: false, isSez: false, lines: computedLines,
+  });
+
+  const ref = internalRef || nextPurchaseRef(db);
+  const companySnapshot = JSON.stringify(company || {});
+  const vendorSnapshot = freezeVendorSnapshot(db, vendor.id);
+  const posRow = posIso && STATE_BY_ISO.has(posIso) ? STATE_BY_ISO.get(posIso) : null;
+  const placeOfSupplyName = posRow ? posRow[2] : null;
+
+  const warnings = [];
+  let purchaseId = null;
+  let entryId = null;
+
+  db.run('BEGIN');
+  try {
+    db.run(
+      'INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [String(billNumber).trim(), ref, vendor.id, billDate, posIso, placeOfSupplyName, rcm, itc,
+       totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.cess, totals.total,
+       notes, 'posted', companySnapshot, vendorSnapshot, nowIso()]
+    );
+    purchaseId = lastInsertId(db);
+    const lineStmt = db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    for (const ln of computedLines) {
+      lineStmt.run([purchaseId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate,
+        ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.cess || 0, itc,
+        ln.total || (ln.taxable + (ln.cgst || 0) + (ln.sgst || 0) + (ln.igst || 0) + (ln.cess || 0))]);
+    }
+    lineStmt.free();
+
+    entryId = await postPurchaseToLedger(db, {
+      internal_ref: ref, bill_number: String(billNumber).trim(), bill_date: billDate,
+      subtotal: totals.subtotal, cgst: totals.cgst, sgst: totals.sgst, igst: totals.igst,
+      cess: totals.cess, total: totals.total, reverse_charge: rcm,
+    }, vendor, computedLines, { aiAssisted: !!aiAssisted });
+    db.run('UPDATE purchases SET ledger_entry_id = ? WHERE id = ?', [entryId, purchaseId]);
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+
+  // Stock, after the commit — same pre-existing ordering as createInvoice, and the same
+  // reason for leaving it alone here.
+  try {
+    postPurchaseStockEffects(db, { id: purchaseId, internal_ref: ref, bill_date: billDate },
+      computedLines.map(ln => ({ ...ln, item_id: ln.item_id || null })));
+  } catch (stockErr) {
+    warnings.push({ stage: 'stock', message: String(stockErr && stockErr.message || stockErr) });
+  }
+
+  return { purchaseId, internalRef: ref, billNumber: String(billNumber).trim(), entryId, totals, warnings };
+}
+
 // === E-way bill builders ===
 
 // Build the NIC bulk-upload JSON for one EWB.
@@ -16168,14 +16290,12 @@ function renderPurchaseForm(main, opts = {}) {
   }
 
   function computeLineTaxable(ln) {
-    const qty = parseFloat(ln.quantity) || 0;
-    const rate = parseRupees(ln.rate);
-    return Math.max(0, Math.round(qty * rate));
+    // Purchase lines carry no discount — the engine's shared arithmetic, called without one.
+    return voucherLineTaxable({ quantity: parseFloat(ln.quantity) || 0, rate: parseRupees(ln.rate), discount: 0 });
   }
-  // Per-line compensation cess in paise. Manual entry wins; else auto from the HSN cess table.
   function computeLineCess(ln) {
-    if (ln.cess != null && String(ln.cess).trim() !== '') return Math.max(0, parseRupees(ln.cess));
-    return cessForLine(ln.hsnSac || null, computeLineTaxable(ln), parseFloat(ln.quantity) || 0, form.billDate || nowIso());
+    const explicit = (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null;
+    return voucherLineCess({ cess: explicit, hsnSac: ln.hsnSac, taxable: computeLineTaxable(ln), quantity: parseFloat(ln.quantity) || 0, date: form.billDate || nowIso() });
   }
 
   function recomputeTotals() {
@@ -16203,113 +16323,42 @@ function renderPurchaseForm(main, opts = {}) {
     postBtn.disabled = totals.total <= 0;
   }
 
+  // Gather, delegate, report. The posting path lives in createPurchase(), which
+  // window.bahi calls too.
   async function doPostPurchase() {
     try {
       const vendor = vendors.find(v => v.id === form.vendorId);
       if (!vendor) { toast('Pick a vendor', 'err'); return; }
       if (!$('pu-bill').value.trim()) { toast('Vendor bill number is required', 'err'); return; }
-      const billDateForLookup = $('pu-date').value || nowIso();
-      const computedLines = form.lines
-        .map((ln, i) => ({
-          line_no: i + 1,
-          item_id: ln.itemId ? parseInt(ln.itemId, 10) : null,
+
+      const result = await createPurchase(STATE.db, {
+        vendorId: vendor.id,
+        billNumber: $('pu-bill').value.trim(),
+        billDate: $('pu-date').value,
+        internalRef: $('pu-ref').value,
+        placeOfSupply: form.placeOfSupply || null,
+        notes: $('pu-notes').value.trim() || null,
+        reverseCharge: $('pu-rcm').value === '1',
+        itcEligible: $('pu-itc').value === '1',
+        aiAssisted: !!opts.aiAssisted,
+        lines: form.lines.map(ln => ({
+          itemId: ln.itemId ? parseInt(ln.itemId, 10) : null,
           description: ln.description || '',
-          hsn_sac: ln.hsnSac || null,
+          hsnSac: ln.hsnSac || null,
           quantity: parseFloat(ln.quantity) || 0,
           rate: parseRupees(ln.rate),
-          taxable: computeLineTaxable(ln),
-          cess: computeLineCess(ln),
-          tax_rate: ln.tax_rate || 0,
-          rate_id: rateIdForDecimal(ln.tax_rate || 0, billDateForLookup),
-        }))
-        .filter(ln => ln.taxable > 0 && ln.description);
-      if (!computedLines.length) { toast('Add at least one valid line', 'err'); return; }
-      const customerState = form.placeOfSupply || null;
-      const totals = computeInvoiceTax({
-        companyStateIso: companyState,
-        customerStateIso: customerState,
-        isExport: false,
-        isSez: false,
-        lines: computedLines,
+          taxRate: ln.tax_rate || 0,
+          cess: (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null,
+        })),
       });
 
-      const billNumber = $('pu-bill').value.trim();
-      const internalRefVal = $('pu-ref').value;
-      const billDate = $('pu-date').value;
-      const notes = $('pu-notes').value.trim() || null;
-      const rcm = $('pu-rcm').value === '1' ? 1 : 0;
-      const itcEligible = $('pu-itc').value === '1' ? 1 : 0;
+      for (const w of result.warnings) toast('Purchase posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
 
-      const companySnapshot = JSON.stringify(STATE.manifest.company || {});
-      const fullVendorRow = STATE.db.exec(
-        'SELECT name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section FROM vendors WHERE id = ?',
-        [vendor.id]
-      );
-      const vv = (fullVendorRow.length && fullVendorRow[0].values.length) ? fullVendorRow[0].values[0] : [];
-      const vendorStateRow = vv[3] && STATE_BY_ISO.has(vv[3]) ? STATE_BY_ISO.get(vv[3]) : null;
-      const vendorSnapshot = JSON.stringify({
-        name: vv[0] || null, gstin: vv[1] || null, pan: vv[2] || null,
-        state: vv[3] || null,
-        stateName: vendorStateRow ? vendorStateRow[2] : null,
-        email: vv[4] || null, phone: vv[5] || null, address: vv[6] || null,
-        rcm_applicable: vv[7] || 0, tds_section: vv[8] || null,
-      });
-      const posRow = customerState && STATE_BY_ISO.has(customerState) ? STATE_BY_ISO.get(customerState) : null;
-      const placeOfSupplyName = posRow ? posRow[2] : null;
-
-      STATE.db.run('BEGIN');
-      try {
-        STATE.db.run(
-          'INSERT INTO purchases (bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, vendor_snapshot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [billNumber, internalRefVal, vendor.id, billDate, customerState, placeOfSupplyName, rcm, itcEligible, totals.subtotal, totals.cgst, totals.sgst, totals.igst, totals.cess, totals.total, notes, 'posted', companySnapshot, vendorSnapshot, nowIso()]
-        );
-        const purchaseId = lastInsertId(STATE.db);
-        const lineStmt = STATE.db.prepare('INSERT INTO purchase_lines (purchase_id, line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, itc_eligible, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-        for (const ln of computedLines) {
-          lineStmt.run([purchaseId, ln.line_no, ln.item_id, ln.description, ln.hsn_sac, ln.quantity, ln.rate, ln.taxable, ln.tax_rate, ln.rate_id, ln.cgst || 0, ln.sgst || 0, ln.igst || 0, ln.cess || 0, itcEligible, ln.total || (ln.taxable + (ln.cgst||0) + (ln.sgst||0) + (ln.igst||0) + (ln.cess||0))]);
-        }
-        lineStmt.free();
-
-        // Post to the ledger in the SAME transaction (postEntry uses a SAVEPOINT) so the
-        // purchase header + lines + ledger entry commit (or roll back) atomically.
-        const entryId = await postPurchaseToLedger(STATE.db, {
-          internal_ref: internalRefVal,
-          bill_number: billNumber,
-          bill_date: billDate,
-          subtotal: totals.subtotal,
-          cgst: totals.cgst, sgst: totals.sgst, igst: totals.igst,
-          cess: totals.cess,
-          total: totals.total,
-          reverse_charge: rcm,
-        }, vendor, computedLines, { aiAssisted: !!opts.aiAssisted });
-        STATE.db.run('UPDATE purchases SET ledger_entry_id = ? WHERE id = ?', [entryId, purchaseId]);
-        STATE.db.run('COMMIT');
-
-        // === Phase 4: stock effects (skipped for service-only items) ===
-        try {
-          postPurchaseStockEffects(STATE.db, {
-            id: purchaseId, internal_ref: internalRefVal, bill_date: billDate,
-          }, computedLines.map(ln => ({ ...ln, item_id: ln.item_id || null })));
-        } catch (stockErr) {
-          console.error('Stock effect failed:', stockErr);
-          toast('Purchase posted, but stock effect failed: ' + stockErr.message, 'err');
-        }
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        toast(`Purchase ${internalRefVal} posted (${fmtINR(totals.total)}) and saved`, 'ok');
-        // Stage 2D — let the caller decide where to go next (queue auto-advance)
-        if (typeof opts.onPosted === 'function') {
-          try { opts.onPosted({ internalRef: internalRefVal, total: totals.total, purchaseId }); }
-          catch (cbErr) { console.error('onPosted callback failed:', cbErr); nav('#/purchases'); }
-        } else {
-          nav('#/purchases');
-        }
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
+      setSaveStatus('unsaved');
+      const ok = await persistKhata();
+      if (!ok) { render(); return; }
+      toast(`Purchase ${result.billNumber} posted (${fmtINR(result.totals.total)}) and saved`, 'ok');
+      nav('#/purchases');
     } catch (e) {
       console.error(e);
       toast('Post failed: ' + e.message, 'err');
@@ -22971,6 +23020,23 @@ const BAHI_AGENT_COMMAND_SPECS = {
     },
   },
 
+  'purchase.create': {
+    summary: 'Record and post a vendor purchase: header, lines, ITC/RCM routing, ledger entry and stock effect.',
+    mutating: true, scope: 'file', route: '#/purchase/new',
+    params: {
+      vendorId:      { type: 'int', required: true, min: 1 },
+      billNumber:    { type: 'string', required: true, maxLength: 60 },
+      lines:         { type: 'array', required: true, minItems: 1, maxItems: 500 },
+      billDate:      { type: 'date' },
+      internalRef:   { type: 'string', maxLength: 60 },
+      placeOfSupply: { type: 'string', maxLength: 8, pattern: '^[A-Z]{2}$' },
+      notes:         { type: 'string', maxLength: 2000 },
+      reverseCharge: { type: 'bool', default: false },
+      itcEligible:   { type: 'bool', default: true },
+      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },
+    },
+  },
+
   'ui.routes':   { summary: 'Every UI route with its group, keywords and actions (the first door\'s index).', mutating: false, scope: 'app', params: {} },
   'ui.navigate': { summary: 'Navigate the UI to a known route. Route must exist in the route index.', mutating: false, scope: 'app', params: { route: { type: 'string', required: true, maxLength: 80 } } },
 };
@@ -22981,7 +23047,6 @@ const BAHI_AGENT_COMMAND_SPECS = {
 const BAHI_AGENT_GAPS = [
   { route: '#/workspace', reason: 'File create/open/restore need the native file picker — no headless path.' },
   { route: '#/credit-note/new', reason: 'Creation still lives in the form handler; no engine function yet. Post the ledger effect via journal.post meanwhile.' },
-  { route: '#/purchase/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/debit-note/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/payment/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
   { route: '#/vendor-payment/new', reason: 'Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes.' },
@@ -23200,36 +23265,7 @@ const BAHI_AGENT_HANDLERS = {
   },
 
   'invoice.create': async (a) => {
-    const lines = [];
-    for (let i = 0; i < a.lines.length; i++) {
-      const ln = a.lines[i];
-      if (!ln || typeof ln !== 'object' || Array.isArray(ln)) throw new AgentBadArgs(`lines[${i}] must be an object`);
-      if (typeof ln.description !== 'string' || !ln.description.trim()) throw new AgentBadArgs(`lines[${i}].description is required`);
-      if (ln.description.length > 500) throw new AgentBadArgs(`lines[${i}].description exceeds 500 characters`);
-      const qty = ln.quantity;
-      if (typeof qty !== 'number' || !Number.isFinite(qty) || qty <= 0) throw new AgentBadArgs(`lines[${i}].quantity must be a positive number`);
-      for (const [field, required] of [['rate', true], ['discount', false], ['cess', false]]) {
-        const v = ln[field];
-        if (v === undefined || v === null) { if (required) throw new AgentBadArgs(`lines[${i}].${field} is required (integer paise)`); continue; }
-        if (typeof v !== 'number' || !Number.isInteger(v)) throw new AgentBadArgs(`lines[${i}].${field} must be an integer number of paise, got ${JSON.stringify(v)}`);
-        if (v < 0) throw new AgentBadArgs(`lines[${i}].${field} must not be negative`);
-        if (v > MAX_AGENT_PAISE) throw new AgentBadArgs(`lines[${i}].${field} exceeds the ${MAX_AGENT_PAISE} paise ceiling this engine can post without 32-bit truncation`);
-      }
-      const tr = ln.taxRate;
-      if (tr !== undefined && tr !== null && (typeof tr !== 'number' || !(tr >= 0 && tr <= 1))) {
-        throw new AgentBadArgs(`lines[${i}].taxRate must be a decimal fraction between 0 and 1 (0.18 for 18%), got ${JSON.stringify(tr)}`);
-      }
-      if (ln.itemId !== undefined && ln.itemId !== null && (!Number.isSafeInteger(ln.itemId) || ln.itemId < 1)) {
-        throw new AgentBadArgs(`lines[${i}].itemId must be a positive integer or null`);
-      }
-      if (ln.hsnSac !== undefined && ln.hsnSac !== null && typeof ln.hsnSac !== 'string') throw new AgentBadArgs(`lines[${i}].hsnSac must be a string or null`);
-      lines.push({
-        itemId: ln.itemId ?? null, description: ln.description, hsnSac: ln.hsnSac ?? null,
-        quantity: qty, rate: ln.rate, discount: ln.discount ?? 0,
-        taxRate: tr ?? 0, cess: ln.cess ?? null,
-      });
-    }
-
+    const lines = agentValidateVoucherLines(a.lines, { allowDiscount: true });
     const invoiceDate = a.invoiceDate || nowIso().slice(0, 10);
     const r = await createInvoice(STATE.db, {
       customerId: a.customerId, invoiceDate, invoiceNumber: a.invoiceNumber || undefined,
@@ -23239,6 +23275,22 @@ const BAHI_AGENT_HANDLERS = {
     return {
       invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, entryId: r.entryId,
       invoiceDate, actor: agentActorFor(a), totals: r.totals,
+      lineCount: lines.length, warnings: r.warnings,
+    };
+  },
+
+  'purchase.create': async (a) => {
+    const lines = agentValidateVoucherLines(a.lines, { allowDiscount: false });
+    const billDate = a.billDate || nowIso().slice(0, 10);
+    const r = await createPurchase(STATE.db, {
+      vendorId: a.vendorId, billNumber: a.billNumber, billDate,
+      internalRef: a.internalRef || undefined, placeOfSupply: a.placeOfSupply || null,
+      notes: a.notes || null, reverseCharge: !!a.reverseCharge,
+      itcEligible: a.itcEligible === undefined ? true : !!a.itcEligible, lines,
+    });
+    return {
+      purchaseId: r.purchaseId, internalRef: r.internalRef, billNumber: r.billNumber,
+      entryId: r.entryId, billDate, actor: agentActorFor(a), totals: r.totals,
       lineCount: lines.length, warnings: r.warnings,
     };
   },
@@ -23328,6 +23380,46 @@ function runAgentSelftest() {
 // SQLite transactions on one connection — postEntry uses SAVEPOINT and would
 // nest incorrectly under a concurrent BEGIN.
 let _agentQueue = Promise.resolve();
+
+// Nested voucher lines, validated to the same rules for every voucher type. The declared
+// param spec stops at `lines: array` — a validator that stops there too is the exact defect
+// check C9 guards, so this is where the shape of each line is enforced.
+function agentValidateVoucherLines(rawLines, { allowDiscount = false } = {}) {
+  const out = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const ln = rawLines[i];
+    if (!ln || typeof ln !== 'object' || Array.isArray(ln)) throw new AgentBadArgs(`lines[${i}] must be an object`);
+    if (typeof ln.description !== 'string' || !ln.description.trim()) throw new AgentBadArgs(`lines[${i}].description is required`);
+    if (ln.description.length > 500) throw new AgentBadArgs(`lines[${i}].description exceeds 500 characters`);
+    const qty = ln.quantity;
+    if (typeof qty !== 'number' || !Number.isFinite(qty) || qty <= 0) throw new AgentBadArgs(`lines[${i}].quantity must be a positive number`);
+    if (!allowDiscount && ln.discount !== undefined && ln.discount !== null) {
+      throw new AgentBadArgs(`lines[${i}].discount is not accepted on this voucher type`);
+    }
+    const money = allowDiscount ? [['rate', true], ['discount', false], ['cess', false]] : [['rate', true], ['cess', false]];
+    for (const [field, required] of money) {
+      const v = ln[field];
+      if (v === undefined || v === null) { if (required) throw new AgentBadArgs(`lines[${i}].${field} is required (integer paise)`); continue; }
+      if (typeof v !== 'number' || !Number.isInteger(v)) throw new AgentBadArgs(`lines[${i}].${field} must be an integer number of paise, got ${JSON.stringify(v)}`);
+      if (v < 0) throw new AgentBadArgs(`lines[${i}].${field} must not be negative`);
+      if (v > MAX_AGENT_PAISE) throw new AgentBadArgs(`lines[${i}].${field} exceeds the ${MAX_AGENT_PAISE} paise ceiling this engine can post without 32-bit truncation`);
+    }
+    const tr = ln.taxRate;
+    if (tr !== undefined && tr !== null && (typeof tr !== 'number' || !(tr >= 0 && tr <= 1))) {
+      throw new AgentBadArgs(`lines[${i}].taxRate must be a decimal fraction between 0 and 1 (0.18 for 18%), got ${JSON.stringify(tr)}`);
+    }
+    if (ln.itemId !== undefined && ln.itemId !== null && (!Number.isSafeInteger(ln.itemId) || ln.itemId < 1)) {
+      throw new AgentBadArgs(`lines[${i}].itemId must be a positive integer or null`);
+    }
+    if (ln.hsnSac !== undefined && ln.hsnSac !== null && typeof ln.hsnSac !== 'string') throw new AgentBadArgs(`lines[${i}].hsnSac must be a string or null`);
+    out.push({
+      itemId: ln.itemId ?? null, description: ln.description, hsnSac: ln.hsnSac ?? null,
+      quantity: qty, rate: ln.rate, taxRate: tr ?? 0, cess: ln.cess ?? null,
+      ...(allowDiscount ? { discount: ln.discount ?? 0 } : {}),
+    });
+  }
+  return out;
+}
 
 function agentActorFor(args) {
   return (args && args.agentName) ? `agent:${args.agentName}` : 'agent';

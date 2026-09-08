@@ -65,6 +65,20 @@ const DEFECTS = [
   { id: 'C18', target: 'C18', note: 'let a handler log to the console instead of failing cleanly',
     find: "  'file.info': async () => {\n    const m = STATE.manifest;",
     replace: "  'file.info': async () => {\n    console.error('agent surface: noisy handler');\n    const m = STATE.manifest;" },
+  { id: 'C23', target: 'C23', note: 'make the day-book range exclusive at the start, dropping each period\'s first day',
+    find: "    FROM entries e\n    WHERE e.posted_at BETWEEN ? AND ?\n    ORDER BY e.posted_at, e.id",
+    replace: "    FROM entries e\n    WHERE e.posted_at > ? AND e.posted_at <= ?\n    ORDER BY e.posted_at, e.id" },
+  { id: 'C24', target: 'C24', note: 'shift the GSTR-3B outward total by one paise so it stops matching GSTR-1',
+    find: "    FROM invoices WHERE status='posted' AND invoice_date BETWEEN ? AND ?\n  `, [periodStart, periodEnd]);\n  const [outTaxable, outCgst, outSgst, outIgst, outCess, invoiceCount] = invR[0].values[0];",
+    replace: "    FROM invoices WHERE status='posted' AND invoice_date BETWEEN ? AND ?\n  `, [periodStart, periodEnd]);\n  const [outTaxable0, outCgst, outSgst, outIgst, outCess, invoiceCount] = invR[0].values[0];\n  const outTaxable = outTaxable0 + 1;" },
+  { id: 'C25', target: 'C25', note: 'flip the liabilities sign in the balance-sheet roll-up',
+    find: "      const bal = -row.balance; // liabilities are credit-balance",
+    replace: "      const bal = row.balance; // liabilities are credit-balance" },
+  { id: 'C26', target: 'C26', note: 'off-by-one OFFSET so paging silently skips a row per page',
+    find: "  params.push(a.limit, a.offset);", replace: "  params.push(a.limit, a.offset + 1);" },
+  { id: 'C27', target: 'C27', note: 'zero the account ledger\'s credit column so it stops matching the trial balance',
+    find: "      l.debit, l.credit, COALESCE(l.account_name, a.name) AS account_name",
+    replace: "      l.debit, 0, COALESCE(l.account_name, a.name) AS account_name" },
   { id: 'C22', target: 'C22', note: 'drop the agentName pattern so a colon can forge a misleading actor',
     find: "      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },",
     replace: "      agentName: { type: 'string', maxLength: 60 }," },
@@ -84,7 +98,8 @@ const EXTRA = {
          replace: "    } catch (_) { return { entryId: -1 }; } })();\n    return { entryId: res.entryId, postedAt, actor, lineCount: lines.length, amendment: !!periodLock, periodLock };" },
 };
 
-const wanted = process.argv[2] ? DEFECTS.filter((d) => d.id === process.argv[2]) : DEFECTS;
+const sel = process.argv[2] ? process.argv[2].split(',') : null;
+const wanted = sel ? DEFECTS.filter((d) => sel.includes(d.id)) : DEFECTS;
 const original = fs.readFileSync(APP, 'utf8');
 const originalManifest = fs.readFileSync(MANIFEST, 'utf8');
 
@@ -117,7 +132,7 @@ for (const d of wanted) {
 
 // C14 — proven by unbalancing a real ledger by one paise. The check must notice that the
 // books no longer tie; a code defect cannot demonstrate that.
-if (!process.argv[2] || process.argv[2] === 'C14') {
+if (!sel || sel.includes('C14')) {
   fs.writeFileSync(APP, original);
   const { runCalls } = await import('./drive.mjs');
   const calls = [{ command: 'report.trialBalance', args: { asOf: '2026-03-31' } }];
@@ -132,7 +147,7 @@ if (!process.argv[2] || process.argv[2] === 'C14') {
 // C15 — proven by corrupting a real audit chain rather than by a code defect. A defect in
 // the reporting layer would only show the check reads the right field; this shows it detects
 // actual tampering. The clean control runs alongside it.
-if (!process.argv[2] || process.argv[2] === 'C15') {
+if (!sel || sel.includes('C15')) {
   fs.writeFileSync(APP, original);
   const { runCalls } = await import('./drive.mjs');
   const calls = [{ command: 'file.verifyIntegrity' }];

@@ -261,16 +261,170 @@ async function batchReadOnly() {
   return run;
 }
 
+
+// --- batch 4: cross-command reconciliation ---------------------------------
+// The checks above ask whether the surface OBEYS ITS CONTRACT. These ask whether it
+// TELLS THE TRUTH: each one takes two or three independent computations of the same
+// quantity and requires them to agree. They are the ones most likely to catch a future
+// engine regression, because no single wrong answer can satisfy both sides.
+// Pure reads, on their own session, so nothing this suite posts can perturb them.
+async function batchReconcile() {
+  const FY_START = '2025-04-01', FY_END = '2026-03-31';
+  const Q = [['2025-04-01', '2025-06-30'], ['2025-07-01', '2025-09-30'], ['2025-10-01', '2025-12-31'], ['2026-01-01', '2026-03-31']];
+  const M = [];
+  for (let i = 0; i < 12; i++) {
+    const y = i < 9 ? 2025 : 2026;
+    const mo = ((i + 3) % 12) + 1;
+    const last = new Date(Date.UTC(mo === 12 ? y + 1 : y, mo === 12 ? 0 : mo, 0)).getUTCDate();
+    const mm = String(mo).padStart(2, '0');
+    M.push([`${y}-${mm}-01`, `${y}-${mm}-${String(last).padStart(2, '0')}`]);
+  }
+  const GST_M = ['2025-07-01', '2025-07-31'];
+  const PAGE = 7;
+
+  const calls = [
+    { command: 'report.dayBook', args: { from: FY_START, to: FY_END } },                    // 0
+    ...Q.map(([from, to]) => ({ command: 'report.dayBook', args: { from, to } })),           // 1..4
+    ...M.map(([from, to]) => ({ command: 'report.dayBook', args: { from, to } })),           // 5..16
+    { command: 'gst.gstr1', args: { periodStart: GST_M[0], periodEnd: GST_M[1] } },          // 17
+    { command: 'gst.gstr3b', args: { periodStart: GST_M[0], periodEnd: GST_M[1] } },         // 18
+    { command: 'report.trialBalance', args: { asOf: FY_END } },                              // 19
+    { command: 'report.balanceSheet', args: { asOf: FY_END } },                              // 20
+    { command: 'masters.customers', args: { limit: 1000 } },                                 // 21
+  ];
+  const PAGE_BASE = calls.length;
+  for (let off = 0; off < 8; off++) calls.push({ command: 'masters.customers', args: { limit: PAGE, offset: off * PAGE } });
+
+  const run = await runCalls({ book: 'pharma', calls });
+  const R = run.results;
+  const rupeesToPaise = (v) => Math.round(Number(v) * 100);
+
+  // C23 — the day book is a PARTITION of its sub-periods. Comparing counts alone would
+  // miss a boundary entry counted twice and another dropped; comparing the id sets
+  // catches both. Reintroduce by making the range exclusive at one end.
+  const idsOf = (i) => (ok(R[i]) ? data(R[i]).entries.map((e) => e.id) : null);
+  const year = idsOf(0);
+  const gather = (from, count) => {
+    const all = [];
+    for (let i = from; i < from + count; i++) { const ids = idsOf(i); if (!ids) return null; all.push(...ids); }
+    return all;
+  };
+  const qIds = gather(1, 4), mIds = gather(5, 12);
+  const setEq = (a, b) => a && b && a.length === b.length && new Set(a).size === a.length && [...new Set(a)].sort().join() === [...new Set(b)].sort().join();
+  const qDup = qIds ? qIds.length - new Set(qIds).size : -1;
+  const mDup = mIds ? mIds.length - new Set(mIds).size : -1;
+  record('C23', 'day book partitions exactly into quarters and months (no boundary skip or double-count)',
+    !!year && setEq(year, qIds) && setEq(year, mIds) && qDup === 0 && mDup === 0,
+    `year=${year ? year.length : 'ERR'} quarters=${qIds ? qIds.length : 'ERR'} (dup ${qDup}) months=${mIds ? mIds.length : 'ERR'} (dup ${mDup})`);
+
+  // C24 — three independent aggregations of one month's outward supplies must agree to
+  // the paise: GSTR-1's per-party sections, GSTR-1's HSN summary, and GSTR-3B's invoice
+  // roll-up. Reintroduce by shifting the GSTR-3B outward total by a single paise.
+  let g1Sections = null, g1Hsn = null, g3b = null;
+  if (ok(R[17]) && ok(R[18])) {
+    const g1 = data(R[17]);
+    let sec = 0;
+    for (const key of ['b2b', 'b2cl']) {
+      for (const party of g1[key] || []) {
+        for (const inv of party.inv || []) {
+          for (const it of inv.itms || []) sec += rupeesToPaise(it.itm_det.txval);
+        }
+      }
+    }
+    for (const row of g1.b2cs || []) sec += rupeesToPaise(row.txval);
+    g1Sections = sec;
+    g1Hsn = (g1.hsn && g1.hsn.data ? g1.hsn.data : []).reduce((t, r) => t + rupeesToPaise(r.txval), 0);
+    g3b = data(R[18]).outward.taxable;
+  }
+  record('C24', 'GSTR-1 sections, GSTR-1 HSN summary and GSTR-3B agree on outward taxable',
+    g1Sections !== null && g1Sections === g3b && g1Hsn === g3b,
+    `sections=${g1Sections} hsn=${g1Hsn} gstr3b=${g3b} (July 2025, paise)`);
+
+  // C25 — the balance sheet is a roll-up of the trial balance, so the accounting identity
+  // must hold and each section's rows must sum to its own stated total. A sign flip in the
+  // roll-up leaves the trial balance tied while the balance sheet stops balancing.
+  let bsOk = false, bsDetail = 'call failed';
+  if (ok(R[20])) {
+    const bs = data(R[20]);
+    const sum = (a) => a.reduce((t, r) => t + r.balance, 0);
+    const secOk = sum(bs.assets) === bs.totalAssets && sum(bs.liabilities) === bs.totalLiabilities && sum(bs.equity) === bs.totalEquity;
+    const identity = bs.totalAssets === bs.totalLiabilities + bs.totalEquity;
+    bsOk = secOk && identity;
+    bsDetail = `assets=${bs.totalAssets} liab+equity=${bs.totalLiabilities + bs.totalEquity} sectionsSumToTotals=${secOk}`;
+  }
+  record('C25', 'balance sheet: assets = liabilities + equity, and every section sums to its total', bsOk, bsDetail);
+
+  // C26 — paging is a partition of the full list. Reintroduce with an off-by-one offset:
+  // counts alone would still look plausible, the id sequence would not.
+  let pageOk = false, pageDetail = 'call failed';
+  if (ok(R[21])) {
+    const full = data(R[21]);
+    const walked = [];
+    for (let i = PAGE_BASE; i < calls.length; i++) if (ok(R[i])) walked.push(...data(R[i]).rows.map((r) => r.id));
+    const fullIds = full.rows.map((r) => r.id);
+    const dup = walked.length - new Set(walked).size;
+    pageOk = full.total === fullIds.length && dup === 0 && walked.join() === fullIds.join();
+    pageDetail = `total=${full.total} full=${fullIds.length} walked=${walked.length} dup=${dup} orderIdentical=${walked.join() === fullIds.join()}`;
+  }
+  record('C26', `paging at limit ${PAGE} reproduces the full list exactly, in order, with no gap or repeat`, pageOk, pageDetail);
+
+  // C27 — an account's ledger and its trial-balance row are two different queries over the
+  // same lines and must total identically. The accounts are chosen at RUNTIME as the five
+  // busiest the trial balance reports: a fixed id passed this check vacuously by comparing
+  // two empty sets, which is the failure mode these checks exist to catch. Reintroduce by
+  // zeroing the ledger's credit column — the trial balance still shows the credits.
+  let ledOk = false, ledDetail = 'trial balance unavailable';
+  if (ok(R[19])) {
+    const busiest = [...data(R[19]).rows]
+      .sort((a, b) => (b.debit + b.credit) - (a.debit + a.credit))
+      .slice(0, 5);
+    if (!busiest.length) {
+      ledDetail = 'no accounts with activity in the sample book — check is vacuous, treat as red';
+    } else {
+      // One session, so the trial balance and every ledger below are read from the same book.
+      const run2 = await runCalls({ book: 'pharma', calls: [
+        { command: 'report.trialBalance', args: { asOf: FY_END } },
+        ...busiest.map((a) => ({ command: 'report.accountLedger', args: { accountId: a.id, from: '2000-01-01', to: FY_END } })),
+      ] });
+      const tb2 = ok(run2.results[0]) ? data(run2.results[0]).rows : [];
+      const parts = [];
+      let allOk = busiest.length > 0;
+      for (let i = 0; i < busiest.length; i++) {
+        const res = run2.results[i + 1];
+        const row = tb2.find((r) => r.id === busiest[i].id);
+        if (!ok(res) || !row) { allOk = false; parts.push(`acct ${busiest[i].id}: MISSING`); continue; }
+        const lines = data(res).lines;
+        const ldr = lines.reduce((t, l) => t + (l.debit || 0), 0);
+        const lcr = lines.reduce((t, l) => t + (l.credit || 0), 0);
+        // A vacuous comparison is a failure, not a pass: the account was picked BECAUSE
+        // the trial balance says it has movement, so an empty ledger is a real mismatch.
+        const nonEmpty = lines.length > 0;
+        const match = ldr === row.debit && lcr === row.credit && nonEmpty;
+        if (!match) allOk = false;
+        parts.push(`acct ${row.id} ${match ? 'ok' : `MISMATCH ledger ${ldr}/${lcr} vs tb ${row.debit}/${row.credit}`} (${lines.length} lines)`);
+      }
+      ledOk = allOk;
+      ledDetail = parts.join('; ');
+    }
+  }
+  record('C27', 'account ledger totals equal the trial-balance row, for the 5 busiest accounts', ledOk, ledDetail);
+
+  return run;
+}
+
 const r1 = await batchNoFile();
 const r2 = await batchSample();
 const r3 = await batchReadOnly();
+const r4 = await batchReconcile();
 
 const shown = only ? results.filter((r) => r.id === only) : results;
 let red = 0;
 for (const r of shown) {
   if (!r.pass) red++;
   process.stdout.write(`${r.pass ? 'PASS' : 'FAIL'}  ${r.id.padEnd(4)} ${r.title}\n`);
-  if (!r.pass) process.stdout.write(`             ${r.detail}\n`);
+  // Print the evidence for green checks too, not just red ones. A suite that shows only
+  // the word PASS asks to be trusted; one that shows the numbers it compared can be read.
+  if (r.detail) process.stdout.write(`             ${r.detail}\n`);
 }
 process.stdout.write(`\n${shown.length - red}/${shown.length} green${red ? `, ${red} RED` : ''}\n`);
 process.exit(red ? 1 : 0);

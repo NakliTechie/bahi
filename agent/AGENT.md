@@ -125,8 +125,26 @@ echo '[{"command":"agent.selftest"}]' | node drive.mjs --book pharma --calls -
 a sample name from `sample-data/`. Samples are copied to a temp dir first; the repo's books are
 never written to.
 
-`node checks.mjs` runs the full assertion suite (22 checks). Set `BAHI_FUTURE_KHATA` to a
+`node checks.mjs` runs the full assertion suite (27 checks). Set `BAHI_FUTURE_KHATA` to a
 `.khata` whose `khataFormatVersion` is ahead of this build to exercise the read-only path.
+Every check prints the numbers it compared, passing or failing, so the output is evidence
+rather than a row of the word PASS.
+
+Five of the 27 are **reconciliation** checks. Where the others ask whether the surface obeys its
+contract, these ask whether it tells the truth — each takes two or three independent computations
+of the same quantity and requires them to agree, so no single wrong answer can satisfy both sides:
+
+| | Reconciles |
+|---|---|
+| C23 | the day book over a financial year against the same year split into quarters, and into months — by entry-id set, so a boundary entry counted twice and another dropped cannot cancel out |
+| C24 | one month's outward taxable value three ways: GSTR-1's per-party sections, GSTR-1's HSN summary, and GSTR-3B's invoice roll-up |
+| C25 | the balance sheet's accounting identity, and every section against its own stated total |
+| C26 | a paged walk of a master list against the whole list, in order, with no gap or repeat |
+| C27 | each of the five busiest accounts' ledger totals against that account's trial-balance row |
+
+C27 picks its accounts at runtime from the trial balance rather than by fixed id, and treats an
+empty ledger as a failure. An earlier version passed against account 1, which has no activity in
+the sample book — it was comparing two empty sets.
 
 `node prove-red.mjs` reintroduces each defect those checks guard, one at a time, and confirms the
 matching check goes **red** — then restores the file and confirms green. A check never seen to fail

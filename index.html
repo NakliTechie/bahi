@@ -22709,6 +22709,529 @@ function renderSettings(main) {
 // === Boot ===
 //------------------------------------------------------------
 
+//------------------------------------------------------------
+// === Agent surface (doctrine 6 — two doors, one core) ===
+//------------------------------------------------------------
+//
+// `window.bahi` is Bahi's SECOND DOOR: the same core the UI drives, addressed by
+// name instead of by click. It exists so an agent (or a test harness, or a script
+// in the console) can read the books and post to them without scraping the DOM.
+//
+// Contract, in four lines:
+//   1. Every command is declared in BAHI_AGENT_MANIFEST. Nothing is dispatchable
+//      that isn't declared, and nothing is declared that isn't dispatchable —
+//      `bahi.call('agent.selftest')` proves both, and fails loudly if they drift.
+//   2. `bahi.call()` NEVER throws and NEVER rejects. It resolves
+//      `{ok:true, data}` or `{ok:false, error:{code, message, ...}}`.
+//      A caller that has to try/catch a machine interface will get it wrong.
+//   3. Money is INTEGER PAISE. Dates are 'YYYY-MM-DD'. No floats, no locales.
+//   4. Every mutation is attributable: agent-posted entries carry an `actor` of
+//      'agent' (or 'agent:<name>'), so the audit log distinguishes what a human
+//      did from what a machine did, forever.
+//
+// SECURITY NOTE — read before extending this.
+// This API grants no privilege that page script did not already have; anything
+// running on this origin can already reach `STATE.db`. What it DOES change is the
+// blast radius of a PROMPT INJECTION: an agent that reads a malicious bill, PDF or
+// web result and then drives this API is the realistic attack. Hence:
+//   - mutating commands are flagged `mutating:true` in the manifest,
+//   - agent writes are stamped in the audit log (attributable + reversible),
+//   - there is deliberately NO raw-SQL command and NO filesystem command here.
+// Do not add one. The Debug Console already covers a human at a keyboard.
+
+const BAHI_AGENT_API_VERSION = '1.0.0';
+
+// Stable, documented error codes. A caller switches on `error.code`, never on the
+// message text. Anything not in this list is a bug in the dispatcher.
+const AGENT_ERRORS = {
+  E_UNKNOWN_COMMAND: 'No such command. Call agent.commands for the list.',
+  E_BAD_ARGS:        'Arguments failed the command\'s declared parameter spec.',
+  E_NO_FILE:         'No .khata file is open. Open one before calling file-scoped commands.',
+  E_READONLY:        'File is open read-only (newer .khata format than this build) — mutations refused.',
+  E_ENGINE:          'The accounting engine refused the operation (its message is passed through).',
+  E_INTERNAL:        'Unexpected failure inside the dispatcher. This is a bug — report it.',
+};
+
+// --- tiny helpers, scoped to the agent surface -------------------------------
+
+function agentRows(res) {
+  if (!res || !res.length) return [];
+  const { columns, values } = res[0];
+  return values.map((v) => Object.fromEntries(columns.map((c, i) => [c, v[i]])));
+}
+
+function agentIsIsoDate(v) {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const [y, m, d] = v.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  // Rejects 2026-02-30 and friends, which Date would otherwise roll forward.
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+// Paise are stored in SQLite INTEGER columns and summed in JS. Several engine
+// paths coerce with `| 0`, which truncates at 2^31 — so the boundary is real and
+// this is where it gets named rather than silently wrapped. See MAX_AGENT_PAISE
+// in the manifest limits block.
+const MAX_AGENT_PAISE = 2147483647;
+
+function agentValidate(spec, args) {
+  const out = {};
+  const errs = [];
+  const given = (args && typeof args === 'object' && !Array.isArray(args)) ? args : {};
+  if (args != null && (typeof args !== 'object' || Array.isArray(args))) {
+    return { errs: ['args must be an object, got ' + (Array.isArray(args) ? 'array' : typeof args)] };
+  }
+  for (const key of Object.keys(given)) {
+    if (!Object.prototype.hasOwnProperty.call(spec, key)) errs.push(`unknown parameter '${key}'`);
+  }
+  for (const [key, p] of Object.entries(spec)) {
+    const has = Object.prototype.hasOwnProperty.call(given, key) && given[key] !== undefined && given[key] !== null;
+    if (!has) {
+      if (p.required) errs.push(`missing required parameter '${key}' (${p.type})`);
+      else if (p.default !== undefined) out[key] = p.default;
+      continue;
+    }
+    const v = given[key];
+    switch (p.type) {
+      case 'string':
+        if (typeof v !== 'string') { errs.push(`'${key}' must be a string, got ${typeof v}`); break; }
+        if (p.maxLength && v.length > p.maxLength) errs.push(`'${key}' exceeds maxLength ${p.maxLength} (got ${v.length})`);
+        if (p.enum && !p.enum.includes(v)) errs.push(`'${key}' must be one of: ${p.enum.join(', ')}`);
+        if (p.pattern && !new RegExp(p.pattern).test(v)) errs.push(`'${key}' must match ${p.pattern}`);
+        out[key] = v; break;
+      case 'date':
+        if (!agentIsIsoDate(v)) { errs.push(`'${key}' must be a real calendar date as YYYY-MM-DD, got ${JSON.stringify(v)}`); break; }
+        out[key] = v; break;
+      case 'int':
+        if (typeof v !== 'number' || !Number.isSafeInteger(v)) { errs.push(`'${key}' must be a safe integer, got ${JSON.stringify(v)}`); break; }
+        if (p.min !== undefined && v < p.min) errs.push(`'${key}' must be >= ${p.min}`);
+        if (p.max !== undefined && v > p.max) errs.push(`'${key}' must be <= ${p.max}`);
+        out[key] = v; break;
+      case 'bool':
+        if (typeof v !== 'boolean') { errs.push(`'${key}' must be a boolean`); break; }
+        out[key] = v; break;
+      case 'array':
+        if (!Array.isArray(v)) { errs.push(`'${key}' must be an array`); break; }
+        if (p.minItems && v.length < p.minItems) errs.push(`'${key}' needs at least ${p.minItems} items (got ${v.length})`);
+        if (p.maxItems && v.length > p.maxItems) errs.push(`'${key}' allows at most ${p.maxItems} items (got ${v.length})`);
+        out[key] = v; break;
+      default:
+        errs.push(`internal: unknown param type '${p.type}' for '${key}'`);
+    }
+  }
+  return errs.length ? { errs } : { value: out };
+}
+
+// --- the manifest — the single source of truth for the agent face ------------
+
+const BAHI_AGENT_COMMAND_SPECS = {
+  'agent.manifest':   { summary: 'The full machine-readable command manifest.', mutating: false, scope: 'app', params: {} },
+  'agent.commands':   { summary: 'Command names only, for cheap discovery.', mutating: false, scope: 'app', params: {} },
+  'agent.health':     { summary: 'Is the surface up, and is a file open?', mutating: false, scope: 'app', params: {} },
+  'agent.selftest':   { summary: 'Manifest/dispatcher/route parity assertions. The check that guards this surface.', mutating: false, scope: 'app', params: {} },
+
+  'file.info':        { summary: 'Company identity, versions, and integrity heads of the open file.', mutating: false, scope: 'file', route: '#/file', params: {} },
+  'file.save':        { summary: 'Persist the in-memory books to disk (same path as Ctrl+S).', mutating: true, scope: 'file', route: '#/file', params: {} },
+  'file.verifyIntegrity': { summary: 'Walk the audit hash chain and verify every ECDSA signature.', mutating: false, scope: 'file', route: '#/debug', params: {} },
+  'file.auditTail':       { summary: 'The most recent audit-log entries, newest first. Read your own writes back and confirm attribution.', mutating: false, scope: 'file', route: '#/debug', params: { limit: { type: 'int', min: 1, max: 500, default: 20 } } },
+
+  'masters.customers': { summary: 'List customers.', mutating: false, scope: 'file', route: '#/customers', params: { q: { type: 'string', maxLength: 200 }, limit: { type: 'int', min: 1, max: 1000, default: 100 }, offset: { type: 'int', min: 0, default: 0 }, includeArchived: { type: 'bool', default: false } } },
+  'masters.vendors':   { summary: 'List vendors.', mutating: false, scope: 'file', route: '#/vendors', params: { q: { type: 'string', maxLength: 200 }, limit: { type: 'int', min: 1, max: 1000, default: 100 }, offset: { type: 'int', min: 0, default: 0 }, includeArchived: { type: 'bool', default: false } } },
+  'masters.items':     { summary: 'List items / services.', mutating: false, scope: 'file', route: '#/items', params: { q: { type: 'string', maxLength: 200 }, limit: { type: 'int', min: 1, max: 1000, default: 100 }, offset: { type: 'int', min: 0, default: 0 }, includeArchived: { type: 'bool', default: false } } },
+  'masters.accounts':  { summary: 'List chart-of-accounts entries (id + name + type).', mutating: false, scope: 'file', route: '#/debug', params: { q: { type: 'string', maxLength: 200 }, limit: { type: 'int', min: 1, max: 1000, default: 500 }, offset: { type: 'int', min: 0, default: 0 }, includeArchived: { type: 'bool', default: false } } },
+
+  'report.trialBalance':     { summary: 'Trial balance as of a date, with the Dr=Cr tie check.', mutating: false, scope: 'file', route: '#/trial-balance', params: { asOf: { type: 'date' } } },
+  'report.balanceSheet':     { summary: 'Balance sheet as of a date.', mutating: false, scope: 'file', route: '#/balance-sheet', params: { asOf: { type: 'date' } } },
+  'report.dayBook':          { summary: 'Every voucher posted in a date range.', mutating: false, scope: 'file', route: '#/day-book', range: ['from', 'to'], params: { from: { type: 'date', required: true }, to: { type: 'date', required: true } } },
+  'report.accountLedger':    { summary: 'One account\'s ledger over a date range.', mutating: false, scope: 'file', route: '#/account-ledger', range: ['from', 'to'], params: { accountId: { type: 'int', required: true, min: 1 }, from: { type: 'date', required: true }, to: { type: 'date', required: true } } },
+  'report.receivablesAging': { summary: 'Receivables aged into buckets as of a date.', mutating: false, scope: 'file', route: '#/dashboard', params: { asOf: { type: 'date' } } },
+  'report.stockOnHand':      { summary: 'Closing stock per item per godown.', mutating: false, scope: 'file', route: '#/stock-on-hand', params: { itemId: { type: 'int', min: 1 }, godownId: { type: 'int', min: 1 } } },
+  'report.valuationSummary': { summary: 'Closing stock valuation as of a date (WAC/FIFO).', mutating: false, scope: 'file', route: '#/valuation-summary', params: { asOf: { type: 'date' } } },
+
+  'gst.gstr1':   { summary: 'GSTR-1 outward-supplies data for a period.', mutating: false, scope: 'file', route: '#/gstr1', range: ['periodStart', 'periodEnd'], params: { periodStart: { type: 'date', required: true }, periodEnd: { type: 'date', required: true } } },
+  'gst.gstr3b':  { summary: 'GSTR-3B summary for a period.', mutating: false, scope: 'file', route: '#/gstr3b', range: ['periodStart', 'periodEnd'], params: { periodStart: { type: 'date', required: true }, periodEnd: { type: 'date', required: true } } },
+  'tds.form26q': { summary: 'Form 26Q quarterly TDS return data.', mutating: false, scope: 'file', route: '#/form-26q', params: { fyStartYear: { type: 'int', required: true, min: 2000, max: 2200 }, quarter: { type: 'int', required: true, min: 1, max: 4 } } },
+
+  'journal.post': {
+    summary: 'Post a balanced double-entry journal voucher. Dr must equal Cr. Stamped actor=agent.',
+    mutating: true, scope: 'file', route: '#/journal/new',
+    params: {
+      lines:     { type: 'array', required: true, minItems: 2, maxItems: 500 },
+      narration: { type: 'string', maxLength: 2000 },
+      voucherRef:{ type: 'string', maxLength: 120 },
+      postedAt:  { type: 'date' },
+      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },
+    },
+  },
+
+  'ui.routes':   { summary: 'Every UI route with its group, keywords and actions (the first door\'s index).', mutating: false, scope: 'app', params: {} },
+  'ui.navigate': { summary: 'Navigate the UI to a known route. Route must exist in the route index.', mutating: false, scope: 'app', params: { route: { type: 'string', required: true, maxLength: 80 } } },
+};
+
+// Surfaces the UI has that the agent face does NOT yet cover. Declared, not hidden:
+// agent.selftest asserts every route is either covered by a command or listed here,
+// so a new UI route cannot quietly appear without someone deciding about it.
+const BAHI_AGENT_GAPS = [
+  { route: '#/workspace', reason: 'File create/open/restore need the native file picker — no headless path.' },
+  { route: '#/invoice/new', reason: 'Invoice creation lives in the form handler, not a pure engine function. Post the ledger effect via journal.post meanwhile.' },
+  { route: '#/credit-note/new', reason: 'As #/invoice/new.' },
+  { route: '#/purchase/new', reason: 'As #/invoice/new.' },
+  { route: '#/debit-note/new', reason: 'As #/invoice/new.' },
+  { route: '#/payment/new', reason: 'As #/invoice/new.' },
+  { route: '#/vendor-payment/new', reason: 'As #/invoice/new.' },
+  { route: '#/tcs-collection/new', reason: 'As #/invoice/new.' },
+  { route: '#/advance/new', reason: 'As #/invoice/new.' },
+  { route: '#/delivery-challan/new', reason: 'As #/invoice/new.' },
+  { route: '#/eway-bill/new', reason: 'As #/invoice/new.' },
+  { route: '#/stock-transfer/out/new', reason: 'As #/invoice/new.' },
+  { route: '#/stock-transfer/in/import', reason: 'Needs a file import.' },
+  { route: '#/ca/adjustment/new', reason: 'As #/invoice/new.' },
+  { route: '#/pnl', reason: 'P&L is computed inside renderPnL and has no pure engine function yet. Derive from report.trialBalance meanwhile.' },
+  { route: '#/invoices', reason: 'Read-only list not yet exposed; report.dayBook covers the ledger effect.' },
+  { route: '#/purchases', reason: 'As #/invoices.' },
+  { route: '#/credit-notes', reason: 'As #/invoices.' },
+  { route: '#/debit-notes', reason: 'As #/invoices.' },
+  { route: '#/payments', reason: 'As #/invoices.' },
+  { route: '#/advances', reason: 'As #/invoices.' },
+  { route: '#/eway-bills', reason: 'As #/invoices.' },
+  { route: '#/stock-transfers', reason: 'As #/invoices.' },
+  { route: '#/delivery-challans', reason: 'As #/invoices.' },
+  { route: '#/sales-register', reason: 'Not yet exposed; derive from report.dayBook.' },
+  { route: '#/purchase-register', reason: 'Not yet exposed; derive from report.dayBook.' },
+  { route: '#/inventory', reason: 'Dashboard aggregate; report.stockOnHand + report.valuationSummary cover the data.' },
+  { route: '#/stock-movements', reason: 'Not yet exposed.' },
+  { route: '#/stock-register', reason: 'Not yet exposed.' },
+  { route: '#/batches', reason: 'Not yet exposed.' },
+  { route: '#/reorder-alerts', reason: 'Not yet exposed.' },
+  { route: '#/stock-aging', reason: 'Not yet exposed.' },
+  { route: '#/godowns', reason: 'Not yet exposed.' },
+  { route: '#/series', reason: 'Not yet exposed.' },
+  { route: '#/cmp08', reason: 'Not yet exposed.' },
+  { route: '#/form-27eq', reason: 'Not yet exposed.' },
+  { route: '#/form-27d', reason: 'PDF generation, not data.' },
+  { route: '#/tax-challans', reason: 'Not yet exposed.' },
+  { route: '#/period-locks', reason: 'Mutating compliance state — deliberately kept out of the agent face for now.' },
+  { route: '#/fy-rollover', reason: 'Irreversible year-end wizard — deliberately human-only.' },
+  { route: '#/bank-reconcile', reason: 'Not yet exposed.' },
+  { route: '#/ca/review', reason: 'CA sign-off is a human judgement — deliberately human-only.' },
+  { route: '#/annotations', reason: 'Not yet exposed.' },
+  { route: '#/ca/report', reason: 'PDF generation, not data.' },
+  { route: '#/reconcile', reason: 'Merge of divergent branches — deliberately human-only.' },
+  { route: '#/dashboard', reason: 'Aggregate view; report.receivablesAging covers the headline number.' },
+  { route: '#/debug', reason: 'Raw SQL by design — deliberately NOT reachable from the agent face.' },
+  { route: '#/settings', reason: 'Local preferences, not books data.' },
+  { route: '#/ref-data-update', reason: 'Network fetch of reference data — deliberately human-triggered.' },
+];
+
+function buildAgentManifest() {
+  return {
+    api: 'bahi.agent',
+    version: BAHI_AGENT_API_VERSION,
+    app: {
+      name: 'Bahi',
+      khataFormatVersion: KHATA_FORMAT_VERSION,
+      schemaVersion: SCHEMA_VERSION,
+    },
+    units: {
+      money: 'integer paise; 100 paise = ₹1. Never a float, never a formatted string.',
+      date: 'ISO-8601 calendar date, YYYY-MM-DD. No timestamps, no locales.',
+    },
+    limits: {
+      maxPaisePerLine: MAX_AGENT_PAISE,
+      maxPaiseNote: 'Engine paths coerce with `| 0`, which truncates above 2^31-1. Amounts beyond this are refused at the boundary rather than silently wrapped.',
+      maxJournalLines: 500,
+    },
+    conventions: {
+      returns: 'Every call resolves {ok:true,data} or {ok:false,error:{code,message}}. It never throws and never rejects.',
+      attribution: "Mutating calls are recorded in the append-only audit log with actor 'agent' or 'agent:<agentName>'. agentName is restricted to [A-Za-z0-9._-] so the 'agent:<name>' grammar stays unambiguous — a colon in the name would let an agent shape an actor string a reader could mistake for another principal ('owner', 'ca', 'ai', 'system').",
+      mutatingFlag: 'Commands with mutating:true change the books. Everything else is a pure read.',
+      ranges: "A command with a `range` pair rejects a start later than its end with E_BAD_ARGS. A backwards range is a caller mistake, not an empty period — a reversed GST period must never return as a nil filing.",
+      nullIsAbsent: 'For an OPTIONAL parameter, null and undefined both mean "not supplied" and the declared default applies. A required parameter is never satisfied by null.',
+    },
+    errors: Object.entries(AGENT_ERRORS).map(([code, meaning]) => ({ code, meaning })),
+    commands: Object.entries(BAHI_AGENT_COMMAND_SPECS).map(([name, s]) => ({
+      name,
+      summary: s.summary,
+      mutating: !!s.mutating,
+      scope: s.scope,
+      route: s.route || null,
+      ...(s.range ? { range: s.range } : {}),
+      params: Object.entries(s.params).map(([pn, p]) => ({
+        name: pn, type: p.type, required: !!p.required,
+        ...(p.default !== undefined ? { default: p.default } : {}),
+        ...(p.enum ? { enum: p.enum } : {}),
+        ...(p.min !== undefined ? { min: p.min } : {}),
+        ...(p.max !== undefined ? { max: p.max } : {}),
+        ...(p.minItems !== undefined ? { minItems: p.minItems } : {}),
+        ...(p.maxItems !== undefined ? { maxItems: p.maxItems } : {}),
+        ...(p.maxLength !== undefined ? { maxLength: p.maxLength } : {}),
+        ...(p.pattern ? { pattern: p.pattern } : {}),
+      })),
+    })),
+    gaps: BAHI_AGENT_GAPS,
+  };
+}
+
+// --- handlers ----------------------------------------------------------------
+
+const BAHI_AGENT_HANDLERS = {
+  'agent.manifest':  async () => buildAgentManifest(),
+  'agent.commands':  async () => Object.keys(BAHI_AGENT_COMMAND_SPECS),
+  'agent.health':    async () => ({
+    ok: true,
+    apiVersion: BAHI_AGENT_API_VERSION,
+    commandCount: Object.keys(BAHI_AGENT_COMMAND_SPECS).length,
+    fileOpen: !!(STATE.db && STATE.manifest),
+    readOnly: !!STATE.readOnly,
+    mode: STATE.mode,
+    route: STATE.route,
+    schemaVersion: SCHEMA_VERSION,
+    khataFormatVersion: KHATA_FORMAT_VERSION,
+  }),
+  'agent.selftest':  async () => runAgentSelftest(),
+
+  'file.info': async () => {
+    const m = STATE.manifest;
+    return {
+      fileName: STATE.fileHandle ? STATE.fileHandle.name : null,
+      company: m.company || null,
+      khataFormatVersion: m.khataFormatVersion,
+      schemaVersion: m.schemaVersion,
+      readOnly: !!STATE.readOnly,
+      saveStatus: STATE.saveStatus,
+      auditHead: (m.integrity && m.integrity.auditHead) || null,
+      booksHash: (m.integrity && m.integrity.booksHash) || null,
+      snapshotCount: (m.snapshots || []).length,
+    };
+  },
+  'file.save': async () => {
+    await persistKhata();
+    const m = STATE.manifest;
+    return { saved: true, auditHead: (m.integrity && m.integrity.auditHead) || null, booksHash: (m.integrity && m.integrity.booksHash) || null };
+  },
+  'file.verifyIntegrity': async () => {
+    const r = await verifyAuditChain(STATE.db, trustedKeysOf(STATE.manifest && STATE.manifest.integrity));
+    return { chainOk: r.ok, entries: r.count, chainBreaks: r.badCount, signaturesOk: r.sigOk, signaturesBad: r.sigBad, signaturesUnchecked: r.sigUnchecked };
+  },
+
+  'file.auditTail': async (a) => {
+    const res = STATE.db.exec('SELECT id, ts, actor, action, ref, origin, hash FROM audit_log ORDER BY id DESC LIMIT ?', [a.limit]);
+    return { entries: agentRows(res), limit: a.limit };
+  },
+
+  'masters.customers': async (a) => agentListMaster('customers', ['id', 'name', 'gstin', 'pan', 'state', 'opening_balance', 'archived'], a),
+  'masters.vendors':   async (a) => agentListMaster('vendors', ['id', 'name', 'gstin', 'pan', 'state', 'rcm_applicable', 'tds_section', 'opening_balance', 'archived'], a),
+  'masters.items':     async (a) => agentListMaster('items', ['id', 'name', 'hsn_sac', 'is_service', 'unit', 'default_rate', 'archived'], a),
+  'masters.accounts':  async (a) => agentListMaster('accounts', ['id', 'name', 'type', 'archived'], a),
+
+  'report.trialBalance': async (a) => {
+    const rows = getTrialBalance(STATE.db, a.asOf);
+    const totalDr = rows.reduce((s, r) => s + r.debit, 0);
+    const totalCr = rows.reduce((s, r) => s + r.credit, 0);
+    return { asOf: a.asOf || null, rows, totalDr, totalCr, balanced: totalDr === totalCr, differencePaise: totalDr - totalCr };
+  },
+  'report.balanceSheet':     async (a) => getBalanceSheet(STATE.db, a.asOf),
+  'report.dayBook':          async (a) => ({ from: a.from, to: a.to, entries: getDayBook(STATE.db, a.from, a.to) }),
+  'report.accountLedger':    async (a) => ({ accountId: a.accountId, from: a.from, to: a.to, lines: getAccountLedger(STATE.db, a.accountId, a.from, a.to) }),
+  'report.receivablesAging': async (a) => getReceivablesAging(STATE.db, a.asOf || nowIso().slice(0, 10)),
+  'report.stockOnHand':      async (a) => ({ rows: getStockOnHand(STATE.db, { itemId: a.itemId, godownId: a.godownId }) }),
+  'report.valuationSummary': async (a) => ({ asOf: a.asOf || null, rows: getValuationSummary(STATE.db, a.asOf) }),
+
+  'gst.gstr1':   async (a) => buildGSTR1Data(STATE.db, a.periodStart, a.periodEnd),
+  'gst.gstr3b':  async (a) => buildGSTR3BSummary(STATE.db, a.periodStart, a.periodEnd),
+  'tds.form26q': async (a) => buildForm26Q(STATE.db, a.fyStartYear, a.quarter),
+
+  'journal.post': async (a) => {
+    const postedAt = a.postedAt || nowIso().slice(0, 10);
+
+    // Per-line shape check BEFORE the engine sees it, so a caller gets a typed
+    // E_BAD_ARGS with the offending line index instead of a bare engine throw.
+    const lines = [];
+    for (let i = 0; i < a.lines.length; i++) {
+      const ln = a.lines[i];
+      if (!ln || typeof ln !== 'object' || Array.isArray(ln)) throw new AgentBadArgs(`lines[${i}] must be an object`);
+      const accountId = ln.accountId;
+      if (typeof accountId !== 'number' || !Number.isSafeInteger(accountId) || accountId < 1) {
+        throw new AgentBadArgs(`lines[${i}].accountId must be a positive integer`);
+      }
+      for (const side of ['debit', 'credit']) {
+        const v = ln[side];
+        if (v === undefined || v === null) continue;
+        if (typeof v !== 'number' || !Number.isFinite(v) || !Number.isInteger(v)) {
+          throw new AgentBadArgs(`lines[${i}].${side} must be an integer number of paise, got ${JSON.stringify(v)}`);
+        }
+        if (v < 0) throw new AgentBadArgs(`lines[${i}].${side} must not be negative`);
+        if (v > MAX_AGENT_PAISE) {
+          throw new AgentBadArgs(`lines[${i}].${side} exceeds the ${MAX_AGENT_PAISE} paise ceiling this engine can post without 32-bit truncation`);
+        }
+      }
+      lines.push({ accountId, debit: ln.debit || 0, credit: ln.credit || 0 });
+    }
+
+    // Period locks: the core FLAGS a posting into a filed period as an amendment
+    // (postEntry sets entries.is_amendment) rather than refusing it. The agent face
+    // matches that exactly — a second door that is stricter than the first is still
+    // a divergence — but it REPORTS the lock so a caller is never surprised.
+    let periodLock = null;
+    try {
+      const lk = STATE.db.exec('SELECT return_type, period_start, period_end FROM period_locks WHERE period_start <= ? AND period_end >= ? LIMIT 1', [postedAt, postedAt]);
+      if (lk.length && lk[0].values.length) {
+        const [return_type, period_start, period_end] = lk[0].values[0];
+        periodLock = { return_type, period_start, period_end };
+      }
+    } catch (_) { /* period_locks absent on a very old file — treat as unlocked */ }
+
+    const actor = a.agentName ? `agent:${a.agentName}` : 'agent';
+    const res = await postEntry(STATE.db, {
+      voucherType: 'journal',
+      voucherRef: a.voucherRef || null,
+      narration: a.narration || null,
+      postedAt,
+      lines,
+      actor,
+    });
+    return { entryId: res.entryId, postedAt, actor, lineCount: lines.length, amendment: !!periodLock, periodLock };
+  },
+
+  'ui.routes':   async () => Object.entries(ROUTE_INDEX).map(([route, m]) => ({ route, name: m.name, group: m.group, keywords: m.keywords || [], actions: m.actions || [] })),
+  'ui.navigate': async (a) => {
+    if (!Object.prototype.hasOwnProperty.call(ROUTE_INDEX, a.route)) {
+      throw new AgentBadArgs(`unknown route '${a.route}' — call ui.routes for the list`);
+    }
+    nav(a.route);
+    return { route: a.route };
+  },
+};
+
+function agentListMaster(table, cols, a) {
+  // `table` and `cols` are literals from this file only — never caller input.
+  // Caller input reaches SQL exclusively as bound parameters.
+  const clauses = [];
+  const params = [];
+  if (!a.includeArchived) clauses.push('archived = 0');
+  if (a.q) { clauses.push('name LIKE ?'); params.push(`%${a.q}%`); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  params.push(a.limit, a.offset);
+  const res = STATE.db.exec(`SELECT ${cols.join(', ')} FROM ${table} ${where} ORDER BY id LIMIT ? OFFSET ?`, params);
+  const total = agentRows(STATE.db.exec(`SELECT COUNT(*) AS n FROM ${table} ${where.replace(/ LIMIT.*$/, '')}`, params.slice(0, params.length - 2)));
+  return { rows: agentRows(res), total: total.length ? total[0].n : null, limit: a.limit, offset: a.offset, includeArchived: !!a.includeArchived };
+}
+
+// --- typed dispatcher errors -------------------------------------------------
+
+class AgentBadArgs extends Error { constructor(m) { super(m); this.agentCode = 'E_BAD_ARGS'; } }
+
+// --- the parity selftest — the check that guards this surface ----------------
+
+function runAgentSelftest() {
+  const failures = [];
+  const manifest = buildAgentManifest();
+  const declared = new Set(Object.keys(BAHI_AGENT_COMMAND_SPECS));
+  const implemented = new Set(Object.keys(BAHI_AGENT_HANDLERS));
+
+  // P1/P2 — the two doors must name the same commands.
+  for (const n of declared) if (!implemented.has(n)) failures.push(`P1 declared but not dispatchable: ${n}`);
+  for (const n of implemented) if (!declared.has(n)) failures.push(`P2 dispatchable but not declared: ${n}`);
+
+  // P3 — every route a command claims must be a real UI route.
+  for (const [name, s] of Object.entries(BAHI_AGENT_COMMAND_SPECS)) {
+    if (s.route && !Object.prototype.hasOwnProperty.call(ROUTE_INDEX, s.route)) failures.push(`P3 command ${name} claims unknown route ${s.route}`);
+  }
+
+  // P4 — every UI route is either covered by a command or explicitly declared a
+  // gap. This is what stops the agent face silently falling behind the UI.
+  const covered = new Set(Object.values(BAHI_AGENT_COMMAND_SPECS).map((s) => s.route).filter(Boolean));
+  const gapped = new Set(BAHI_AGENT_GAPS.map((g) => g.route));
+  for (const route of Object.keys(ROUTE_INDEX)) {
+    if (!covered.has(route) && !gapped.has(route)) failures.push(`P4 UI route neither covered nor declared as a gap: ${route}`);
+  }
+  for (const g of BAHI_AGENT_GAPS) {
+    if (!Object.prototype.hasOwnProperty.call(ROUTE_INDEX, g.route)) failures.push(`P4b gap names unknown route: ${g.route}`);
+    if (!g.reason || g.reason.length < 10) failures.push(`P4c gap without a real reason: ${g.route}`);
+  }
+
+  // P5 — a command with no summary or no param spec is not a published contract.
+  for (const c of manifest.commands) {
+    if (!c.summary || c.summary.length < 10) failures.push(`P5 command ${c.name} has no usable summary`);
+    if (!Array.isArray(c.params)) failures.push(`P5 command ${c.name} has no param list`);
+    if (!c.scope) failures.push(`P5 command ${c.name} has no scope`);
+  }
+
+  // P6 — the dispatcher must not be able to emit a code the manifest omits.
+  const manifestCodes = new Set(manifest.errors.map((e) => e.code));
+  for (const code of ['E_UNKNOWN_COMMAND', 'E_BAD_ARGS', 'E_NO_FILE', 'E_READONLY', 'E_ENGINE', 'E_INTERNAL']) {
+    if (!manifestCodes.has(code)) failures.push(`P6 dispatcher can emit undeclared error code ${code}`);
+  }
+
+  // P7 — no mutating command may be reachable without the file scope that makes
+  // it attributable, and no read may be mislabelled as mutating.
+  for (const [name, s] of Object.entries(BAHI_AGENT_COMMAND_SPECS)) {
+    if (s.mutating && s.scope !== 'file') failures.push(`P7 mutating command ${name} is not file-scoped`);
+  }
+
+  return { pass: failures.length === 0, checks: 7, declared: declared.size, implemented: implemented.size, routes: Object.keys(ROUTE_INDEX).length, covered: covered.size, gaps: gapped.size, failures };
+}
+
+// --- the dispatcher ----------------------------------------------------------
+
+// Calls are serialised. Two agents (or an agent and a retry) must not interleave
+// SQLite transactions on one connection — postEntry uses SAVEPOINT and would
+// nest incorrectly under a concurrent BEGIN.
+let _agentQueue = Promise.resolve();
+
+function agentFail(code, message, extra) {
+  return { ok: false, error: Object.assign({ code, message }, extra || {}) };
+}
+
+async function agentDispatch(command, args) {
+  if (typeof command !== 'string' || !Object.prototype.hasOwnProperty.call(BAHI_AGENT_COMMAND_SPECS, command)) {
+    return agentFail('E_UNKNOWN_COMMAND', `Unknown command ${JSON.stringify(command)}.`, { hint: 'Call agent.commands for the list.' });
+  }
+  const spec = BAHI_AGENT_COMMAND_SPECS[command];
+
+  const v = agentValidate(spec.params, args);
+  if (v.errs) return agentFail('E_BAD_ARGS', `Invalid arguments for ${command}: ${v.errs.join('; ')}`, { command, problems: v.errs });
+
+  // A backwards range is a caller mistake, not an empty period. Returning ok with
+  // every section zeroed lets a reversed GSTR-1 read as an authoritative nil return.
+  if (spec.range) {
+    const [lo, hi] = spec.range;
+    if (v.value[lo] && v.value[hi] && v.value[lo] > v.value[hi]) {
+      return agentFail('E_BAD_ARGS', `Invalid arguments for ${command}: '${lo}' (${v.value[lo]}) is after '${hi}' (${v.value[hi]})`, { command, problems: [`${lo} must be on or before ${hi}`] });
+    }
+  }
+
+  if (spec.scope === 'file' && !(STATE.db && STATE.manifest)) {
+    return agentFail('E_NO_FILE', `${command} needs an open .khata file.`, { command });
+  }
+  if (spec.mutating && STATE.readOnly) {
+    return agentFail('E_READONLY', AGENT_ERRORS.E_READONLY, { command });
+  }
+
+  try {
+    const data = await BAHI_AGENT_HANDLERS[command](v.value);
+    return { ok: true, data };
+  } catch (e) {
+    const code = (e && e.agentCode) || 'E_ENGINE';
+    return agentFail(code, String((e && e.message) || e), { command });
+  }
+}
+
+window.bahi = {
+  version: BAHI_AGENT_API_VERSION,
+  // The one entry point. Never throws, never rejects.
+  call(command, args) {
+    const run = () => agentDispatch(command, args).catch((e) => agentFail('E_INTERNAL', String((e && e.message) || e), { command }));
+    const p = _agentQueue.then(run, run);
+    _agentQueue = p.then(() => {}, () => {});
+    return p;
+  },
+  manifest: () => buildAgentManifest(),
+  commands: () => Object.keys(BAHI_AGENT_COMMAND_SPECS),
+};
+
+
 window._bahi = {
   closeFile: () => { closeCurrentFile(); nav('#/workspace'); },
   backupNow: () => backupNow(),

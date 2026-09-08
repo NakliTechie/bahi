@@ -1,0 +1,729 @@
+{
+  "api": "bahi.agent",
+  "version": "1.0.0",
+  "app": {
+    "name": "Bahi",
+    "khataFormatVersion": "1.0",
+    "schemaVersion": 12
+  },
+  "units": {
+    "money": "integer paise; 100 paise = ₹1. Never a float, never a formatted string.",
+    "date": "ISO-8601 calendar date, YYYY-MM-DD. No timestamps, no locales."
+  },
+  "limits": {
+    "maxPaisePerLine": 2147483647,
+    "maxPaiseNote": "Engine paths coerce with `| 0`, which truncates above 2^31-1. Amounts beyond this are refused at the boundary rather than silently wrapped.",
+    "maxJournalLines": 500
+  },
+  "conventions": {
+    "returns": "Every call resolves {ok:true,data} or {ok:false,error:{code,message}}. It never throws and never rejects.",
+    "attribution": "Mutating calls are recorded in the append-only audit log with actor 'agent' or 'agent:<agentName>'. agentName is restricted to [A-Za-z0-9._-] so the 'agent:<name>' grammar stays unambiguous — a colon in the name would let an agent shape an actor string a reader could mistake for another principal ('owner', 'ca', 'ai', 'system').",
+    "mutatingFlag": "Commands with mutating:true change the books. Everything else is a pure read.",
+    "ranges": "A command with a `range` pair rejects a start later than its end with E_BAD_ARGS. A backwards range is a caller mistake, not an empty period — a reversed GST period must never return as a nil filing.",
+    "nullIsAbsent": "For an OPTIONAL parameter, null and undefined both mean \"not supplied\" and the declared default applies. A required parameter is never satisfied by null."
+  },
+  "errors": [
+    {
+      "code": "E_UNKNOWN_COMMAND",
+      "meaning": "No such command. Call agent.commands for the list."
+    },
+    {
+      "code": "E_BAD_ARGS",
+      "meaning": "Arguments failed the command's declared parameter spec."
+    },
+    {
+      "code": "E_NO_FILE",
+      "meaning": "No .khata file is open. Open one before calling file-scoped commands."
+    },
+    {
+      "code": "E_READONLY",
+      "meaning": "File is open read-only (newer .khata format than this build) — mutations refused."
+    },
+    {
+      "code": "E_ENGINE",
+      "meaning": "The accounting engine refused the operation (its message is passed through)."
+    },
+    {
+      "code": "E_INTERNAL",
+      "meaning": "Unexpected failure inside the dispatcher. This is a bug — report it."
+    }
+  ],
+  "commands": [
+    {
+      "name": "agent.manifest",
+      "summary": "The full machine-readable command manifest.",
+      "mutating": false,
+      "scope": "app",
+      "route": null,
+      "params": []
+    },
+    {
+      "name": "agent.commands",
+      "summary": "Command names only, for cheap discovery.",
+      "mutating": false,
+      "scope": "app",
+      "route": null,
+      "params": []
+    },
+    {
+      "name": "agent.health",
+      "summary": "Is the surface up, and is a file open?",
+      "mutating": false,
+      "scope": "app",
+      "route": null,
+      "params": []
+    },
+    {
+      "name": "agent.selftest",
+      "summary": "Manifest/dispatcher/route parity assertions. The check that guards this surface.",
+      "mutating": false,
+      "scope": "app",
+      "route": null,
+      "params": []
+    },
+    {
+      "name": "file.info",
+      "summary": "Company identity, versions, and integrity heads of the open file.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/file",
+      "params": []
+    },
+    {
+      "name": "file.save",
+      "summary": "Persist the in-memory books to disk (same path as Ctrl+S).",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/file",
+      "params": []
+    },
+    {
+      "name": "file.verifyIntegrity",
+      "summary": "Walk the audit hash chain and verify every ECDSA signature.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/debug",
+      "params": []
+    },
+    {
+      "name": "file.auditTail",
+      "summary": "The most recent audit-log entries, newest first. Read your own writes back and confirm attribution.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/debug",
+      "params": [
+        {
+          "name": "limit",
+          "type": "int",
+          "required": false,
+          "default": 20,
+          "min": 1,
+          "max": 500
+        }
+      ]
+    },
+    {
+      "name": "masters.customers",
+      "summary": "List customers.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/customers",
+      "params": [
+        {
+          "name": "q",
+          "type": "string",
+          "required": false,
+          "maxLength": 200
+        },
+        {
+          "name": "limit",
+          "type": "int",
+          "required": false,
+          "default": 100,
+          "min": 1,
+          "max": 1000
+        },
+        {
+          "name": "offset",
+          "type": "int",
+          "required": false,
+          "default": 0,
+          "min": 0
+        },
+        {
+          "name": "includeArchived",
+          "type": "bool",
+          "required": false,
+          "default": false
+        }
+      ]
+    },
+    {
+      "name": "masters.vendors",
+      "summary": "List vendors.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/vendors",
+      "params": [
+        {
+          "name": "q",
+          "type": "string",
+          "required": false,
+          "maxLength": 200
+        },
+        {
+          "name": "limit",
+          "type": "int",
+          "required": false,
+          "default": 100,
+          "min": 1,
+          "max": 1000
+        },
+        {
+          "name": "offset",
+          "type": "int",
+          "required": false,
+          "default": 0,
+          "min": 0
+        },
+        {
+          "name": "includeArchived",
+          "type": "bool",
+          "required": false,
+          "default": false
+        }
+      ]
+    },
+    {
+      "name": "masters.items",
+      "summary": "List items / services.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/items",
+      "params": [
+        {
+          "name": "q",
+          "type": "string",
+          "required": false,
+          "maxLength": 200
+        },
+        {
+          "name": "limit",
+          "type": "int",
+          "required": false,
+          "default": 100,
+          "min": 1,
+          "max": 1000
+        },
+        {
+          "name": "offset",
+          "type": "int",
+          "required": false,
+          "default": 0,
+          "min": 0
+        },
+        {
+          "name": "includeArchived",
+          "type": "bool",
+          "required": false,
+          "default": false
+        }
+      ]
+    },
+    {
+      "name": "masters.accounts",
+      "summary": "List chart-of-accounts entries (id + name + type).",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/debug",
+      "params": [
+        {
+          "name": "q",
+          "type": "string",
+          "required": false,
+          "maxLength": 200
+        },
+        {
+          "name": "limit",
+          "type": "int",
+          "required": false,
+          "default": 500,
+          "min": 1,
+          "max": 1000
+        },
+        {
+          "name": "offset",
+          "type": "int",
+          "required": false,
+          "default": 0,
+          "min": 0
+        },
+        {
+          "name": "includeArchived",
+          "type": "bool",
+          "required": false,
+          "default": false
+        }
+      ]
+    },
+    {
+      "name": "report.trialBalance",
+      "summary": "Trial balance as of a date, with the Dr=Cr tie check.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/trial-balance",
+      "params": [
+        {
+          "name": "asOf",
+          "type": "date",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "report.balanceSheet",
+      "summary": "Balance sheet as of a date.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/balance-sheet",
+      "params": [
+        {
+          "name": "asOf",
+          "type": "date",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "report.dayBook",
+      "summary": "Every voucher posted in a date range.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/day-book",
+      "range": [
+        "from",
+        "to"
+      ],
+      "params": [
+        {
+          "name": "from",
+          "type": "date",
+          "required": true
+        },
+        {
+          "name": "to",
+          "type": "date",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "report.accountLedger",
+      "summary": "One account's ledger over a date range.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/account-ledger",
+      "range": [
+        "from",
+        "to"
+      ],
+      "params": [
+        {
+          "name": "accountId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "from",
+          "type": "date",
+          "required": true
+        },
+        {
+          "name": "to",
+          "type": "date",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "report.receivablesAging",
+      "summary": "Receivables aged into buckets as of a date.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/dashboard",
+      "params": [
+        {
+          "name": "asOf",
+          "type": "date",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "report.stockOnHand",
+      "summary": "Closing stock per item per godown.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/stock-on-hand",
+      "params": [
+        {
+          "name": "itemId",
+          "type": "int",
+          "required": false,
+          "min": 1
+        },
+        {
+          "name": "godownId",
+          "type": "int",
+          "required": false,
+          "min": 1
+        }
+      ]
+    },
+    {
+      "name": "report.valuationSummary",
+      "summary": "Closing stock valuation as of a date (WAC/FIFO).",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/valuation-summary",
+      "params": [
+        {
+          "name": "asOf",
+          "type": "date",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "gst.gstr1",
+      "summary": "GSTR-1 outward-supplies data for a period.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/gstr1",
+      "range": [
+        "periodStart",
+        "periodEnd"
+      ],
+      "params": [
+        {
+          "name": "periodStart",
+          "type": "date",
+          "required": true
+        },
+        {
+          "name": "periodEnd",
+          "type": "date",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "gst.gstr3b",
+      "summary": "GSTR-3B summary for a period.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/gstr3b",
+      "range": [
+        "periodStart",
+        "periodEnd"
+      ],
+      "params": [
+        {
+          "name": "periodStart",
+          "type": "date",
+          "required": true
+        },
+        {
+          "name": "periodEnd",
+          "type": "date",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "tds.form26q",
+      "summary": "Form 26Q quarterly TDS return data.",
+      "mutating": false,
+      "scope": "file",
+      "route": "#/form-26q",
+      "params": [
+        {
+          "name": "fyStartYear",
+          "type": "int",
+          "required": true,
+          "min": 2000,
+          "max": 2200
+        },
+        {
+          "name": "quarter",
+          "type": "int",
+          "required": true,
+          "min": 1,
+          "max": 4
+        }
+      ]
+    },
+    {
+      "name": "journal.post",
+      "summary": "Post a balanced double-entry journal voucher. Dr must equal Cr. Stamped actor=agent.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/journal/new",
+      "params": [
+        {
+          "name": "lines",
+          "type": "array",
+          "required": true,
+          "minItems": 2,
+          "maxItems": 500
+        },
+        {
+          "name": "narration",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "voucherRef",
+          "type": "string",
+          "required": false,
+          "maxLength": 120
+        },
+        {
+          "name": "postedAt",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
+      "name": "ui.routes",
+      "summary": "Every UI route with its group, keywords and actions (the first door's index).",
+      "mutating": false,
+      "scope": "app",
+      "route": null,
+      "params": []
+    },
+    {
+      "name": "ui.navigate",
+      "summary": "Navigate the UI to a known route. Route must exist in the route index.",
+      "mutating": false,
+      "scope": "app",
+      "route": null,
+      "params": [
+        {
+          "name": "route",
+          "type": "string",
+          "required": true,
+          "maxLength": 80
+        }
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "route": "#/workspace",
+      "reason": "File create/open/restore need the native file picker — no headless path."
+    },
+    {
+      "route": "#/invoice/new",
+      "reason": "Invoice creation lives in the form handler, not a pure engine function. Post the ledger effect via journal.post meanwhile."
+    },
+    {
+      "route": "#/credit-note/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/purchase/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/debit-note/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/payment/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/vendor-payment/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/tcs-collection/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/advance/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/delivery-challan/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/eway-bill/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/stock-transfer/out/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/stock-transfer/in/import",
+      "reason": "Needs a file import."
+    },
+    {
+      "route": "#/ca/adjustment/new",
+      "reason": "As #/invoice/new."
+    },
+    {
+      "route": "#/pnl",
+      "reason": "P&L is computed inside renderPnL and has no pure engine function yet. Derive from report.trialBalance meanwhile."
+    },
+    {
+      "route": "#/invoices",
+      "reason": "Read-only list not yet exposed; report.dayBook covers the ledger effect."
+    },
+    {
+      "route": "#/purchases",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/credit-notes",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/debit-notes",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/payments",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/advances",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/eway-bills",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/stock-transfers",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/delivery-challans",
+      "reason": "As #/invoices."
+    },
+    {
+      "route": "#/sales-register",
+      "reason": "Not yet exposed; derive from report.dayBook."
+    },
+    {
+      "route": "#/purchase-register",
+      "reason": "Not yet exposed; derive from report.dayBook."
+    },
+    {
+      "route": "#/inventory",
+      "reason": "Dashboard aggregate; report.stockOnHand + report.valuationSummary cover the data."
+    },
+    {
+      "route": "#/stock-movements",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/stock-register",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/batches",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/reorder-alerts",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/stock-aging",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/godowns",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/series",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/cmp08",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/form-27eq",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/form-27d",
+      "reason": "PDF generation, not data."
+    },
+    {
+      "route": "#/tax-challans",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/period-locks",
+      "reason": "Mutating compliance state — deliberately kept out of the agent face for now."
+    },
+    {
+      "route": "#/fy-rollover",
+      "reason": "Irreversible year-end wizard — deliberately human-only."
+    },
+    {
+      "route": "#/bank-reconcile",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/ca/review",
+      "reason": "CA sign-off is a human judgement — deliberately human-only."
+    },
+    {
+      "route": "#/annotations",
+      "reason": "Not yet exposed."
+    },
+    {
+      "route": "#/ca/report",
+      "reason": "PDF generation, not data."
+    },
+    {
+      "route": "#/reconcile",
+      "reason": "Merge of divergent branches — deliberately human-only."
+    },
+    {
+      "route": "#/dashboard",
+      "reason": "Aggregate view; report.receivablesAging covers the headline number."
+    },
+    {
+      "route": "#/debug",
+      "reason": "Raw SQL by design — deliberately NOT reachable from the agent face."
+    },
+    {
+      "route": "#/settings",
+      "reason": "Local preferences, not books data."
+    },
+    {
+      "route": "#/ref-data-update",
+      "reason": "Network fetch of reference data — deliberately human-triggered."
+    }
+  ]
+}

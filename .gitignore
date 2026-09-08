@@ -48,3 +48,15 @@ corpus/**/.DS_Store
 # smoke/ — first-run smoke test (pre-deploy regression guard for create/open flows)
 !smoke
 !smoke/first-run-smoke.js
+
+# agent/ — the agent surface (doctrine 6: two doors, one core)
+!agent
+!agent/AGENT.md
+!agent/manifest.json
+!agent/harness
+!agent/harness/package.json
+!agent/harness/drive.mjs
+!agent/harness/checks.mjs
+!agent/harness/prove-red.mjs
+agent/harness/node_modules/
+agent/harness/package-lock.json

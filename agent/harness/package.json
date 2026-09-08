@@ -1,0 +1,13 @@
+{
+  "name": "bahi-agent-harness",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Drives Bahi's window.bahi agent surface in headless Chromium. Used by the agent-face check suite.",
+  "scripts": {
+    "check": "node checks.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

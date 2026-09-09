@@ -505,6 +505,331 @@
       ]
     },
     {
+      "name": "invoice.create",
+      "summary": "Raise and post a sales invoice: header, lines, GST routing, ledger entry and stock effect.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/invoice/new",
+      "params": [
+        {
+          "name": "customerId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "lines",
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "maxItems": 500
+        },
+        {
+          "name": "invoiceDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "invoiceNumber",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "series",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "placeOfSupply",
+          "type": "string",
+          "required": false,
+          "maxLength": 8,
+          "pattern": "^[A-Z]{2}$"
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "isComposition",
+          "type": "bool",
+          "required": false,
+          "default": false
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
+      "name": "purchase.create",
+      "summary": "Record and post a vendor purchase: header, lines, ITC/RCM routing, ledger entry and stock effect.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/purchase/new",
+      "params": [
+        {
+          "name": "vendorId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "billNumber",
+          "type": "string",
+          "required": true,
+          "maxLength": 60
+        },
+        {
+          "name": "lines",
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "maxItems": 500
+        },
+        {
+          "name": "billDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "internalRef",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "placeOfSupply",
+          "type": "string",
+          "required": false,
+          "maxLength": 8,
+          "pattern": "^[A-Z]{2}$"
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "reverseCharge",
+          "type": "bool",
+          "required": false,
+          "default": false
+        },
+        {
+          "name": "itcEligible",
+          "type": "bool",
+          "required": false,
+          "default": true
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
+      "name": "payment.create",
+      "summary": "Record and post a customer receipt, allocated against one or more invoices.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/payment/new",
+      "params": [
+        {
+          "name": "customerId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "bankAccountId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "allocations",
+          "type": "array",
+          "required": true,
+          "minItems": 1,
+          "maxItems": 500
+        },
+        {
+          "name": "paymentDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "paymentNumber",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "paymentMode",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "NEFT",
+            "RTGS",
+            "IMPS",
+            "UPI",
+            "Cheque",
+            "Cash",
+            "Card",
+            "Other"
+          ],
+          "maxLength": 20
+        },
+        {
+          "name": "reference",
+          "type": "string",
+          "required": false,
+          "maxLength": 120
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
+      "name": "creditNote.create",
+      "summary": "Raise and post a credit note against an invoice — full reversal, or partial by amount.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/credit-note/new",
+      "params": [
+        {
+          "name": "invoiceId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "cnDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "cnNumber",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "sales-return",
+            "rate-difference",
+            "discount",
+            "deficiency",
+            "other"
+          ],
+          "maxLength": 60
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "amount",
+          "type": "int",
+          "required": false,
+          "min": 1
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
+      "name": "debitNote.create",
+      "summary": "Raise and post a debit note against a purchase — full reversal, or partial by amount.",
+      "mutating": true,
+      "scope": "file",
+      "route": "#/debit-note/new",
+      "params": [
+        {
+          "name": "purchaseId",
+          "type": "int",
+          "required": true,
+          "min": 1
+        },
+        {
+          "name": "dnDate",
+          "type": "date",
+          "required": false
+        },
+        {
+          "name": "dnNumber",
+          "type": "string",
+          "required": false,
+          "maxLength": 60
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "purchase-return",
+            "rate-difference",
+            "quality-issue",
+            "other"
+          ],
+          "maxLength": 60
+        },
+        {
+          "name": "notes",
+          "type": "string",
+          "required": false,
+          "maxLength": 2000
+        },
+        {
+          "name": "amount",
+          "type": "int",
+          "required": false,
+          "min": 1
+        },
+        {
+          "name": "agentName",
+          "type": "string",
+          "required": false,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z0-9._-]{1,60}$"
+        }
+      ]
+    },
+    {
       "name": "ui.routes",
       "summary": "Every UI route with its group, keywords and actions (the first door's index).",
       "mutating": false,
@@ -534,48 +859,28 @@
       "reason": "File create/open/restore need the native file picker — no headless path."
     },
     {
-      "route": "#/invoice/new",
-      "reason": "Invoice creation lives in the form handler, not a pure engine function. Post the ledger effect via journal.post meanwhile."
-    },
-    {
-      "route": "#/credit-note/new",
-      "reason": "As #/invoice/new."
-    },
-    {
-      "route": "#/purchase/new",
-      "reason": "As #/invoice/new."
-    },
-    {
-      "route": "#/debit-note/new",
-      "reason": "As #/invoice/new."
-    },
-    {
-      "route": "#/payment/new",
-      "reason": "As #/invoice/new."
-    },
-    {
       "route": "#/vendor-payment/new",
-      "reason": "As #/invoice/new."
+      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/tcs-collection/new",
-      "reason": "As #/invoice/new."
+      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/advance/new",
-      "reason": "As #/invoice/new."
+      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/delivery-challan/new",
-      "reason": "As #/invoice/new."
+      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/eway-bill/new",
-      "reason": "As #/invoice/new."
+      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/stock-transfer/out/new",
-      "reason": "As #/invoice/new."
+      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/stock-transfer/in/import",
@@ -583,7 +888,7 @@
     },
     {
       "route": "#/ca/adjustment/new",
-      "reason": "As #/invoice/new."
+      "reason": "Creation still lives in the form handler; no engine function yet. invoice.create shows the shape the extraction takes."
     },
     {
       "route": "#/pnl",

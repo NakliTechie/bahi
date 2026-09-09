@@ -66,6 +66,11 @@ Branch on `error.code`, never on the message text.
 | `report.trialBalance` `report.balanceSheet` `report.dayBook` `report.accountLedger` `report.receivablesAging` `report.stockOnHand` `report.valuationSummary` | | Reports, as of a date or over a range. |
 | `gst.gstr1` `gst.gstr3b` `tds.form26q` | | Return data for a period or quarter. |
 | `journal.post` | **M** | Post a balanced double-entry voucher. |
+| `invoice.create` | **M** | Raise and post a sales invoice: header, lines, GST routing, ledger entry and stock effect. |
+| `purchase.create` | **M** | Record and post a vendor purchase, with ITC and reverse-charge routing. |
+| `payment.create` | **M** | Record and post a customer receipt, allocated against one or more invoices. |
+| `creditNote.create` | **M** | Raise and post a credit note against an invoice — full reversal or partial by amount. |
+| `debitNote.create` | **M** | Raise and post a debit note against a purchase — full reversal or partial by amount. |
 | `ui.routes` `ui.navigate` | | The first door's route index, and navigation to a known route. |
 
 ### `journal.post`
@@ -86,6 +91,51 @@ Posting into a **filed (locked) period** is allowed and flagged, exactly as the 
 the entry is marked an amendment rather than refused. The response tells you:
 `{ amendment: true, periodLock: { return_type, period_start, period_end } }`. A second door
 that is stricter than the first is still a divergence.
+
+### `invoice.create`
+
+```js
+await bahi.call('invoice.create', {
+  customerId: 12,
+  invoiceDate: '2026-02-11',                 // defaults to today
+  lines: [{
+    description: 'Paracetamol 500mg strip',
+    quantity: 10,                            // a number, not paise
+    rate: 15000,                             // ₹150.00 per unit, in paise
+    taxRate: 0.12,                           // a decimal fraction, not 12
+    hsnSac: '3004',                          // optional
+    itemId: 1,                               // optional; links the line to an item master
+    discount: 0,                             // optional, paise
+    cess: null,                              // optional; null derives it from the HSN table
+  }],
+  series: 'Domestic',                        // invoiceNumber is generated if you omit it
+  placeOfSupply: 'KA',                       // optional ISO state code; defaults to the customer's
+  agentName: 'my-agent',
+});
+```
+
+Intra-state supply splits into CGST and SGST, inter-state routes to IGST, and the ledger entry,
+the frozen company/customer snapshots and the stock effect all happen exactly as they do when a
+person fills the form. That is not an aspiration: check **C29** posts the same invoice through both
+doors and compares the stored header, every line and every ledger leg. They are identical, and the
+audit actor is the only thing that differs — `owner` from the form, `agent:<name>` from here.
+
+`taxRate` is a fraction (`0.18`), not a percentage. Passing `18` is refused rather than interpreted.
+
+`purchase.create` is the mirror, taking `vendorId` and a required `billNumber` (the vendor's own
+document number), plus `reverseCharge` and `itcEligible`. Purchase lines carry no `discount` and
+passing one is refused rather than ignored. `internalRef` is generated if you omit it. Check
+**C31** holds it to the same both-doors comparison as the invoice.
+
+`payment.create` takes `allocations: [{ invoiceId, amount }]` and the payment's amount is their
+sum — an unallocated receipt is an advance, a different voucher with different GST consequences.
+Every allocation must name an invoice belonging to that customer, which the API enforces and the
+form never did.
+
+`creditNote.create` and `debitNote.create` reverse a posted invoice or purchase, inheriting its
+frozen snapshots and place of supply. Omit `amount` for a full reversal or give paise for a
+partial one, which pro-rates every line. **Known gap, inherited:** the copied lines carry no
+cess, so a cess invoice's cess is not reversed on its credit note.
 
 ## What is deliberately not here
 
@@ -125,12 +175,20 @@ echo '[{"command":"agent.selftest"}]' | node drive.mjs --book pharma --calls -
 a sample name from `sample-data/`. Samples are copied to a temp dir first; the repo's books are
 never written to.
 
-`node checks.mjs` runs the full assertion suite (27 checks). Set `BAHI_FUTURE_KHATA` to a
-`.khata` whose `khataFormatVersion` is ahead of this build to exercise the read-only path.
-Every check prints the numbers it compared, passing or failing, so the output is evidence
-rather than a row of the word PASS.
+`node checks.mjs` runs the full assertion suite (35 checks). No fixtures to prepare: the
+read-only path builds its own future-format book in the page, from the sample. Every check
+prints the numbers it compared, passing or failing, so the output is evidence rather than a
+row of the word PASS.
 
-Five of the 27 are **reconciliation** checks. Where the others ask whether the surface obeys its
+`--only C24,C29` runs just those, and skips every batch that holds none of them — the
+structural checks need no browser at all and finish in under a second.
+
+Eight of the 35 are **two doors, one core** checks. Five assert that a voucher form carries no
+posting path of its own and delegates to the engine; two more (invoice and purchase) post the
+same voucher through the form AND through `window.bahi` and compare every stored field, requiring
+identical rows and *different* audit actors. One guards the signing keys across a save.
+
+Five are **reconciliation** checks. Where the others ask whether the surface obeys its
 contract, these ask whether it tells the truth — each takes two or three independent computations
 of the same quantity and requires them to agree, so no single wrong answer can satisfy both sides:
 
@@ -148,4 +206,9 @@ the sample book — it was comparing two empty sets.
 
 `node prove-red.mjs` reintroduces each defect those checks guard, one at a time, and confirms the
 matching check goes **red** — then restores the file and confirms green. A check never seen to fail
-is not a check, so the suite is only worth what this script says it is.
+is not a check, so the suite is only worth what this script says it is. `node prove-red.mjs C24,C29`
+proves a subset.
+
+It writes a deliberately broken `index.html` and repairs it, so it restores on `SIGINT`,
+`SIGTERM`, `SIGHUP`, an uncaught exception, and normal exit. An earlier version restored only at
+the end of an iteration; a run killed mid-way left the app defected on disk.

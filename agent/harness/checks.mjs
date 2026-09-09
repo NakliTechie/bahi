@@ -18,7 +18,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
 const DECLARED_CODES = ['E_UNKNOWN_COMMAND', 'E_BAD_ARGS', 'E_NO_FILE', 'E_READONLY', 'E_ENGINE', 'E_INTERNAL'];
 
-const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? process.argv[i + 1] : null; })();
+const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? process.argv[i + 1].split(',') : null; })();
+
+// Which checks a batch covers, so a targeted run launches only the browsers it needs.
+// The defect-prover runs one defect at a time; before this it paid for all eight browser
+// sessions to evaluate a single check, which is what saturated the machine.
+const BATCH_CHECKS = {
+  noFile:     ['C1', 'C2', 'C3', 'C4', 'C5'],
+  sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22'],
+  readOnly:   ['C21'],
+  reconcile:  ['C23', 'C24', 'C25', 'C26', 'C27'],
+  structural: ['C28', 'C30', 'C33', 'C34', 'C35'],
+  parity:     ['C29', 'C31'],
+  signing:    ['C32'],
+};
+const wants = (batch) => !only || BATCH_CHECKS[batch].some((c) => only.includes(c));
 
 const results = [];
 function record(id, title, pass, detail) { results.push({ id, title, pass, detail }); }
@@ -242,12 +256,11 @@ async function batchSample() {
 // manifest's khataFormatVersion bumped past this build; books.sqlite and its hash are
 // untouched, so the file is genuine, just from a newer Bahi.
 async function batchReadOnly() {
-  const future = process.env.BAHI_FUTURE_KHATA;
-  if (!future || !fs.existsSync(future)) {
-    record('C21', 'read-only file refuses mutations (E_READONLY)', false, 'BAHI_FUTURE_KHATA not set or missing — check skipped');
-    return null;
-  }
-  const run = await runCalls({ book: 'future', bookFile: future, calls: [
+  // The book is pharma.khata with its manifest's khataFormatVersion bumped past this
+  // build, rewritten in-page. books.sqlite and its signed hash are untouched, so the file
+  // is genuine — just from a newer Bahi. E_READONLY is a declared error code, and a
+  // declared code nothing can reach is a claim, not a contract.
+  const run = await runCalls({ book: 'pharma', futureFormat: true, calls: [
     { command: 'agent.health' },
     { command: 'report.trialBalance', args: { asOf: '2026-03-31' } },
     { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'ro' } },
@@ -412,12 +425,236 @@ async function batchReconcile() {
   return run;
 }
 
-const r1 = await batchNoFile();
-const r2 = await batchSample();
-const r3 = await batchReadOnly();
-const r4 = await batchReconcile();
 
-const shown = only ? results.filter((r) => r.id === only) : results;
+// --- batch 5: two doors, one core -------------------------------------------
+// The reason the voucher engine exists. For each voucher type: a structural check that
+// the form carries no posting path of its own, and a behavioural check that posts the
+// SAME voucher through the form and through window.bahi and compares the stored rows.
+//
+// Either check alone is weak. Structural alone would pass a form that calls the engine
+// and then also does something extra. Behavioural alone would pass a form that quietly
+// re-inlined the logic and happens to still agree today. Together they hold.
+
+const SET_VAL = `
+  // Fire BOTH events, the way a real user does. Some fields bind on 'input' (they read
+  // the element back at submit time) and some on 'change' (they update the form's own
+  // state object). Firing only one silently skipped place-of-supply and made the parity
+  // check compare two different inputs — a harness bug that looked exactly like a product bug.
+  const setVal = (el, v) => {
+    const proto = el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const fillLine = (cells) => {
+    let row = null;
+    for (const tr of document.querySelectorAll('table tbody tr')) { if (tr.querySelector('td:nth-child(4) input')) { row = tr; break; } }
+    if (!row) return 'no line row found';
+    setVal(row.querySelector('td:nth-child(1) input'), cells.description);
+    setVal(row.querySelector('td:nth-child(2) input'), cells.hsn);
+    setVal(row.querySelector('td:nth-child(3) input'), cells.qty);
+    setVal(row.querySelector('td:nth-child(4) input'), cells.rate);
+    const taxSel = row.querySelector('td:nth-child(5) select');
+    if (taxSel) setVal(taxSel, cells.tax);
+    return null;
+  };`;
+
+// One voucher type's parity spec: how to drive its form, how to read the row back, and
+// what the agent call is that should match.
+const VOUCHERS = [
+  {
+    id: 'invoice', checkStructural: 'C28', checkParity: 'C29',
+    formFn: 'renderInvoiceForm',
+    engineCall: 'createInvoice(STATE.db',
+    banned: ['INSERT INTO invoices', 'postInvoiceToLedger(', 'postInvoiceStockEffects(', "STATE.db.run('BEGIN')"],
+    uiScript: `${SET_VAL}
+      nav('#/invoice/new'); await sleep(400);
+      setVal(document.getElementById('iv-customer'), '1'); await sleep(150);
+      setVal(document.getElementById('iv-date'), '2026-02-11');
+      const e = fillLine({ description: 'Parity probe line', hsn: '3004', qty: '10', rate: '150.00', tax: '0.12' });
+      if (e) return { error: e };
+      await sleep(250);
+      const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Post invoice & save');
+      if (!btn) return { error: 'post button not found' };
+      if (btn.disabled) return { error: 'post button disabled — the preview computed no total' };
+      btn.click(); await sleep(1800);
+      return { route: location.hash };`,
+    readSql: {
+      head: "SELECT id, invoice_number, series, customer_id, invoice_date, place_of_supply, place_of_supply_name, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, customer_snapshot, ledger_entry_id FROM invoices ORDER BY id DESC LIMIT 1",
+      lines: "SELECT line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no",
+      volatile: ['id', 'invoice_number', 'ledger_entry_id'],
+    },
+    agentCall: { command: 'invoice.create', args: { customerId: 1, invoiceDate: '2026-02-11', agentName: 'parity',
+      lines: [{ description: 'Parity probe line', hsnSac: '3004', quantity: 10, rate: 15000, taxRate: 0.12 }] } },
+  },
+  {
+    id: 'purchase', checkStructural: 'C30', checkParity: 'C31',
+    formFn: 'renderPurchaseForm',
+    engineCall: 'createPurchase(STATE.db',
+    banned: ['INSERT INTO purchases', 'postPurchaseToLedger(', 'postPurchaseStockEffects(', "STATE.db.run('BEGIN')"],
+    uiScript: `${SET_VAL}
+      nav('#/purchase/new'); await sleep(400);
+      setVal(document.getElementById('pu-vendor'), '1'); await sleep(150);
+      setVal(document.getElementById('pu-bill'), 'VB-PARITY-UI');
+      setVal(document.getElementById('pu-date'), '2026-02-12');
+      setVal(document.getElementById('pu-pos'), 'MH');
+      await sleep(150);
+      const e = fillLine({ description: 'API bulk drum', hsn: '2941', qty: '5', rate: '2500.00', tax: '0.18' });
+      if (e) return { error: e };
+      await sleep(250);
+      const btn = [...document.querySelectorAll('button')].find(b => /Post purchase/i.test(b.textContent.trim()));
+      if (!btn) return { error: 'post button not found: ' + [...document.querySelectorAll('button')].map(b => b.textContent.trim()).join('|') };
+      if (btn.disabled) return { error: 'post button disabled — the preview computed no total' };
+      btn.click(); await sleep(1800);
+      return { route: location.hash };`,
+    readSql: {
+      head: "SELECT id, bill_number, internal_ref, vendor_id, bill_date, place_of_supply, place_of_supply_name, reverse_charge, itc_eligible, subtotal, cgst, sgst, igst, cess, total, notes, status, company_snapshot, vendor_snapshot, ledger_entry_id FROM purchases ORDER BY id DESC LIMIT 1",
+      lines: "SELECT line_no, item_id, description, hsn_sac, quantity, rate, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, itc_eligible, total FROM purchase_lines WHERE purchase_id = ? ORDER BY line_no",
+      // bill_number is the vendor's own number and differs per document, as does the
+      // generated internal_ref — two different purchases, deliberately.
+      volatile: ['id', 'bill_number', 'internal_ref', 'ledger_entry_id'],
+    },
+    agentCall: { command: 'purchase.create', args: { vendorId: 1, billNumber: 'VB-PARITY-API', billDate: '2026-02-12',
+      placeOfSupply: 'MH', agentName: 'parity',
+      lines: [{ description: 'API bulk drum', hsnSac: '2941', quantity: 5, rate: 250000, taxRate: 0.18 }] } },
+  },
+];
+
+// Forms that delegate but carry no behavioural parity check. Each behavioural check costs
+// two browser sessions in every suite run and every defect-prover iteration, so parity is
+// proven on the two vouchers with the most computation (invoice, purchase) and the rest are
+// held structurally. That is a trade-off, not an oversight — see the run record.
+const STRUCTURAL_ONLY = [
+  { id: 'payment', check: 'C33', formFn: 'renderPaymentForm', engineCall: 'createPayment(STATE.db',
+    banned: ['INSERT INTO payments', 'postPaymentToLedger(', "STATE.db.run('BEGIN')"] },
+  { id: 'credit note', check: 'C34', formFn: 'renderCreditNoteForm', engineCall: 'createCreditNote(STATE.db',
+    banned: ['INSERT INTO credit_notes', 'postCreditNoteToLedger(', 'postCreditNoteStockEffects(', "STATE.db.run('BEGIN')"] },
+  { id: 'debit note', check: 'C35', formFn: 'renderDebitNoteForm', engineCall: 'createDebitNote(STATE.db',
+    banned: ['INSERT INTO debit_notes', 'postDebitNoteToLedger(', 'postDebitNoteStockEffects(', "STATE.db.run('BEGIN')"] },
+];
+
+// Structural half — reads index.html and nothing else. No browser, no book, no server.
+// Separated from the behavioural half so proving a structural check costs milliseconds.
+async function batchStructural() {
+  const src = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
+
+  const formSourceOf = (formFn) => {
+    const a = src.indexOf(`function ${formFn}(`);
+    if (a < 0) return '';
+    const m = src.slice(a + 10).match(/\nfunction [A-Za-z0-9_]+\(/);
+    return m ? src.slice(a, a + 10 + m.index) : '';
+  };
+
+  for (const v of STRUCTURAL_ONLY) {
+    const formSrc = formSourceOf(v.formFn);
+    const found = v.banned.filter((t) => formSrc.includes(t));
+    record(v.check, `the ${v.id} form delegates: no posting path of its own`,
+      formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
+      formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
+  }
+
+  for (const v of VOUCHERS) {
+    // Structural: the form delegates and carries no posting path of its own.
+    const a = src.indexOf(`function ${v.formFn}(`);
+    const rest = a > -1 ? src.slice(a + 10) : '';
+    const m = rest.match(/\nfunction [A-Za-z0-9_]+\(/);
+    const formSrc = (a > -1 && m) ? src.slice(a, a + 10 + m.index) : '';
+    const found = v.banned.filter((t) => formSrc.includes(t));
+    record(v.checkStructural, `the ${v.id} form delegates: no posting path of its own`,
+      formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
+      formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
+  }
+  return null;
+}
+
+// Behavioural half — drives both doors in a real browser. One session per voucher.
+async function batchParity() {
+  for (const v of VOUCHERS) {
+    // Behavioural: same voucher, both doors, compare every stored field.
+    const READ = (door) => `
+      const r = STATE.db.exec(${JSON.stringify(v.readSql.head)});
+      if (!r.length) return { door: '${door}', error: 'no rows' };
+      const head = Object.fromEntries(r[0].columns.map((c, i) => [c, r[0].values[0][i]]));
+      const lr = STATE.db.exec(${JSON.stringify(v.readSql.lines)}, [head.id]);
+      const lines = lr.length ? lr[0].values.map(x => Object.fromEntries(lr[0].columns.map((c, i) => [c, x[i]]))) : [];
+      const er = STATE.db.exec('SELECT account_id, account_name, debit, credit FROM entry_lines WHERE entry_id = ? ORDER BY id', [head.ledger_entry_id]);
+      const entry = er.length ? er[0].values.map(x => Object.fromEntries(er[0].columns.map((c, i) => [c, x[i]]))) : [];
+      const ar = STATE.db.exec('SELECT actor FROM audit_log ORDER BY id DESC LIMIT 1');
+      return { door: '${door}', head, lines, entry, actor: ar.length ? ar[0].values[0][0] : null };`;
+
+    const run = await runCalls({ book: 'pharma', calls: [
+      { evalJs: v.uiScript, label: 'ui-post' },
+      { evalJs: READ('ui'), label: 'ui-read' },
+      v.agentCall,
+      { evalJs: READ('agent'), label: 'agent-read' },
+    ] });
+
+    const uiPost = run.results[0].value || {};
+    const ui = run.results[1].value || {};
+    const agentCall = run.results[2];
+    const ag = run.results[3].value || {};
+    const VOLATILE = new Set(v.readSql.volatile);
+    const diffs = [];
+    if (ui.head && ag.head) {
+      for (const k of Object.keys(ui.head)) if (!VOLATILE.has(k) && ui.head[k] !== ag.head[k]) diffs.push(`${k}: ${JSON.stringify(ui.head[k])} vs ${JSON.stringify(ag.head[k])}`);
+      if (ui.lines.length !== ag.lines.length) diffs.push(`lineCount ${ui.lines.length} vs ${ag.lines.length}`);
+      else ui.lines.forEach((l, i) => { for (const k of Object.keys(l)) if (l[k] !== ag.lines[i][k]) diffs.push(`line[${i}].${k}: ${JSON.stringify(l[k])} vs ${JSON.stringify(ag.lines[i][k])}`); });
+      if (ui.entry.length !== ag.entry.length) diffs.push(`ledgerLegs ${ui.entry.length} vs ${ag.entry.length}`);
+      else ui.entry.forEach((e, i) => { for (const k of Object.keys(e)) if (e[k] !== ag.entry[i][k]) diffs.push(`entry[${i}].${k}: ${JSON.stringify(e[k])} vs ${JSON.stringify(ag.entry[i][k])}`); });
+    }
+    const bothPosted = !uiPost.error && !!ui.head && ok(agentCall) && !!ag.head;
+    // Identical books, different hands — and the log must say which.
+    const attribution = ui.actor === 'owner' && ag.actor === 'agent:parity';
+    const nonTrivial = !!ui.head && ui.head.total > 0 && ui.lines.length > 0 && ui.entry.length >= 3;
+
+    record(v.checkParity, `the ${v.id} form and window.bahi produce identical rows, with different audit actors`,
+      bothPosted && diffs.length === 0 && attribution && nonTrivial,
+      bothPosted
+        ? `total=${ui.head.total} lines=${ui.lines.length} legs=${ui.entry.length} diffs=${diffs.length ? diffs.join(' | ') : 'none'} actors=${ui.actor}/${ag.actor}`
+        : `ui=${uiPost.error || ui.error || 'ok'} agent=${ok(agentCall) ? 'ok' : JSON.stringify(err(agentCall))}`);
+  }
+  return null;
+}
+
+
+// --- batch 6: signing keys survive a save -----------------------------------
+// Found while exercising the voucher engine: opening a file on a new browser and saving
+// it dropped the ORIGINAL signer from the trusted-key set, so every historical audit
+// entry failed signature verification from that moment on. The audit log's per-entry
+// signatures are the tamper evidence; losing them silently is the worst kind of failure.
+async function batchSigningKeys() {
+  const run = await runCalls({ book: 'pharma', calls: [
+    { command: 'file.verifyIntegrity' },
+    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 500 }, { accountId: 2, credit: 500 }], agentName: 'keys' } },
+    { command: 'file.save' },
+    { command: 'file.verifyIntegrity' },
+  ] });
+  const [before, , save, after] = run.results;
+
+  // C32 — after a save on a browser the file has not seen before, EVERY entry still
+  // verifies: the historical ones against the original signer, the new ones against this
+  // browser's key. Reintroduce by re-homing integrity.signedBy before banking the outgoing
+  // signer, which is the ordering the bug had.
+  const b = ok(before) ? data(before) : null;
+  const a = ok(after) ? data(after) : null;
+  record('C32', 'a save keeps every historical signature verifiable (outgoing signer stays trusted)',
+    !!a && ok(save) && a.chainOk === true && a.signaturesBad === 0 && a.signaturesOk === a.entries && a.entries > 1000,
+    b && a ? `before ${b.signaturesOk}/${b.entries} ok (${b.signaturesBad} bad) -> after ${a.signaturesOk}/${a.entries} ok (${a.signaturesBad} bad)` : 'call failed');
+
+  return run;
+}
+
+// Batches run only when the selection needs them. A full run does all seven.
+if (wants('noFile'))     await batchNoFile();
+if (wants('sample'))     await batchSample();
+if (wants('readOnly'))   await batchReadOnly();
+if (wants('reconcile'))  await batchReconcile();
+if (wants('structural')) await batchStructural();
+if (wants('parity'))     await batchParity();
+if (wants('signing'))    await batchSigningKeys();
+
+const shown = only ? results.filter((r) => only.includes(r.id)) : results;
 let red = 0;
 for (const r of shown) {
   if (!r.pass) red++;

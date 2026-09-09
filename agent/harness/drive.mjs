@@ -102,7 +102,10 @@ const INSTALL_FAKE_PICKERS = () => {
 // book before the calls, used only to prove a check can go red (e.g. corrupting an
 // audit hash to confirm the integrity check actually detects it). It is a harness
 // capability and reaches nothing in the product surface.
-export async function runCalls({ book = 'fresh', bookFile = null, calls = [], tamper = null } = {}) {
+// `futureFormat` rewrites the sample's khataFormatVersion to a version ahead of this
+// build, in the page, using the app's own JSZip — so the read-only path is exercised
+// without a hand-built fixture sitting in someone's scratch directory waiting to rot.
+export async function runCalls({ book = 'fresh', bookFile = null, calls = [], tamper = null, futureFormat = false } = {}) {
   const { server, port } = await serve(REPO);
   const browser = await chromium.launch({ headless: true });
   const ctx = await browser.newContext();
@@ -133,11 +136,22 @@ export async function runCalls({ book = 'fresh', bookFile = null, calls = [], ta
     const dst = path.join(tmp, `scratch-${book}.khata`);
     fs.copyFileSync(src, dst);
     const bytes = Array.from(fs.readFileSync(dst));
-    opened = await page.evaluate(async ({ name, bytes }) => {
-      window.__harness.seed(name, bytes);
+    opened = await page.evaluate(async ({ name, bytes, future }) => {
+      let blob = new Blob([new Uint8Array(bytes)]);
+      if (future) {
+        const JSZip = await loadJSZip();
+        const zin = await JSZip.loadAsync(blob);
+        const mani = JSON.parse(await zin.file('manifest.json').async('text'));
+        mani.khataFormatVersion = '99.0';   // ahead of anything this build supports
+        zin.file('manifest.json', JSON.stringify(mani, null, 2));
+        // books.sqlite and its signed hash are untouched: a genuine file, from a newer Bahi.
+        blob = await zin.generateAsync({ type: 'blob' });
+      }
+      window.__harness.FS.set(name, blob);
+      window.__harness.openName = name;
       const id = await openExistingKhataFile();
-      return { kind: 'sample', name, workspaceId: id || null, fileOpen: !!(window.STATE_DEBUG || true) };
-    }, { name: path.basename(dst), bytes });
+      return { kind: future ? 'sample-future-format' : 'sample', name, workspaceId: id || null, readOnly: !!STATE.readOnly };
+    }, { name: path.basename(dst), bytes, future: futureFormat });
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 

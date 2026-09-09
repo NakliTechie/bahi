@@ -175,12 +175,20 @@ echo '[{"command":"agent.selftest"}]' | node drive.mjs --book pharma --calls -
 a sample name from `sample-data/`. Samples are copied to a temp dir first; the repo's books are
 never written to.
 
-`node checks.mjs` runs the full assertion suite (27 checks). Set `BAHI_FUTURE_KHATA` to a
-`.khata` whose `khataFormatVersion` is ahead of this build to exercise the read-only path.
-Every check prints the numbers it compared, passing or failing, so the output is evidence
-rather than a row of the word PASS.
+`node checks.mjs` runs the full assertion suite (35 checks). No fixtures to prepare: the
+read-only path builds its own future-format book in the page, from the sample. Every check
+prints the numbers it compared, passing or failing, so the output is evidence rather than a
+row of the word PASS.
 
-Five of the 27 are **reconciliation** checks. Where the others ask whether the surface obeys its
+`--only C24,C29` runs just those, and skips every batch that holds none of them — the
+structural checks need no browser at all and finish in under a second.
+
+Eight of the 35 are **two doors, one core** checks. Five assert that a voucher form carries no
+posting path of its own and delegates to the engine; two more (invoice and purchase) post the
+same voucher through the form AND through `window.bahi` and compare every stored field, requiring
+identical rows and *different* audit actors. One guards the signing keys across a save.
+
+Five are **reconciliation** checks. Where the others ask whether the surface obeys its
 contract, these ask whether it tells the truth — each takes two or three independent computations
 of the same quantity and requires them to agree, so no single wrong answer can satisfy both sides:
 
@@ -198,4 +206,9 @@ the sample book — it was comparing two empty sets.
 
 `node prove-red.mjs` reintroduces each defect those checks guard, one at a time, and confirms the
 matching check goes **red** — then restores the file and confirms green. A check never seen to fail
-is not a check, so the suite is only worth what this script says it is.
+is not a check, so the suite is only worth what this script says it is. `node prove-red.mjs C24,C29`
+proves a subset.
+
+It writes a deliberately broken `index.html` and repairs it, so it restores on `SIGINT`,
+`SIGTERM`, `SIGHUP`, an uncaught exception, and normal exit. An earlier version restored only at
+the end of an iteration; a run killed mid-way left the app defected on disk.

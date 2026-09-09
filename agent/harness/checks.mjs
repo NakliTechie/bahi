@@ -18,7 +18,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
 const DECLARED_CODES = ['E_UNKNOWN_COMMAND', 'E_BAD_ARGS', 'E_NO_FILE', 'E_READONLY', 'E_ENGINE', 'E_INTERNAL'];
 
-const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? process.argv[i + 1] : null; })();
+const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? process.argv[i + 1].split(',') : null; })();
+
+// Which checks a batch covers, so a targeted run launches only the browsers it needs.
+// The defect-prover runs one defect at a time; before this it paid for all eight browser
+// sessions to evaluate a single check, which is what saturated the machine.
+const BATCH_CHECKS = {
+  noFile:     ['C1', 'C2', 'C3', 'C4', 'C5'],
+  sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22'],
+  readOnly:   ['C21'],
+  reconcile:  ['C23', 'C24', 'C25', 'C26', 'C27'],
+  structural: ['C28', 'C30', 'C33', 'C34', 'C35'],
+  parity:     ['C29', 'C31'],
+  signing:    ['C32'],
+};
+const wants = (batch) => !only || BATCH_CHECKS[batch].some((c) => only.includes(c));
 
 const results = [];
 function record(id, title, pass, detail) { results.push({ id, title, pass, detail }); }
@@ -242,12 +256,11 @@ async function batchSample() {
 // manifest's khataFormatVersion bumped past this build; books.sqlite and its hash are
 // untouched, so the file is genuine, just from a newer Bahi.
 async function batchReadOnly() {
-  const future = process.env.BAHI_FUTURE_KHATA;
-  if (!future || !fs.existsSync(future)) {
-    record('C21', 'read-only file refuses mutations (E_READONLY)', false, 'BAHI_FUTURE_KHATA not set or missing — check skipped');
-    return null;
-  }
-  const run = await runCalls({ book: 'future', bookFile: future, calls: [
+  // The book is pharma.khata with its manifest's khataFormatVersion bumped past this
+  // build, rewritten in-page. books.sqlite and its signed hash are untouched, so the file
+  // is genuine — just from a newer Bahi. E_READONLY is a declared error code, and a
+  // declared code nothing can reach is a claim, not a contract.
+  const run = await runCalls({ book: 'pharma', futureFormat: true, calls: [
     { command: 'agent.health' },
     { command: 'report.trialBalance', args: { asOf: '2026-03-31' } },
     { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'ro' } },
@@ -521,7 +534,9 @@ const STRUCTURAL_ONLY = [
     banned: ['INSERT INTO debit_notes', 'postDebitNoteToLedger(', 'postDebitNoteStockEffects(', "STATE.db.run('BEGIN')"] },
 ];
 
-async function batchTwoDoors() {
+// Structural half — reads index.html and nothing else. No browser, no book, no server.
+// Separated from the behavioural half so proving a structural check costs milliseconds.
+async function batchStructural() {
   const src = fs.readFileSync(path.join(REPO, 'index.html'), 'utf8');
 
   const formSourceOf = (formFn) => {
@@ -549,7 +564,13 @@ async function batchTwoDoors() {
     record(v.checkStructural, `the ${v.id} form delegates: no posting path of its own`,
       formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
       formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
+  }
+  return null;
+}
 
+// Behavioural half — drives both doors in a real browser. One session per voucher.
+async function batchParity() {
+  for (const v of VOUCHERS) {
     // Behavioural: same voucher, both doors, compare every stored field.
     const READ = (door) => `
       const r = STATE.db.exec(${JSON.stringify(v.readSql.head)});
@@ -624,14 +645,16 @@ async function batchSigningKeys() {
   return run;
 }
 
-const r1 = await batchNoFile();
-const r2 = await batchSample();
-const r3 = await batchReadOnly();
-const r4 = await batchReconcile();
-const r5 = await batchTwoDoors();
-const r6 = await batchSigningKeys();
+// Batches run only when the selection needs them. A full run does all seven.
+if (wants('noFile'))     await batchNoFile();
+if (wants('sample'))     await batchSample();
+if (wants('readOnly'))   await batchReadOnly();
+if (wants('reconcile'))  await batchReconcile();
+if (wants('structural')) await batchStructural();
+if (wants('parity'))     await batchParity();
+if (wants('signing'))    await batchSigningKeys();
 
-const shown = only ? results.filter((r) => r.id === only) : results;
+const shown = only ? results.filter((r) => only.includes(r.id)) : results;
 let red = 0;
 for (const r of shown) {
   if (!r.pass) red++;

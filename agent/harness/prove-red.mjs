@@ -22,14 +22,14 @@ const MANIFEST = path.resolve(HERE, '..', 'manifest.json');
 // Each defect: the target check it must turn red, and a single unambiguous
 // find/replace against index.html that reintroduces the original bug.
 const DEFECTS = [
-  { id: 'C1', note: 'delete a handler so the manifest declares a command that cannot dispatch',
+  { id: 'C1', target: 'C1', also: ['C17'], note: 'delete a handler so the manifest declares a command that cannot dispatch',
     find: "  'ui.routes':   async () => Object.entries(ROUTE_INDEX)", replace: "  'ui.routes__BROKEN':   async () => Object.entries(ROUTE_INDEX)" },
   { id: 'C2', note: 'change a command summary in code without regenerating manifest.json',
     find: "summary: 'The full machine-readable command manifest.'", replace: "summary: 'The full machine-readable command manifest (drifted).'" },
   { id: 'C3', note: 'drop the unknown-command guard so an unknown name falls through to the handler lookup',
     find: "  if (typeof command !== 'string' || !Object.prototype.hasOwnProperty.call(BAHI_AGENT_COMMAND_SPECS, command)) {",
     replace: "  if (false) {" },
-  { id: 'C4', note: 'remove the file-scope guard so file commands run with no book open',
+  { id: 'C4', target: 'C4', also: ['C5'], note: 'remove the file-scope guard so file commands run with no book open',
     find: "  if (spec.scope === 'file' && !(STATE.db && STATE.manifest)) {", replace: "  if (false) {" },
   { id: 'C6', note: 'interpolate the q filter into SQL instead of binding it',
     find: "  if (a.q) { clauses.push('name LIKE ?'); params.push(`%${a.q}%`); }",
@@ -49,8 +49,9 @@ const DEFECTS = [
   { id: 'C12', note: 'let ui.navigate accept any string as a route',
     find: "    if (!Object.prototype.hasOwnProperty.call(ROUTE_INDEX, a.route)) {\n      throw new AgentBadArgs(`unknown route '${a.route}' — call ui.routes for the list`);\n    }",
     replace: "    if (false) { throw new AgentBadArgs('unreachable'); }" },
-  { id: 'C13', note: 'drop the agent attribution stamp so writes look like the owner did them',
-    find: "    const actor = a.agentName ? `agent:${a.agentName}` : 'agent';", replace: "    const actor = 'owner';" },
+  { id: 'C13', target: 'C13', also: ['C22'], note: 'drop the agent attribution stamp so writes look like the owner did them',
+    find: "  return (args && args.agentName) ? `agent:${args.agentName}` : 'agent';",
+    replace: "  return 'owner';" },
   { id: 'C10', note: 'swallow the engine assertion so an unbalanced voucher reports success',
     find: "    const res = await postEntry(STATE.db, {", replace: "    const res = await (async () => { try { return await postEntry(STATE.db, {" },
   // C16 guards two distinct promises. The first attempt (rethrow from the handler) did not
@@ -61,7 +62,8 @@ const DEFECTS = [
     find: "    const run = () => agentDispatch(command, args).catch((e) => agentFail('E_INTERNAL', String((e && e.message) || e), { command }));",
     replace: "    const run = () => agentDispatch(command, args);" },
   { id: 'C16b', target: 'C16', note: 'emit an error code the manifest never declares',
-    find: "    const code = (e && e.agentCode) || 'E_ENGINE';", replace: "    const code = (e && e.agentCode) || 'E_SOMETHING_ELSE';" },
+    find: "    const code = (e && e.agentCode) || (e && e.name === 'VoucherError' ? 'E_BAD_ARGS' : 'E_ENGINE');",
+    replace: "    const code = 'E_SOMETHING_ELSE';" },
   { id: 'C18', target: 'C18', note: 'let a handler log to the console instead of failing cleanly',
     find: "  'file.info': async () => {\n    const m = STATE.manifest;",
     replace: "  'file.info': async () => {\n    console.error('agent surface: noisy handler');\n    const m = STATE.manifest;" },
@@ -119,8 +121,8 @@ const DEFECTS = [
 
 // A defect may need a second edit to stay syntactically valid.
 const EXTRA = {
-  C16: { find: "  } catch (e) {\n    const code = (e && e.agentCode) || 'E_ENGINE';\n    return agentFail(code, String((e && e.message) || e), { command });\n  }",
-         replace: "  } finally { /* no catch: the throw escapes */ }" },
+  C16: { find: "  } catch (e) {\n    const code = (e && e.agentCode) || (e && e.name === 'VoucherError' ? 'E_BAD_ARGS' : 'E_ENGINE');\n    return agentFail(code, String((e && e.message) || e), { command, ...(e && e.field ? { problems: [`${e.field}: ${e.message}`] } : {}) });\n  } finally {",
+         replace: "  } finally {" },
   C10: { find: "    return { entryId: res.entryId, postedAt, actor, lineCount: lines.length, amendment: !!periodLock, periodLock };",
          replace: "    } catch (_) { return { entryId: -1 }; } })();\n    return { entryId: res.entryId, postedAt, actor, lineCount: lines.length, amendment: !!periodLock, periodLock };" },
 };
@@ -130,10 +132,36 @@ const wanted = sel ? DEFECTS.filter((d) => sel.includes(d.id)) : DEFECTS;
 const original = fs.readFileSync(APP, 'utf8');
 const originalManifest = fs.readFileSync(MANIFEST, 'utf8');
 
-function runSuite() {
+// This script deliberately writes a BROKEN index.html and then repairs it. If it dies
+// between those two moments the app is left defected — which is exactly what happened on
+// 2026-09-08 when the machine saturated and the run was killed. Restoring only at the end
+// of an iteration is unsafe by construction, so restore on every way out.
+let restored = false;
+function restoreApp(reason) {
+  if (restored) return;
+  restored = true;
   try {
-    const out = execFileSync('node', [path.join(HERE, 'checks.mjs')], { encoding: 'utf8', cwd: HERE, timeout: 600000 });
-    return out;
+    fs.writeFileSync(APP, original);
+    fs.writeFileSync(MANIFEST, originalManifest);
+    if (reason) process.stderr.write(`\nprove-red: restored index.html and manifest.json after ${reason}\n`);
+  } catch (e) {
+    process.stderr.write(`\nprove-red: COULD NOT RESTORE index.html — ${e.message}\n  git checkout -- index.html agent/manifest.json\n`);
+  }
+}
+process.on('exit', () => restoreApp(null));
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => { restoreApp(sig); process.exit(130); });
+}
+process.on('uncaughtException', (e) => { restoreApp('an uncaught exception'); process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(1); });
+process.on('unhandledRejection', (e) => { restoreApp('an unhandled rejection'); process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(1); });
+
+// Run ONLY the checks this defect targets. Evaluating one check used to cost the whole
+// suite — eight browser sessions — which is what made a full matrix unrunnable here.
+function runSuite(targets) {
+  const args = [path.join(HERE, 'checks.mjs')];
+  if (targets && targets.length) args.push('--only', targets.join(','));
+  try {
+    return execFileSync('node', args, { encoding: 'utf8', cwd: HERE, timeout: 900000 });
   } catch (e) { return String(e.stdout || '') + String(e.stderr || ''); }
 }
 
@@ -147,7 +175,7 @@ for (const d of wanted) {
     mutated = mutated.replace(extra.find, extra.replace);
   }
   fs.writeFileSync(APP, mutated);
-  const out = runSuite();
+  const out = runSuite([d.target || d.id, ...(d.also || [])]);
   fs.writeFileSync(APP, original);
   fs.writeFileSync(MANIFEST, originalManifest);
   const red = [...out.matchAll(/^FAIL\s+(C\d+)/gm)].map((m) => m[1]);
@@ -189,7 +217,7 @@ if (!sel || sel.includes('C15')) {
 // Restore, then confirm the untouched file is green again.
 fs.writeFileSync(APP, original);
 fs.writeFileSync(MANIFEST, originalManifest);
-const clean = runSuite();
+const clean = runSuite(null);
 const cleanRed = [...clean.matchAll(/^FAIL\s+(C\d+)/gm)].map((m) => m[1]);
 process.stdout.write(`\nRESTORED: ${cleanRed.length ? 'STILL RED ' + cleanRed.join(',') : 'all green'}\n`);
 const unproven = rows.filter((r) => r.status !== 'PROVEN');

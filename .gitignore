@@ -12,6 +12,9 @@
 !demo/**
 !sample-data
 !sample-data/**
+!marketing
+!marketing/social.png
+!social.png
 docs/.DS_Store
 demo/.DS_Store
 sample-data/.DS_Store

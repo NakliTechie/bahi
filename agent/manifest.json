@@ -1164,6 +1164,982 @@
       }
     },
     {
+      "name": "list_invoices",
+      "title": "List invoices",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/invoices",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Sales invoices of every status, newest first, with the amounts allocated, adjusted and still outstanding (paise). Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "customerId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only this customer's invoices."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_payments",
+      "title": "List customer receipts",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/payments",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Customer receipts, newest first, with mode, reference and bank account. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "customerId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only this customer's receipts."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_advances",
+      "title": "List advance receipts",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/advances",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Customer advances, newest first, with the taxable value, the amount adjusted against invoices and the open balance. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "customerId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only this customer's advances."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_purchases",
+      "title": "List purchases",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/purchases",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Posted purchases, latest bill date first, with reverse-charge and ITC flags. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "vendorId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only this vendor's purchases."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_credit_notes",
+      "title": "List credit notes",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/credit-notes",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Posted credit notes, latest first, with the invoice each one reverses. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "customerId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only this customer's credit notes."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_debit_notes",
+      "title": "List debit notes",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/debit-notes",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Posted debit notes, latest first, with the bill each one reverses. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "vendorId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only this vendor's debit notes."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_delivery_challans",
+      "title": "List delivery challans",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/delivery-challans",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Delivery challans, latest first, with party, vehicle and return status. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_eway_bills",
+      "title": "List e-way bills",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/eway-bills",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "E-way bills, latest first, with the document each one covers. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_stock_transfers",
+      "title": "List stock transfers",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/stock-transfers",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Inter-branch stock transfers, latest first, in both directions. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Earliest document date, inclusive."
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Latest document date, inclusive."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_sales_register",
+      "title": "Get sales register",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/sales-register",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Posted invoices in a date range, oldest first, with tax columns and their totals. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_purchase_register",
+      "title": "Get purchase register",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/purchase-register",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Posted purchases in a date range, oldest first, with tax columns and their totals. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_pnl",
+      "title": "Get P&L summary",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/pnl",
+      "untrusted": true,
+      "description": "Income less expense over every posting, per account, with totals and net profit. Labels are the account names frozen at posting. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_dashboard",
+      "title": "Get dashboard",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/dashboard",
+      "untrusted": true,
+      "description": "The dashboard's figures: cash flow, the current GST liability, receivables aging, top customers by outstanding, and recent activity. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "topCustomers": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 5
+          },
+          "recentActivity": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 10
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_stock_movements",
+      "title": "List stock movements",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/stock-movements",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Every stock movement in a date range, newest first. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "itemId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "default": 1000
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_stock_register",
+      "title": "Get stock register",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/stock-register",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "One item's movements over a date range, oldest first. Quantities are signed: issues are negative. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "itemId",
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_batches",
+      "title": "List batches",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/batches",
+      "untrusted": true,
+      "description": "Batches that still hold stock, by item, with expiry and remaining quantity and value. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only this item's batches."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 500
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_reorder_alerts",
+      "title": "Get reorder alerts",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/reorder-alerts",
+      "untrusted": true,
+      "description": "Items at or below their reorder level, with how short each one is and its preferred vendor. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_stock_aging",
+      "title": "Get stock aging",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/stock-aging",
+      "untrusted": true,
+      "description": "Batches with stock, bucketed by age as of today: 0–30, 31–60, 61–90 and over 90 days. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_inventory_summary",
+      "title": "Get inventory summary",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/inventory",
+      "untrusted": false,
+      "description": "The inventory dashboard: total stock value, items valued, items to reorder, expired batches still holding stock, and the aging buckets' totals. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_godowns",
+      "title": "List godowns",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/godowns",
+      "untrusted": true,
+      "description": "Active godowns, the default first. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_invoice_series",
+      "title": "List invoice series",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/series",
+      "untrusted": true,
+      "description": "Invoice number series with prefix, suffix, starting number, FY reset and what each is the default for. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_cmp08",
+      "title": "Get CMP-08 statement",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/cmp08",
+      "untrusted": false,
+      "description": "CMP-08 for a quarter: aggregate turnover from posted invoices and tax at the composition rate. Refused when the composition scheme is off, as the screen does. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fyStartYear": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 2200,
+            "description": "2025 for FY 2025-26."
+          },
+          "quarter": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "description": "Q1 = Apr–Jun … Q4 = Jan–Mar."
+          }
+        },
+        "required": [
+          "fyStartYear",
+          "quarter"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_form27eq",
+      "title": "Get Form 27EQ data",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/form-27eq",
+      "untrusted": true,
+      "description": "Form 27EQ quarterly TCS return data, with the validation errors the screen shows. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fyStartYear": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 2200,
+            "description": "2025 for FY 2025-26."
+          },
+          "quarter": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "description": "Q1 = Apr–Jun … Q4 = Jan–Mar."
+          }
+        },
+        "required": [
+          "fyStartYear",
+          "quarter"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_form27d_summary",
+      "title": "Get Form 27D summary",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/form-27d",
+      "untrusted": true,
+      "description": "TDS per vendor for a quarter — the figures each Form 27D certificate carries. The certificate PDF itself is the screen's. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fyStartYear": {
+            "type": "integer",
+            "minimum": 2000,
+            "maximum": 2200,
+            "description": "2025 for FY 2025-26."
+          },
+          "quarter": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "description": "Q1 = Apr–Jun … Q4 = Jan–Mar."
+          }
+        },
+        "required": [
+          "fyStartYear",
+          "quarter"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_challan_templates",
+      "title": "List challan templates",
+      "kind": "read",
+      "staged": false,
+      "scope": "app",
+      "route": "#/tax-challans",
+      "untrusted": false,
+      "description": "The tax-payment challan templates Bahi prepares data sheets for.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_challan_template",
+      "title": "Get a challan data sheet",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/tax-challans",
+      "untrusted": true,
+      "description": "The data sheet for one challan, prefilled with the company's identity. Bahi submits nothing; the person takes it to the portal. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "PMT-06",
+              "DRC-03",
+              "ITNS-280",
+              "ITNS-281",
+              "ITNS-282",
+              "ITNS-283",
+              "ECR",
+              "ESI",
+              "PTRC",
+              "LWF",
+              "CUSTOM"
+            ]
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_bank_accounts",
+      "title": "List bank accounts",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/bank-reconcile",
+      "untrusted": true,
+      "description": "Bank and cash accounts, by id, as the reconciliation screen lists them. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_bank_reconciliation",
+      "title": "Get bank reconciliation",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/bank-reconcile",
+      "untrusted": true,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "One bank account's ledger lines over a period with their cleared status, the book balance for the period, and the last saved reconciliation. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "accountId",
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_annotations",
+      "title": "List annotations",
+      "kind": "read",
+      "staged": false,
+      "scope": "file",
+      "route": "#/annotations",
+      "untrusted": true,
+      "description": "CA annotations on entries and documents, newest first. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "open",
+              "resolved"
+            ]
+          },
+          "targetType": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "targetId": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "list_proposals",
       "title": "List proposals",
       "kind": "read",
@@ -1389,116 +2365,8 @@
       "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
     },
     {
-      "route": "#/pnl",
-      "reason": "P&L is computed inside renderPnL and has no pure engine function yet. Derive from get_trial_balance meanwhile."
-    },
-    {
-      "route": "#/invoices",
-      "reason": "Read-only list not yet exposed; get_day_book covers the ledger effect."
-    },
-    {
-      "route": "#/purchases",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/credit-notes",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/debit-notes",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/payments",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/advances",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/eway-bills",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/stock-transfers",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/delivery-challans",
-      "reason": "As #/invoices."
-    },
-    {
-      "route": "#/sales-register",
-      "reason": "Not yet exposed; derive from get_day_book."
-    },
-    {
-      "route": "#/purchase-register",
-      "reason": "Not yet exposed; derive from get_day_book."
-    },
-    {
-      "route": "#/inventory",
-      "reason": "Dashboard aggregate; get_stock_on_hand + get_stock_valuation cover the data."
-    },
-    {
-      "route": "#/stock-movements",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/stock-register",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/batches",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/reorder-alerts",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/stock-aging",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/godowns",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/series",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/cmp08",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/form-27eq",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/form-27d",
-      "reason": "PDF generation, not data."
-    },
-    {
-      "route": "#/tax-challans",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/bank-reconcile",
-      "reason": "Not yet exposed."
-    },
-    {
-      "route": "#/annotations",
-      "reason": "Not yet exposed."
-    },
-    {
       "route": "#/ca/report",
       "reason": "PDF generation, not data."
-    },
-    {
-      "route": "#/dashboard",
-      "reason": "Aggregate view; get_receivables_aging covers the headline number."
     },
     {
       "route": "#/settings",

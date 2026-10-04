@@ -28,10 +28,11 @@ const BATCH_CHECKS = {
   sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C42', 'C44'],
   readOnly:   ['C21'],
   reconcile:  ['C23', 'C24', 'C25', 'C26', 'C27'],
-  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43'],
+  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43', 'C49'],
   parity:     ['C29', 'C31'],
   signing:    ['C32'],
   doors:      ['C36', 'C37', 'C38', 'C39', 'C40', 'C41'],
+  reads:      ['C45', 'C46', 'C47', 'C48', 'C50'],
 };
 const wants = (batch) => !only || BATCH_CHECKS[batch].some((c) => only.includes(c));
 
@@ -590,10 +591,27 @@ async function batchStructural() {
 
   // C43 — CMP-08 takes its quarter from fyQuarterRange, the one function C42 holds to the
   // calendar. Its own copy of the date arithmetic had the same IST shift.
-  const cmp = formSourceOf('renderCmp08');
+  const cmp = formSourceOf('buildCmp08');
   record('C43', 'CMP-08 derives its quarter from fyQuarterRange, with no date arithmetic of its own',
     cmp.length > 0 && cmp.includes('fyQuarterRange(') && !cmp.includes('toISOString()'),
-    cmp.length === 0 ? 'could not locate renderCmp08' : `usesShared=${cmp.includes('fyQuarterRange(')} ownToISOString=${cmp.includes('toISOString()')}`);
+    cmp.length === 0 ? 'could not locate buildCmp08' : `usesShared=${cmp.includes('fyQuarterRange(')} ownToISOString=${cmp.includes('toISOString()')}`);
+
+  // C49 — each screen reads through the function its agent tool uses, so the two doors cannot
+  // drift. A screen that inlines its own query again is a second codepath.
+  const SHARED_READS = [
+    ['renderInvoices', "queryList(STATE.db, 'invoices')"], ['renderPayments', "queryList(STATE.db, 'payments')"],
+    ['renderAdvances', "queryList(STATE.db, 'advances')"], ['renderPurchases', "queryList(STATE.db, 'purchases')"],
+    ['renderCreditNotes', "queryList(STATE.db, 'creditNotes')"], ['renderDebitNotes', "queryList(STATE.db, 'debitNotes')"],
+    ['renderDeliveryChallans', "queryList(STATE.db, 'deliveryChallans')"], ['renderEwayBills', "queryList(STATE.db, 'ewayBills')"],
+    ['renderStockTransfers', "queryList(STATE.db, 'stockTransfers')"], ['renderBatches', "queryList(STATE.db, 'batches')"],
+    ['renderGodowns', "queryList(STATE.db, 'godowns')"], ['renderSalesRegister', "queryList(STATE.db, 'salesRegister', { from, to })"],
+    ['renderPurchaseRegister', "queryList(STATE.db, 'purchaseRegister', { from, to })"], ['renderStockMovements', "queryList(STATE.db, 'stockMovements', { from, to })"],
+    ['renderPnL', 'getProfitAndLoss(STATE.db)'], ['renderCmp08', 'buildCmp08(STATE.db'], ['renderForm27D', 'queryForm27DSummary(STATE.db'],
+    ['renderInventoryDashboard', 'countExpiredBatches(STATE.db)'], ['renderTaxChallans', 'buildChallanTemplate(c.code'],
+  ];
+  const missing = SHARED_READS.filter(([fn, call]) => !formSourceOf(fn).includes(call)).map(([fn]) => fn);
+  record('C49', 'every list, register and summary screen reads through the function its agent tool uses',
+    missing.length === 0, `screens=${SHARED_READS.length} notShared=${missing.join(',') || 'none'}`);
 
   for (const v of VOUCHERS) {
     // Structural: the form delegates and carries no posting path of its own.
@@ -839,7 +857,106 @@ async function batchDoors() {
   return run;
 }
 
-// Batches run only when the selection needs them. A full run does all eight.
+// --- batch 8: read parity — every screen's data, and the numbers agree ------------------
+// Layer 2 gave each list, register and summary screen an agent tool that reads through the
+// screen's own query. These checks take two or three independent computations of one quantity
+// and require them to agree, as C23–C27 do for the reports.
+async function batchReads() {
+  const FY = { from: '2025-04-01', to: '2026-03-31' };
+  const run = await runCalls({ book: 'pharma', calls: [
+    { label: 'pnl', evalJs: `
+      const pnl = (await bahi.call('get_pnl')).data;
+      const tb = (await bahi.call('get_trial_balance')).data.rows;
+      const accts = (await bahi.call('list_accounts', { limit: 1000, includeArchived: true })).data.rows;
+      const typeOf = Object.fromEntries(accts.map((a) => [a.id, a.type]));
+      let inc = 0, exp = 0;
+      for (const r of tb) { if (typeOf[r.id] === 'income') inc += r.credit - r.debit; if (typeOf[r.id] === 'expense') exp += r.debit - r.credit; }
+      return { pnlIncome: pnl.totalIncome, pnlExpense: pnl.totalExpense, pnlNet: pnl.netProfit, tbIncome: inc, tbExpense: exp, rows: pnl.rows.length };` },
+    { label: 'registers', evalJs: `
+      // The period ends on the year's last invoice date, so the range's final day holds
+      // documents: an end bound that drops that day cannot pass unseen.
+      const FY = ${JSON.stringify(FY)};
+      const all = (await bahi.call('list_invoices', { ...FY, limit: 1000 })).data.rows.filter((r) => r.status === 'posted');
+      const P = { from: FY.from, to: all.map((r) => r.invoice_date).sort().pop() };
+      const sr = (await bahi.call('get_sales_register', P)).data.totals;
+      const g3 = (await bahi.call('get_gstr3b', { periodStart: P.from, periodEnd: P.to })).data.outward;
+      const inv = (await bahi.call('list_invoices', { ...P, limit: 1000 })).data.rows.filter((r) => r.status === 'posted');
+      const pr = (await bahi.call('get_purchase_register', P)).data.totals;
+      const pu = (await bahi.call('list_purchases', { ...P, limit: 1000 })).data.rows;
+      return { period: P.from + '..' + P.to, srCount: sr.count, srSub: sr.subtotal, g3Taxable: g3.taxable, invCount: inv.length, invSub: inv.reduce((t, r) => t + r.subtotal, 0),
+        prCount: pr.count, prTotal: pr.total, puCount: pu.length, puTotal: pu.reduce((t, r) => t + r.total, 0) };` },
+    { label: 'stock', evalJs: `
+      const onhand = (await bahi.call('get_stock_on_hand')).data.rows;
+      const perItem = {};
+      for (const r of onhand) perItem[r.item_id] = (perItem[r.item_id] || 0) + r.qty;
+      const out = [];
+      for (const it of Object.keys(perItem)) {
+        const mv = (await bahi.call('get_stock_register', { itemId: Number(it), from: '2000-01-01', to: '2099-12-31' })).data.movements;
+        out.push({ item: Number(it), onHand: perItem[it], moved: mv.reduce((t, m) => t + m.qty, 0), movements: mv.length });
+      }
+      return out;` },
+    { label: 'cmp08', evalJs: `
+      const off = await bahi.call('get_cmp08', { fyStartYear: 2025, quarter: 2 });
+      STATE.manifest.company.composition = { enabled: true, rate: 0.01, type: 'trader' };
+      const c = await bahi.call('get_cmp08', { fyStartYear: 2025, quarter: 2 });
+      const q2 = (await bahi.call('get_sales_register', { from: '2025-07-01', to: '2025-09-30' })).data.totals;
+      return { offCode: off.ok ? 'ok' : off.error.code, ok: c.ok, turnover: c.ok ? c.data.turnover : null, count: c.ok ? c.data.invoiceCount : null,
+        tax: c.ok ? c.data.taxPayable : null, range: c.ok ? c.data.start + '..' + c.data.end : null, regTotal: q2.total, regCount: q2.count };` },
+    { label: 'paging', evalJs: `
+      const FY = ${JSON.stringify(FY)};
+      const full = (await bahi.call('list_invoices', { ...FY, limit: 1000 })).data;
+      const walked = [];
+      for (let off = 0; off < full.total + 50; off += 50) walked.push(...(await bahi.call('list_invoices', { ...FY, limit: 50, offset: off })).data.rows.map((r) => r.id));
+      const tools = ['list_payments', 'list_advances', 'list_credit_notes', 'list_debit_notes', 'list_delivery_challans', 'list_eway_bills', 'list_stock_transfers',
+        'list_batches', 'list_godowns', 'list_invoice_series', 'get_reorder_alerts', 'get_stock_aging', 'get_inventory_summary', 'get_dashboard', 'list_bank_accounts',
+        'list_annotations', 'list_challan_templates'];
+      const failed = [];
+      for (const t of tools) { const r = await bahi.call(t, {}); if (!r.ok) failed.push(t + ':' + r.error.code); }
+      for (const [t, a] of [['get_form27eq', { fyStartYear: 2025, quarter: 2 }], ['get_form27d_summary', { fyStartYear: 2025, quarter: 2 }], ['get_challan_template', { code: 'PMT-06' }], ['list_stock_movements', FY]]) {
+        const r = await bahi.call(t, a); if (!r.ok) failed.push(t + ':' + r.error.code);
+      }
+      return { total: full.total, fullIds: full.rows.map((r) => r.id).join(), walkedIds: walked.join(), dup: walked.length - new Set(walked).size, failed };` },
+  ] });
+  const V = run.results.map((r) => r.value || { threw: r.threw });
+  const [pnl, reg, stock, cmp, pg] = V;
+
+  // C45 — P&L groups entry lines by the name frozen at posting; the trial balance groups by
+  // account. Two queries, one answer. Reintroduce by flipping the expense sign in the P&L.
+  record('C45', 'P&L income, expense and net profit equal the trial balance\'s income and expense accounts',
+    !pnl.threw && pnl.rows > 0 && pnl.pnlIncome === pnl.tbIncome && pnl.pnlExpense === pnl.tbExpense && pnl.pnlNet === pnl.tbIncome - pnl.tbExpense,
+    pnl.threw || `income ${pnl.pnlIncome}/${pnl.tbIncome} expense ${pnl.pnlExpense}/${pnl.tbExpense} net ${pnl.pnlNet}`);
+
+  // C46 — a year's sales three ways (register, GSTR-3B, the posted invoice list) and purchases
+  // two ways (register, list). Reintroduce by making list ranges exclusive at the end.
+  record('C46', 'a year\'s sales to its last invoice day: register = GSTR-3B = posted invoice list; purchases: register = list',
+    !reg.threw && reg.srCount > 0 && reg.srSub === reg.g3Taxable && reg.srCount === reg.invCount && reg.srSub === reg.invSub &&
+    reg.prCount > 0 && reg.prCount === reg.puCount && reg.prTotal === reg.puTotal,
+    reg.threw || `${reg.period}: sales ${reg.srCount}/${reg.invCount} docs, taxable ${reg.srSub}/${reg.g3Taxable}/${reg.invSub}; purchases ${reg.prCount}/${reg.puCount} docs, total ${reg.prTotal}/${reg.puTotal}`);
+
+  // C47 — an item's whole movement history sums to its stock on hand: movements and batches
+  // are separate tables. Reintroduce by dropping the sign of issues in the stock register.
+  const st = Array.isArray(stock) ? stock : [];
+  const bad = st.filter((r) => r.onHand !== r.moved);
+  record('C47', 'every stocked item\'s movement history sums to its quantity on hand',
+    st.length > 0 && st.every((r) => r.movements > 0) && bad.length === 0,
+    stock.threw || `items=${st.length} mismatched=${bad.map((r) => `${r.item}:${r.moved}vs${r.onHand}`).join(',') || 'none'}`);
+
+  // C48 — CMP-08 refuses a regular dealer, and for a composition dealer its turnover is the
+  // quarter's posted invoice totals. Reintroduce by summing pre-tax subtotals instead.
+  record('C48', 'CMP-08 refuses a regular dealer; for composition its turnover equals the quarter\'s sales register total',
+    !cmp.threw && cmp.offCode === 'E_ENGINE' && cmp.ok && cmp.turnover > 0 && cmp.turnover === cmp.regTotal && cmp.count === cmp.regCount &&
+    cmp.tax === Math.round(cmp.turnover * 0.01) && cmp.range === '2025-07-01..2025-09-30',
+    cmp.threw || `regular=${cmp.offCode} turnover ${cmp.turnover}/${cmp.regTotal} invoices ${cmp.count}/${cmp.regCount} tax=${cmp.tax} range=${cmp.range}`);
+
+  // C50 — paging a list reproduces the whole list, in order, and every other read tool answers.
+  // Reintroduce by ignoring the offset.
+  record('C50', 'list paging reproduces the full list in order; every layer-2 read tool answers on a real book',
+    !pg.threw && pg.total > 50 && pg.fullIds === pg.walkedIds && pg.dup === 0 && pg.failed.length === 0,
+    pg.threw || `total=${pg.total} identical=${pg.fullIds === pg.walkedIds} dup=${pg.dup} failed=${pg.failed.join(',') || 'none'}`);
+  return run;
+}
+
+// Batches run only when the selection needs them. A full run does all nine.
 if (wants('noFile'))     await batchNoFile();
 if (wants('sample'))     await batchSample();
 if (wants('readOnly'))   await batchReadOnly();
@@ -848,6 +965,7 @@ if (wants('structural')) await batchStructural();
 if (wants('parity'))     await batchParity();
 if (wants('signing'))    await batchSigningKeys();
 if (wants('doors'))      await batchDoors();
+if (wants('reads'))      await batchReads();
 
 const shown = only ? results.filter((r) => only.includes(r.id)) : results;
 let red = 0;

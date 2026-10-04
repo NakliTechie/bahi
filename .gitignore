@@ -58,5 +58,7 @@ corpus/**/.DS_Store
 !agent/harness/drive.mjs
 !agent/harness/checks.mjs
 !agent/harness/prove-red.mjs
+!agent/harness/lint-agent-face.mjs
+!agent/harness/test-lint-agent-face.mjs
 agent/harness/node_modules/
 agent/harness/package-lock.json

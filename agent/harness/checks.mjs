@@ -13,6 +13,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCalls } from './drive.mjs';
+import { lint, personOnlyOf } from './lint-agent-face.mjs';
+import { selfTest } from './test-lint-agent-face.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
@@ -28,7 +30,7 @@ const BATCH_CHECKS = {
   sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C42', 'C44'],
   readOnly:   ['C21'],
   reconcile:  ['C23', 'C24', 'C25', 'C26', 'C27'],
-  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43', 'C49', 'C54'],
+  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43', 'C49', 'C54', 'C55'],
   parity:     ['C29', 'C31'],
   signing:    ['C32'],
   doors:      ['C36', 'C37', 'C38', 'C39', 'C40', 'C41'],
@@ -502,8 +504,8 @@ const VOUCHERS = [
   {
     id: 'invoice', checkStructural: 'C28', checkParity: 'C29',
     formFn: 'renderInvoiceForm',
-    engineCall: 'createInvoice(STATE.db',
-    banned: ['INSERT INTO invoices', 'postInvoiceToLedger(', 'postInvoiceStockEffects(', "STATE.db.run('BEGIN')"],
+    engineCall: "bahiUi('create_invoice'",
+    banned: ['INSERT INTO invoices', 'postInvoiceToLedger(', 'postInvoiceStockEffects(', "STATE.db.run('BEGIN')", 'createInvoice(', 'persistKhata('],
     uiScript: `${SET_VAL}
       nav('#/invoice/new'); await sleep(400);
       setVal(document.getElementById('iv-customer'), '1'); await sleep(150);
@@ -527,8 +529,8 @@ const VOUCHERS = [
   {
     id: 'purchase', checkStructural: 'C30', checkParity: 'C31',
     formFn: 'renderPurchaseForm',
-    engineCall: 'createPurchase(STATE.db',
-    banned: ['INSERT INTO purchases', 'postPurchaseToLedger(', 'postPurchaseStockEffects(', "STATE.db.run('BEGIN')"],
+    engineCall: "bahiUi('create_purchase'",
+    banned: ['INSERT INTO purchases', 'postPurchaseToLedger(', 'postPurchaseStockEffects(', "STATE.db.run('BEGIN')", 'createPurchase(', 'persistKhata('],
     uiScript: `${SET_VAL}
       nav('#/purchase/new'); await sleep(400);
       setVal(document.getElementById('pu-vendor'), '1'); await sleep(150);
@@ -562,12 +564,12 @@ const VOUCHERS = [
 // proven on the two vouchers with the most computation (invoice, purchase) and the rest are
 // held structurally. That is a trade-off, not an oversight — see the run record.
 const STRUCTURAL_ONLY = [
-  { id: 'payment', check: 'C33', formFn: 'renderPaymentForm', engineCall: 'createPayment(STATE.db',
-    banned: ['INSERT INTO payments', 'postPaymentToLedger(', "STATE.db.run('BEGIN')"] },
-  { id: 'credit note', check: 'C34', formFn: 'renderCreditNoteForm', engineCall: 'createCreditNote(STATE.db',
-    banned: ['INSERT INTO credit_notes', 'postCreditNoteToLedger(', 'postCreditNoteStockEffects(', "STATE.db.run('BEGIN')"] },
-  { id: 'debit note', check: 'C35', formFn: 'renderDebitNoteForm', engineCall: 'createDebitNote(STATE.db',
-    banned: ['INSERT INTO debit_notes', 'postDebitNoteToLedger(', 'postDebitNoteStockEffects(', "STATE.db.run('BEGIN')"] },
+  { id: 'payment', check: 'C33', formFn: 'renderPaymentForm', engineCall: "bahiUi('create_payment'",
+    banned: ['INSERT INTO payments', 'postPaymentToLedger(', "STATE.db.run('BEGIN')", 'createPayment(', 'persistKhata('] },
+  { id: 'credit note', check: 'C34', formFn: 'renderCreditNoteForm', engineCall: "bahiUi('create_credit_note'",
+    banned: ['INSERT INTO credit_notes', 'postCreditNoteToLedger(', 'postCreditNoteStockEffects(', "STATE.db.run('BEGIN')", 'createCreditNote(', 'persistKhata('] },
+  { id: 'debit note', check: 'C35', formFn: 'renderDebitNoteForm', engineCall: "bahiUi('create_debit_note'",
+    banned: ['INSERT INTO debit_notes', 'postDebitNoteToLedger(', 'postDebitNoteStockEffects(', "STATE.db.run('BEGIN')", 'createDebitNote(', 'persistKhata('] },
 ];
 
 // Structural half — reads index.html and nothing else. No browser, no book, no server.
@@ -585,7 +587,7 @@ async function batchStructural() {
   for (const v of STRUCTURAL_ONLY) {
     const formSrc = formSourceOf(v.formFn);
     const found = v.banned.filter((t) => formSrc.includes(t));
-    record(v.check, `the ${v.id} form delegates: no posting path of its own`,
+    record(v.check, `the ${v.id} form posts through its tool via bahiUi: no posting path of its own`,
       formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
       formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
   }
@@ -636,6 +638,17 @@ async function batchStructural() {
   record('C54', 'every form layer 3 moved dispatches through bahiUi and keeps no write of its own',
     busProblems.length === 0, `forms=${BUS_FORMS.length} problems=${busProblems.join('; ') || 'none'}`);
 
+  // C55 — the command bus, mechanically: every writing function is owned by a tool, a
+  // person-only act or declared infrastructure, and no screen writes or reaches a write except
+  // through bahiUi or a person-only act. The lint's own self-test plants six faults and must
+  // catch each. Reintroduce by letting a screen run SQL itself.
+  const linted = lint(src, personOnlyOf(src));
+  const planted = selfTest(src);
+  const missed = planted.filter((r) => !r.pass);
+  record('C55', 'agent-face lint: every write owned; no screen writes except through bahiUi or a person-only act',
+    linted.problems.length === 0 && missed.length === 0,
+    `writers=${linted.writers.length} problems=${linted.problems.length}${linted.problems.length ? ' — ' + linted.problems.slice(0, 2).join(' | ') : ''}; self-test ${planted.length - missed.length}/${planted.length}${missed.length ? ' missed: ' + missed.map((m) => m.label).join(', ') : ''}`);
+
   for (const v of VOUCHERS) {
     // Structural: the form delegates and carries no posting path of its own.
     const a = src.indexOf(`function ${v.formFn}(`);
@@ -643,7 +656,7 @@ async function batchStructural() {
     const m = rest.match(/\nfunction [A-Za-z0-9_]+\(/);
     const formSrc = (a > -1 && m) ? src.slice(a, a + 10 + m.index) : '';
     const found = v.banned.filter((t) => formSrc.includes(t));
-    record(v.checkStructural, `the ${v.id} form delegates: no posting path of its own`,
+    record(v.checkStructural, `the ${v.id} form posts through its tool via bahiUi: no posting path of its own`,
       formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
       formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
   }

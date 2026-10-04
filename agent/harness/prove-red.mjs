@@ -22,14 +22,14 @@ const MANIFEST = path.resolve(HERE, '..', 'manifest.json');
 // Each defect: the target check it must turn red, and a single unambiguous
 // find/replace against index.html that reintroduces the original bug.
 const DEFECTS = [
-  { id: 'C1', target: 'C1', also: ['C17'], note: 'delete a handler so the manifest declares a command that cannot dispatch',
-    find: "  'ui.routes':   async () => Object.entries(ROUTE_INDEX)", replace: "  'ui.routes__BROKEN':   async () => Object.entries(ROUTE_INDEX)" },
-  { id: 'C2', note: 'change a command summary in code without regenerating manifest.json',
-    find: "summary: 'The full machine-readable command manifest.'", replace: "summary: 'The full machine-readable command manifest (drifted).'" },
-  { id: 'C3', note: 'drop the unknown-command guard so an unknown name falls through to the handler lookup',
-    find: "  if (typeof command !== 'string' || !Object.prototype.hasOwnProperty.call(BAHI_AGENT_COMMAND_SPECS, command)) {",
+  { id: 'C1', target: 'C1', also: ['C17'], note: 'rename a handler so the manifest declares a tool that cannot dispatch',
+    find: "  list_routes: async () => Object.entries(ROUTE_INDEX)", replace: "  list_routes__BROKEN: async () => Object.entries(ROUTE_INDEX)" },
+  { id: 'C2', note: 'change a tool description in code without regenerating manifest.json',
+    find: "the UI routes not yet covered. Start here.'", replace: "the UI routes not yet covered. Start here (drifted).'" },
+  { id: 'C3', note: 'drop the unknown-tool guard so an unknown name falls through to the spec lookup',
+    find: "  if (typeof name !== 'string' || !Object.prototype.hasOwnProperty.call(BAHI_AGENT_TOOLS, name)) {",
     replace: "  if (false) {" },
-  { id: 'C4', target: 'C4', also: ['C5'], note: 'remove the file-scope guard so file commands run with no book open',
+  { id: 'C4', target: 'C4', also: ['C5'], note: 'remove the file-scope guard so file tools run with no book open',
     find: "  if (spec.scope === 'file' && !(STATE.db && STATE.manifest)) {", replace: "  if (false) {" },
   { id: 'C6', note: 'interpolate the q filter into SQL instead of binding it',
     find: "  if (a.q) { clauses.push('name LIKE ?'); params.push(`%${a.q}%`); }",
@@ -37,36 +37,39 @@ const DEFECTS = [
   { id: 'C7', note: 'validate dates by regex only, letting new Date() roll 2026-02-30 forward',
     find: "  const dt = new Date(Date.UTC(y, m - 1, d));\n  // Rejects 2026-02-30 and friends, which Date would otherwise roll forward.\n  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;",
     replace: "  return true;" },
-  { id: 'C8', note: 'stop rejecting unknown parameters and stop enforcing min/max',
+  { id: 'C8', note: 'stop rejecting unknown parameters',
     find: "    if (!Object.prototype.hasOwnProperty.call(spec, key)) errs.push(`unknown parameter '${key}'`);",
     replace: "    if (false) errs.push(`unknown parameter '${key}'`);" },
   { id: 'C9', note: 'validate only the declared top-level params, never the nested lines[] objects',
     find: "      if (typeof v !== 'number' || !Number.isFinite(v) || !Number.isInteger(v)) {\n          throw new AgentBadArgs(`lines[${i}].${side} must be an integer number of paise, got ${JSON.stringify(v)}`);\n        }",
     replace: "      if (false) {\n          throw new AgentBadArgs('unreachable');\n        }" },
-  { id: 'C11', note: 'let a read command quietly write',
-    find: "  'file.info': async () => {\n    const m = STATE.manifest;",
-    replace: "  'file.info': async () => {\n    STATE.db.run(\"UPDATE meta SET value = value WHERE key = 'schemaVersion'\");\n    const m = STATE.manifest;" },
-  { id: 'C12', note: 'let ui.navigate accept any string as a route',
-    find: "    if (!Object.prototype.hasOwnProperty.call(ROUTE_INDEX, a.route)) {\n      throw new AgentBadArgs(`unknown route '${a.route}' — call ui.routes for the list`);\n    }",
+  { id: 'C11', note: 'let a read tool quietly write',
+    find: "  get_file_info: async () => {\n    const m = STATE.manifest;",
+    replace: "  get_file_info: async () => {\n    STATE.db.run(\"UPDATE meta SET value = value WHERE key = 'schemaVersion'\");\n    const m = STATE.manifest;" },
+  { id: 'C12', note: 'let navigate accept any string as a route',
+    find: "    if (!Object.prototype.hasOwnProperty.call(ROUTE_INDEX, a.route)) {\n      throw new AgentBadArgs(`unknown route '${a.route}' — call list_routes for the list`);\n    }",
     replace: "    if (false) { throw new AgentBadArgs('unreachable'); }" },
   { id: 'C13', target: 'C13', also: ['C22'], note: 'drop the agent attribution stamp so writes look like the owner did them',
     find: "  return (args && args.agentName) ? `agent:${args.agentName}` : 'agent';",
     replace: "  return 'owner';" },
-  { id: 'C10', note: 'swallow the engine assertion so an unbalanced voucher reports success',
-    find: "    const res = await postEntry(STATE.db, {", replace: "    const res = await (async () => { try { return await postEntry(STATE.db, {" },
-  // C16 guards two distinct promises. The first attempt (rethrow from the handler) did not
-  // prove it, because the outer net in bahi.call still converted the throw into a declared
-  // E_INTERNAL — C16's claim held, so C16 was right to stay green. These two reintroduce
-  // the defects C16 actually guards.
+  // Double entry is guarded twice: the prepare step refuses an unbalanced journal before it
+  // can stage, and the engine asserts it again on posting. C10 holds while either guard
+  // stands, so the defect removes both: the prepare check, and the engine's throw swallowed.
+  { id: 'C10', note: 'drop the prepare-step balance check and swallow the engine assertion',
+    find: "    if (dr !== cr) throw new AgentBadArgs(`lines do not balance: debits ${dr} paise, credits ${cr} paise`);",
+    replace: "" },
+  // C16 guards two distinct promises. Removing one net alone does not prove it, because the
+  // other still converts the throw into a declared code — C16's claim holds, so C16 is right
+  // to stay green. These reintroduce the defects C16 actually guards.
   { id: 'C16', note: 'remove BOTH error nets so a handler throw escapes as a rejected promise',
-    find: "    const run = () => agentDispatch(command, args).catch((e) => agentFail('E_INTERNAL', String((e && e.message) || e), { command }));",
-    replace: "    const run = () => agentDispatch(command, args);" },
+    find: "  const run = () => Promise.resolve().then(fn).catch((e) => agentFail('E_INTERNAL', String((e && e.message) || e)));",
+    replace: "  const run = () => Promise.resolve().then(fn);" },
   { id: 'C16b', target: 'C16', note: 'emit an error code the manifest never declares',
-    find: "    const code = (e && e.agentCode) || (e && e.name === 'VoucherError' ? 'E_BAD_ARGS' : 'E_ENGINE');",
-    replace: "    const code = 'E_SOMETHING_ELSE';" },
+    find: "  return (e && e.agentCode) || (e && e.name === 'VoucherError' ? 'E_BAD_ARGS' : 'E_ENGINE');",
+    replace: "  return 'E_SOMETHING_ELSE';" },
   { id: 'C18', target: 'C18', note: 'let a handler log to the console instead of failing cleanly',
-    find: "  'file.info': async () => {\n    const m = STATE.manifest;",
-    replace: "  'file.info': async () => {\n    console.error('agent surface: noisy handler');\n    const m = STATE.manifest;" },
+    find: "  get_file_info: async () => {\n    const m = STATE.manifest;",
+    replace: "  get_file_info: async () => {\n    console.error('agent face: noisy handler');\n    const m = STATE.manifest;" },
   { id: 'C28', target: 'C28', note: 'form stops delegating — the engine call is replaced by its own path',
     find: "      const result = await createInvoice(STATE.db, {",
     replace: "      const result = await createInvoiceLegacyInlinePath(STATE.db, {" },
@@ -109,22 +112,47 @@ const DEFECTS = [
     find: "      l.debit, l.credit, COALESCE(l.account_name, a.name) AS account_name",
     replace: "      l.debit, 0, COALESCE(l.account_name, a.name) AS account_name" },
   { id: 'C22', target: 'C22', note: 'drop the agentName pattern so a colon can forge a misleading actor',
-    find: "      agentName: { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$' },",
-    replace: "      agentName: { type: 'string', maxLength: 60 }," },
-  { id: 'C21', target: 'C21', note: 'drop the read-only guard so a future-format book accepts mutations',
-    find: "  if (spec.mutating && STATE.readOnly) {", replace: "  if (false) {" },
+    find: "const AGENT_NAME_PARAM = { type: 'string', maxLength: 60, pattern: '^[A-Za-z0-9._-]{1,60}$', desc:",
+    replace: "const AGENT_NAME_PARAM = { type: 'string', maxLength: 60, desc:" },
+  // The apply step refuses a read-only file too, so this defect alone still ends in
+  // E_READONLY — but only after a proposal was staged, which is what C21 forbids.
+  { id: 'C21', target: 'C21', note: 'drop the call-time read-only guard so a write stages against a future-format book',
+    find: "  if (spec.kind === 'write' && STATE.readOnly) {", replace: "  if (false) {" },
   { id: 'C19', note: 'remove the reversed-range guard (the defect the adversarial round found)',
     find: "    if (v.value[lo] && v.value[hi] && v.value[lo] > v.value[hi]) {", replace: "    if (false) {" },
   { id: 'C20', note: 'enumerate args with for..in so an own __proto__ key is never seen as unknown',
     find: "  for (const key of Object.keys(given)) {", replace: "  for (const key of []) {" },
+  { id: 'C36', target: 'C36', note: 'let write tools run on the call instead of staging a proposal',
+    find: "    if (spec.kind === 'write') return { ok: true, data: agentStage(name, BAHI_AGENT_PREPARE[name](v.value), ctx) };",
+    replace: "    if (false) return null;" },
+  { id: 'C37', target: 'C37', note: 'let approval ignore the proposal\'s status, so a rejected or withdrawn one applies',
+    find: "      if (p && p.status === 'pending') await agentApply(p);", replace: "      if (p) await agentApply(p);" },
+  { id: 'C38', target: 'C38', note: 'drop the person-only refusal, so those acts fall through as unknown names',
+    find: "    if (held) return agentFail('E_PERSON_ONLY', `${held.title} is person-only: ${held.reason}`, { tool: name });",
+    replace: "" },
+  { id: 'C39', target: 'C39', note: 'stop stamping agentCall into audit payloads',
+    find: "  return { ...payload, agentCall: AGENT_CALL_CONTEXT };", replace: "  return payload;" },
+  { id: 'C40', target: 'C40', note: 'open the cross-tab channel on load, without the person',
+    find: "  agentOpenChannel(agentChannelSetting());", replace: "  agentOpenChannel(true);" },
+  { id: 'C41', target: 'C41', note: 'register only some tools on WebMCP — skip the write tools',
+    find: "    const definition = {\n      name,\n      title: spec.title,",
+    replace: "    if (spec.kind === 'write') continue;\n    const definition = {\n      name,\n      title: spec.title," },
+  { id: 'C42', target: 'C42', note: 'build quarter bounds through toISOString() on local-midnight dates (the IST shift)',
+    find: "  return { start: `${year}-${pad(month)}-01`, end: `${year}-${pad(endMonth)}-${pad(lastDay)}` };",
+    replace: "  return { start: new Date(year, month - 1, 1).toISOString().slice(0, 10), end: new Date(year, endMonth, 0).toISOString().slice(0, 10) };" },
+  { id: 'C43', target: 'C43', note: 'CMP-08 computes its own quarter dates again',
+    find: "    const { start, end } = fyQuarterRange(y, q);",
+    replace: "    const start = new Date(y, (q - 1) * 3 + 3, 1).toISOString().slice(0, 10);\n    const end = new Date(y, (q - 1) * 3 + 6, 0).toISOString().slice(0, 10);" },
 ];
 
-// A defect may need a second edit to stay syntactically valid.
+// A defect may need further edits, applied in order, to stay syntactically valid or to
+// remove every guard behind a claim.
 const EXTRA = {
-  C16: { find: "  } catch (e) {\n    const code = (e && e.agentCode) || (e && e.name === 'VoucherError' ? 'E_BAD_ARGS' : 'E_ENGINE');\n    return agentFail(code, String((e && e.message) || e), { command, ...(e && e.field ? { problems: [`${e.field}: ${e.message}`] } : {}) });\n  } finally {",
-         replace: "  } finally {" },
-  C10: { find: "    return { entryId: res.entryId, postedAt, actor, lineCount: lines.length, amendment: !!periodLock, periodLock };",
-         replace: "    } catch (_) { return { entryId: -1 }; } })();\n    return { entryId: res.entryId, postedAt, actor, lineCount: lines.length, amendment: !!periodLock, periodLock };" },
+  C16: [{ find: "  } catch (e) {\n    const code = agentErrorCode(e);\n    return agentFail(code, String((e && e.message) || e), { tool: name, ...(e && e.field ? { problems: [`${e.field}: ${e.message}`] } : {}) });\n  }\n}",
+          replace: "  } finally {}\n}" }],
+  C10: [{ find: "    const res = await postEntry(STATE.db, {", replace: "    const res = await (async () => { try { return await postEntry(STATE.db, {" },
+        { find: "    return { entryId: res.entryId, postedAt: a.postedAt, actor, lineCount: a.lines.length, amendment: !!periodLock, periodLock };",
+          replace: "    } catch (_) { return { entryId: -1 }; } })();\n    return { entryId: res.entryId, postedAt: a.postedAt, actor, lineCount: a.lines.length, amendment: !!periodLock, periodLock };" }],
 };
 
 const sel = process.argv[2] ? process.argv[2].split(',') : null;
@@ -169,11 +197,12 @@ const rows = [];
 for (const d of wanted) {
   if (!original.includes(d.find)) { rows.push({ id: d.id, status: 'PATCH-MISS', red: [] }); continue; }
   let mutated = original.replace(d.find, d.replace);
-  const extra = EXTRA[d.id];
-  if (extra) {
-    if (!mutated.includes(extra.find)) { rows.push({ id: d.id, status: 'PATCH-MISS', red: [] }); continue; }
+  let missed = false;
+  for (const extra of EXTRA[d.id] || []) {
+    if (!mutated.includes(extra.find)) { missed = true; break; }
     mutated = mutated.replace(extra.find, extra.replace);
   }
+  if (missed) { rows.push({ id: d.id, status: 'PATCH-MISS', red: [] }); continue; }
   fs.writeFileSync(APP, mutated);
   const out = runSuite([d.target || d.id, ...(d.also || [])]);
   fs.writeFileSync(APP, original);
@@ -190,7 +219,7 @@ for (const d of wanted) {
 if (!sel || sel.includes('C14')) {
   fs.writeFileSync(APP, original);
   const { runCalls } = await import('./drive.mjs');
-  const calls = [{ command: 'report.trialBalance', args: { asOf: '2026-03-31' } }];
+  const calls = [{ command: 'get_trial_balance', args: { asOf: '2026-03-31' } }];
   const clean = await runCalls({ book: 'pharma', calls });
   const bent = await runCalls({ book: 'pharma', calls, tamper: 'UPDATE entry_lines SET debit = debit + 1 WHERE id = (SELECT MIN(id) FROM entry_lines WHERE debit > 0)' });
   const cd = clean.results[0].result.data, bd = bent.results[0].result.data;
@@ -205,7 +234,7 @@ if (!sel || sel.includes('C14')) {
 if (!sel || sel.includes('C15')) {
   fs.writeFileSync(APP, original);
   const { runCalls } = await import('./drive.mjs');
-  const calls = [{ command: 'file.verifyIntegrity' }];
+  const calls = [{ command: 'verify_integrity' }];
   const clean = await runCalls({ book: 'pharma', calls });
   const tampered = await runCalls({ book: 'pharma', calls, tamper: "UPDATE audit_log SET hash = 'deadbeef' WHERE id = (SELECT MIN(id) FROM audit_log)" });
   const cd = clean.results[0].result.data, td = tampered.results[0].result.data;

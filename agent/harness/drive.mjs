@@ -1,7 +1,7 @@
 // Bahi agent-surface driver
 // =========================
 // Boots index.html in headless Chromium, optionally opens a scratch .khata, then
-// runs a list of `window.bahi.call()` commands and prints the results as JSON.
+// runs a list of `window.bahi.call()` tool calls and prints the results as JSON.
 //
 // This is the ONLY way the agent surface is exercised end to end. It exists because
 // Bahi is a browser app gated behind the File System Access API: the native pickers
@@ -11,7 +11,7 @@
 //   node drive.mjs --book pharma --calls calls.json
 //   node drive.mjs --book none   --calls calls.json     # nothing open (E_NO_FILE paths)
 //   node drive.mjs --book fresh  --calls calls.json     # a newly created empty book
-//   echo '[{"command":"agent.health"}]' | node drive.mjs --book fresh --calls -
+//   echo '[{"command":"get_status"}]' | node drive.mjs --book fresh --calls -
 //
 // calls.json is [{ "command": "...", "args": {...} }, ...] and the output is
 // { ok, book, results: [{ command, args, result }], consoleErrors, pageErrors }.
@@ -95,6 +95,18 @@ const INSTALL_FAKE_PICKERS = () => {
   window.showOpenFilePicker = async () => [new FakeFileHandle(window.__harness.openName || window.__harness.lastSaveName || 'harness.khata')];
 };
 
+// Stands in for a browser that ships WebMCP. Bahi registers every callable tool on
+// navigator.modelContext when one exists; this fake records each registration so a check
+// can compare the WebMCP door with describe_tools and call tools through it.
+const INSTALL_FAKE_MODEL_CONTEXT = () => {
+  const tools = [];
+  window.__mcTools = tools;
+  Object.defineProperty(navigator, 'modelContext', {
+    configurable: true,
+    value: { registerTool(definition) { tools.push(definition); } },
+  });
+};
+
 // Runs `calls` against one live session and returns the full result record.
 // Exported so checks.mjs drives the surface exactly the way the CLI does — one
 // code path, so a check can never pass against a harness the CLI doesn't use.
@@ -105,10 +117,18 @@ const INSTALL_FAKE_PICKERS = () => {
 // `futureFormat` rewrites the sample's khataFormatVersion to a version ahead of this
 // build, in the page, using the app's own JSZip — so the read-only path is exercised
 // without a hand-built fixture sitting in someone's scratch directory waiting to rot.
-export async function runCalls({ book = 'fresh', bookFile = null, calls = [], tamper = null, futureFormat = false } = {}) {
+//
+// Write tools stage a proposal instead of posting. The harness stands in for the person:
+// unless a call says otherwise it approves the proposal at once, through the same
+// person-only function the Approve button calls, and reports the applied outcome as the
+// call's result. The staging response is kept as `staged`. A call can set
+// `approve: 'none'` to leave its proposal pending, or `approve: 'reject'` to reject it.
+export async function runCalls({ book = 'fresh', bookFile = null, calls = [], tamper = null, futureFormat = false, fakeModelContext = false } = {}) {
   const { server, port } = await serve(REPO);
   const browser = await chromium.launch({ headless: true });
-  const ctx = await browser.newContext();
+  // Bahi's users keep books in India, so every check runs in IST. A positive UTC offset is what
+  // exposed fyQuarterRange shifting each quarter a day early; a UTC machine could never see it.
+  const ctx = await browser.newContext({ timezoneId: 'Asia/Kolkata' });
   const page = await ctx.newPage();
 
   const consoleErrors = [];
@@ -117,6 +137,7 @@ export async function runCalls({ book = 'fresh', bookFile = null, calls = [], ta
   page.on('pageerror', (e) => pageErrors.push(String(e && e.message || e)));
 
   await page.addInitScript(INSTALL_FAKE_PICKERS);
+  if (fakeModelContext) await page.addInitScript(INSTALL_FAKE_MODEL_CONTEXT);
   await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => typeof window.bahi === 'object' && typeof window.bahi.call === 'function', null, { timeout: 30000 });
 
@@ -170,16 +191,23 @@ export async function runCalls({ book = 'fresh', bookFile = null, calls = [], ta
       continue;
     }
     const r = await page.evaluate(
-      async ({ command, args, argsJson }) => {
+      async ({ command, args, argsJson, approve }) => {
         const a = argsJson === null ? args : JSON.parse(argsJson);
         const started = performance.now();
         // Deliberately NOT wrapped in try/catch: the contract is that call()
         // never throws. If it does, the harness must see the throw, not hide it.
         const out = await window.bahi.call(command, a);
-        return { out, ms: Math.round(performance.now() - started) };
+        const staged = out && out.ok === true && out.data && out.data.status === 'pending_approval';
+        if (!staged || approve === 'none') return { out, staged: staged ? out : null, ms: Math.round(performance.now() - started) };
+        const id = out.data.proposalId;
+        if (approve === 'reject') rejectAgentProposal(id);
+        else await approveAgentProposal(id);
+        const p = agentProposalView(BAHI_AGENT.proposals.get(id));
+        const final = p.status === 'applied' ? { ok: true, data: p.result } : { ok: false, error: p.error || { code: 'E_REJECTED', message: `proposal ${p.status}` } };
+        return { out: approve === 'reject' ? out : final, staged: out, decided: p, ms: Math.round(performance.now() - started) };
       },
-      { command: c.command, args: c.args === undefined ? null : c.args, argsJson: c.argsJson ?? null }
-    ).then((v) => ({ command: c.command, args: c.args ?? null, ms: v.ms, result: v.out }))
+      { command: c.command, args: c.args === undefined ? null : c.args, argsJson: c.argsJson ?? null, approve: c.approve ?? 'approve' }
+    ).then((v) => ({ command: c.command, args: c.args ?? null, ms: v.ms, result: v.out, ...(v.staged ? { staged: v.staged } : {}), ...(v.decided ? { decided: v.decided } : {}) }))
      .catch((e) => ({ command: c.command, args: c.args ?? null, threw: String((e && e.message) || e) }));
     results.push(r);
   }

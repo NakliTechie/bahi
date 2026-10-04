@@ -1,6 +1,6 @@
 // Bahi agent-surface checks
 // =========================
-// The assertion suite that guards window.bahi. Every check here has been proven able
+// The assertion suite that guards Bahi's agent face. Every check here has been proven able
 // to FAIL — each one was run once with its defect deliberately reintroduced, and each
 // one went red. A check that stays green either way is not a check.
 //
@@ -16,7 +16,7 @@ import { runCalls } from './drive.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
-const DECLARED_CODES = ['E_UNKNOWN_COMMAND', 'E_BAD_ARGS', 'E_NO_FILE', 'E_READONLY', 'E_ENGINE', 'E_INTERNAL'];
+const DECLARED_CODES = ['E_UNKNOWN_TOOL', 'E_PERSON_ONLY', 'E_BAD_ARGS', 'E_NO_FILE', 'E_READONLY', 'E_NOT_FOUND', 'E_LIMIT', 'E_ENGINE', 'E_INTERNAL'];
 
 const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? process.argv[i + 1].split(',') : null; })();
 
@@ -25,12 +25,13 @@ const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? 
 // sessions to evaluate a single check, which is what saturated the machine.
 const BATCH_CHECKS = {
   noFile:     ['C1', 'C2', 'C3', 'C4', 'C5'],
-  sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22'],
+  sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C42'],
   readOnly:   ['C21'],
   reconcile:  ['C23', 'C24', 'C25', 'C26', 'C27'],
-  structural: ['C28', 'C30', 'C33', 'C34', 'C35'],
+  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43'],
   parity:     ['C29', 'C31'],
   signing:    ['C32'],
+  doors:      ['C36', 'C37', 'C38', 'C39', 'C40', 'C41'],
 };
 const wants = (batch) => !only || BATCH_CHECKS[batch].some((c) => only.includes(c));
 
@@ -44,17 +45,17 @@ const data = (r) => (r.result && r.result.data) || {};
 // --- batch 1: no file open -------------------------------------------------
 async function batchNoFile() {
   const run = await runCalls({ book: 'none', calls: [
-    { command: 'agent.selftest' },
-    { command: 'agent.manifest' },
+    { command: 'run_selftest' },
+    { command: 'describe_tools' },
     { command: '__nope__' },
-    { command: 'report.trialBalance', args: { asOf: '2026-03-31' } },
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 1 }, { accountId: 2, credit: 1 }] } },
+    { command: 'get_trial_balance', args: { asOf: '2026-03-31' } },
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 1 }, { accountId: 2, credit: 1 }] } },
   ] });
   const [selftest, manifest, unknown, tb, post] = run.results;
 
   // C1 — the two doors name the same commands, and every UI route is covered or
   // declared a gap. Reintroduce by deleting a handler or adding an undeclared one.
-  record('C1', 'manifest/dispatcher/route parity (agent.selftest)',
+  record('C1', 'manifest/dispatcher/route parity (run_selftest)',
     ok(selftest) && data(selftest).pass === true,
     ok(selftest) ? `failures: ${JSON.stringify(data(selftest).failures)}` : JSON.stringify(err(selftest)));
 
@@ -69,8 +70,8 @@ async function batchNoFile() {
   record('C2', 'published manifest.json matches the live manifest', drift === 'identical', drift);
 
   // C3 — unknown commands are refused with the declared code.
-  record('C3', 'unknown command -> E_UNKNOWN_COMMAND',
-    !ok(unknown) && err(unknown).code === 'E_UNKNOWN_COMMAND', JSON.stringify(err(unknown)));
+  record('C3', 'unknown command -> E_UNKNOWN_TOOL',
+    !ok(unknown) && err(unknown).code === 'E_UNKNOWN_TOOL', JSON.stringify(err(unknown)));
 
   // C4 — file-scoped commands refuse cleanly with no file open, rather than
   // dereferencing a null STATE.db. Reintroduce by removing the scope guard.
@@ -84,22 +85,22 @@ async function batchNoFile() {
 
 // --- batch 2: a real book --------------------------------------------------
 async function batchSample() {
-  const POST = (lines, extra = {}) => ({ command: 'journal.post', args: { lines, agentName: 'checks', postedAt: '2025-06-15', ...extra } });
+  const POST = (lines, extra = {}) => ({ command: 'post_journal', args: { lines, agentName: 'checks', postedAt: '2025-06-15', ...extra } });
   const run = await runCalls({ book: 'pharma', calls: [
-    { command: 'file.info' },                                                   // 0  baseline
-    { command: 'report.trialBalance', args: { asOf: '2026-03-31' } },           // 1
-    { command: 'masters.customers', args: { limit: 5 } },                       // 2
-    { command: 'masters.customers', args: { q: "' OR 1=1 --", limit: 5 } },     // 3  injection
-    { command: 'masters.customers', args: { q: "'; DROP TABLE customers; --" } }, // 4 injection
-    { command: 'masters.customers', args: { limit: 5 } },                       // 5  table survived?
-    { command: 'file.info' },                                                   // 6  reads pure?
-    { command: 'report.dayBook', args: { from: '2026-13-01', to: '2026-03-31' } }, // 7  bad month
-    { command: 'report.dayBook', args: { from: '2026-02-30', to: '2026-03-31' } }, // 8  bad day
-    { command: 'report.trialBalance', args: { asOf: 1 } },                      // 9  wrong type
-    { command: 'masters.customers', args: { limit: 0 } },                       // 10 below min
-    { command: 'masters.customers', args: { limit: 99999 } },                   // 11 above max
-    { command: 'masters.customers', args: { nope: 1 } },                        // 12 unknown param
-    { command: 'masters.customers', args: [] },                                 // 13 args not an object
+    { command: 'get_file_info' },                                                   // 0  baseline
+    { command: 'get_trial_balance', args: { asOf: '2026-03-31' } },           // 1
+    { command: 'list_customers', args: { limit: 5 } },                       // 2
+    { command: 'list_customers', args: { q: "' OR 1=1 --", limit: 5 } },     // 3  injection
+    { command: 'list_customers', args: { q: "'; DROP TABLE customers; --" } }, // 4 injection
+    { command: 'list_customers', args: { limit: 5 } },                       // 5  table survived?
+    { command: 'get_file_info' },                                                   // 6  reads pure?
+    { command: 'get_day_book', args: { from: '2026-13-01', to: '2026-03-31' } }, // 7  bad month
+    { command: 'get_day_book', args: { from: '2026-02-30', to: '2026-03-31' } }, // 8  bad day
+    { command: 'get_trial_balance', args: { asOf: 1 } },                      // 9  wrong type
+    { command: 'list_customers', args: { limit: 0 } },                       // 10 below min
+    { command: 'list_customers', args: { limit: 99999 } },                   // 11 above max
+    { command: 'list_customers', args: { nope: 1 } },                        // 12 unknown param
+    { command: 'list_customers', args: [] },                                 // 13 args not an object
     POST([{ accountId: 1, debit: 100 }, { accountId: 2, credit: 99 }]),         // 14 unbalanced
     POST([{ accountId: 1, debit: 100 }]),                                       // 15 one line
     POST([{ accountId: 1, debit: 2147483648 }, { accountId: 2, credit: 2147483648 }]), // 16 over ceiling
@@ -107,30 +108,31 @@ async function batchSample() {
     POST([{ accountId: 1, debit: -100 }, { accountId: 2, credit: -100 }]),      // 18 negative
     POST([{ accountId: 'x', debit: 100 }, { accountId: 2, credit: 100 }]),      // 19 bad accountId
     POST(['not-an-object', { accountId: 2, credit: 100 }]),                     // 20 line not object
-    { command: 'ui.navigate', args: { route: 'javascript:alert(1)' } },         // 21 bogus route
-    { command: 'report.dayBook', args: { from: '2026-03-31', to: '2025-04-01' } }, // 22 reversed range
-    { command: 'file.auditTail', args: { limit: 3 } },                          // 23 pre-post tail
+    { command: 'navigate', args: { route: 'javascript:alert(1)' } },         // 21 bogus route
+    { command: 'get_day_book', args: { from: '2026-03-31', to: '2025-04-01' } }, // 22 reversed range
+    { command: 'list_audit_entries', args: { limit: 3 } },                          // 23 pre-post tail
     POST([{ accountId: 1, debit: 12345 }, { accountId: 2, credit: 12345 }], { narration: 'checks attribution probe' }), // 24 the one good post
-    { command: 'file.auditTail', args: { limit: 3 } },                          // 25 post-post tail
-    { command: 'file.verifyIntegrity' },                                        // 26 chain intact
-    { command: 'agent.selftest' },                                              // 27 surface intact
-    { command: 'gst.gstr1', args: { periodStart: '2025-04-30', periodEnd: '2025-04-01' } },   // 28 reversed period
-    { command: 'report.dayBook', args: { from: '2026-03-31', to: '2025-04-01' } },            // 29 reversed range
-    { command: 'report.accountLedger', args: { accountId: 1, from: '2026-03-31', to: '2025-04-01' } }, // 30
+    { command: 'list_audit_entries', args: { limit: 3 } },                          // 25 post-post tail
+    { command: 'verify_integrity' },                                        // 26 chain intact
+    { command: 'run_selftest' },                                              // 27 surface intact
+    { command: 'get_gstr1', args: { periodStart: '2025-04-30', periodEnd: '2025-04-01' } },   // 28 reversed period
+    { command: 'get_day_book', args: { from: '2026-03-31', to: '2025-04-01' } },            // 29 reversed range
+    { command: 'get_account_ledger', args: { accountId: 1, from: '2026-03-31', to: '2025-04-01' } }, // 30
     // Delivered as literal JSON text so `__proto__` arrives as an OWN property, the
     // way it would over a real wire. Structured clone drops it and tests nothing.
-    { command: 'masters.customers', argsJson: '{"__proto__":{"polluted":"yes"},"limit":2}' },  // 31
-    { command: 'agent.health', argsJson: '{"__proto__":{"limit":1}}' },                        // 32
-    { command: 'journal.post', argsJson: '{"lines":[{"accountId":1,"debit":1000,"__proto__":{"credit":1000}},{"accountId":2,"credit":1000}],"agentName":"proto"}' }, // 33
-    { command: 'agent.health' },                                                               // 34 pollution visible?
+    { command: 'list_customers', argsJson: '{"__proto__":{"polluted":"yes"},"limit":2}' },  // 31
+    { command: 'get_status', argsJson: '{"__proto__":{"limit":1}}' },                        // 32
+    { command: 'post_journal', argsJson: '{"lines":[{"accountId":1,"debit":1000,"__proto__":{"credit":1000}},{"accountId":2,"credit":1000}],"agentName":"proto"}' }, // 33
+    { command: 'get_status' },                                                               // 34 pollution visible?
     // Attribution forgery: ':' is the actor field's own separator and the audit log
     // already carries 'owner' / 'ca' / 'ai' / 'system' as real principals.
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'ca:verified' } },  // 35
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'owner:ca:ai' } },  // 36
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'a b' } },          // 37
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: '' } },             // 38
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'checks-ok_1.2' } },// 39 must succeed
-    { command: 'file.auditTail', args: { limit: 5 } },                                                                                     // 40
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'ca:verified' } },  // 35
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'owner:ca:ai' } },  // 36
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'a b' } },          // 37
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: '' } },             // 38
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'checks-ok_1.2' } },// 39 must succeed
+    { command: 'list_audit_entries', args: { limit: 5 } },                                                                                     // 40
+    ...[1, 2, 3, 4].map((quarter) => ({ command: 'get_form26q', args: { fyStartYear: 2025, quarter } })),                                   // 41..44
   ] });
   const R = run.results;
 
@@ -173,12 +175,12 @@ async function batchSample() {
     !!before.booksHash && before.booksHash === after.booksHash && before.auditHead === after.auditHead,
     `booksHash ${String(before.booksHash).slice(0, 12)} -> ${String(after.booksHash).slice(0, 12)}`);
 
-  // C12 — ui.navigate only accepts routes the app actually has.
-  record('C12', 'ui.navigate refuses a route outside the route index',
+  // C12 — navigate only accepts routes the app actually has.
+  record('C12', 'navigate refuses a route outside the route index',
     !ok(R[21]) && err(R[21]).code === 'E_BAD_ARGS', JSON.stringify(err(R[21])));
 
   // C13 — an agent write is attributable in the append-only audit log.
-  // Reintroduce by dropping the actor stamp in journal.post.
+  // Reintroduce by dropping the actor stamp in post_journal.
   const tailBefore = ok(R[23]) ? data(R[23]).entries : [];
   const tailAfter = ok(R[25]) ? data(R[25]).entries : [];
   const newest = tailAfter[0] || {};
@@ -219,7 +221,7 @@ async function batchSample() {
     `console=${run.consoleErrors.length} page=${run.pageErrors.length} ${run.consoleErrors.slice(0, 2).join(' | ')}`);
 
   // C19 — a reversed range is a caller mistake, not an empty period. Found by the
-  // adversarial round: gst.gstr1 with periodStart > periodEnd returned ok with every
+  // adversarial round: get_gstr1 with periodStart > periodEnd returned ok with every
   // section empty and gt:0, which reads as an authoritative nil filing. Reintroduce by
   // deleting the `range` guard in agentDispatch.
   const rev = [28, 29, 30].map((i) => !ok(R[i]) && err(R[i]).code === 'E_BAD_ARGS');
@@ -247,6 +249,16 @@ async function batchSample() {
   record('C22', 'agentName cannot forge a misleading audit actor',
     forged.every(Boolean) && legit && noForgedActor,
     `colon/multicolon/space/empty = ${forged.join('/')} legitActor=${legit ? data(R[39]).actor : 'FAILED'} tailActors=${tail.map((e) => e.actor).join(',')}`);
+
+  // C42 — a TDS quarter is the statutory calendar quarter, in IST. fyQuarterRange built each
+  // bound as a local-midnight Date and converted it with toISOString(), which in IST lands on
+  // the previous day: Q1 ran 31 Mar – 29 Jun, so 30 June's TDS went into Q2 and 31 March's
+  // into the next financial year. Reintroduce by restoring the toISOString() construction.
+  const WANT = [['2025-04-01', '2025-06-30'], ['2025-07-01', '2025-09-30'], ['2025-10-01', '2025-12-31'], ['2026-01-01', '2026-03-31']];
+  const got = [41, 42, 43, 44].map((i) => (ok(R[i]) && data(R[i]).range ? [data(R[i]).range.start, data(R[i]).range.end] : null));
+  record('C42', 'TDS quarters are the calendar quarters Apr–Jun … Jan–Mar, evaluated in IST',
+    got.every((g, i) => g && g[0] === WANT[i][0] && g[1] === WANT[i][1]),
+    got.map((g, i) => `Q${i + 1} ${g ? g.join('..') : 'ERR'}`).join(' '));
   return run;
 }
 
@@ -261,16 +273,19 @@ async function batchReadOnly() {
   // is genuine — just from a newer Bahi. E_READONLY is a declared error code, and a
   // declared code nothing can reach is a claim, not a contract.
   const run = await runCalls({ book: 'pharma', futureFormat: true, calls: [
-    { command: 'agent.health' },
-    { command: 'report.trialBalance', args: { asOf: '2026-03-31' } },
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'ro' } },
-    { command: 'file.save' },
+    { command: 'get_status' },
+    { command: 'get_trial_balance', args: { asOf: '2026-03-31' } },
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'ro' } },
+    { command: 'save_file' },
   ] });
   const [health, tb, post, save] = run.results;
-  record('C21', 'read-only file: reads work, mutations refused with E_READONLY',
+  // Refused at the CALL, not after approval: the person must never be asked to approve a
+  // write the open file cannot take. A write that stages here has already failed this check.
+  record('C21', 'read-only file: reads work, writes refused with E_READONLY before any proposal',
     ok(health) && data(health).readOnly === true && ok(tb) &&
-    !ok(post) && err(post).code === 'E_READONLY' && !ok(save) && err(save).code === 'E_READONLY',
-    `readOnly=${ok(health) ? data(health).readOnly : '?'} read=${ok(tb)} post=${err(post).code} save=${err(save).code}`);
+    !ok(post) && err(post).code === 'E_READONLY' && !post.staged &&
+    !ok(save) && err(save).code === 'E_READONLY' && !save.staged,
+    `readOnly=${ok(health) ? data(health).readOnly : '?'} read=${ok(tb)} post=${err(post).code}${post.staged ? ' (staged first)' : ''} save=${err(save).code}${save.staged ? ' (staged first)' : ''}`);
   return run;
 }
 
@@ -296,17 +311,17 @@ async function batchReconcile() {
   const PAGE = 7;
 
   const calls = [
-    { command: 'report.dayBook', args: { from: FY_START, to: FY_END } },                    // 0
-    ...Q.map(([from, to]) => ({ command: 'report.dayBook', args: { from, to } })),           // 1..4
-    ...M.map(([from, to]) => ({ command: 'report.dayBook', args: { from, to } })),           // 5..16
-    { command: 'gst.gstr1', args: { periodStart: GST_M[0], periodEnd: GST_M[1] } },          // 17
-    { command: 'gst.gstr3b', args: { periodStart: GST_M[0], periodEnd: GST_M[1] } },         // 18
-    { command: 'report.trialBalance', args: { asOf: FY_END } },                              // 19
-    { command: 'report.balanceSheet', args: { asOf: FY_END } },                              // 20
-    { command: 'masters.customers', args: { limit: 1000 } },                                 // 21
+    { command: 'get_day_book', args: { from: FY_START, to: FY_END } },                    // 0
+    ...Q.map(([from, to]) => ({ command: 'get_day_book', args: { from, to } })),           // 1..4
+    ...M.map(([from, to]) => ({ command: 'get_day_book', args: { from, to } })),           // 5..16
+    { command: 'get_gstr1', args: { periodStart: GST_M[0], periodEnd: GST_M[1] } },          // 17
+    { command: 'get_gstr3b', args: { periodStart: GST_M[0], periodEnd: GST_M[1] } },         // 18
+    { command: 'get_trial_balance', args: { asOf: FY_END } },                              // 19
+    { command: 'get_balance_sheet', args: { asOf: FY_END } },                              // 20
+    { command: 'list_customers', args: { limit: 1000 } },                                 // 21
   ];
   const PAGE_BASE = calls.length;
-  for (let off = 0; off < 8; off++) calls.push({ command: 'masters.customers', args: { limit: PAGE, offset: off * PAGE } });
+  for (let off = 0; off < 8; off++) calls.push({ command: 'list_customers', args: { limit: PAGE, offset: off * PAGE } });
 
   const run = await runCalls({ book: 'pharma', calls });
   const R = run.results;
@@ -396,8 +411,8 @@ async function batchReconcile() {
     } else {
       // One session, so the trial balance and every ledger below are read from the same book.
       const run2 = await runCalls({ book: 'pharma', calls: [
-        { command: 'report.trialBalance', args: { asOf: FY_END } },
-        ...busiest.map((a) => ({ command: 'report.accountLedger', args: { accountId: a.id, from: '2000-01-01', to: FY_END } })),
+        { command: 'get_trial_balance', args: { asOf: FY_END } },
+        ...busiest.map((a) => ({ command: 'get_account_ledger', args: { accountId: a.id, from: '2000-01-01', to: FY_END } })),
       ] });
       const tb2 = ok(run2.results[0]) ? data(run2.results[0]).rows : [];
       const parts = [];
@@ -485,7 +500,7 @@ const VOUCHERS = [
       lines: "SELECT line_no, item_id, description, hsn_sac, hsn_description, quantity, unit, rate, discount, taxable, tax_rate, rate_id, cgst, sgst, igst, cess, total FROM invoice_lines WHERE invoice_id = ? ORDER BY line_no",
       volatile: ['id', 'invoice_number', 'ledger_entry_id'],
     },
-    agentCall: { command: 'invoice.create', args: { customerId: 1, invoiceDate: '2026-02-11', agentName: 'parity',
+    agentCall: { command: 'create_invoice', args: { customerId: 1, invoiceDate: '2026-02-11', agentName: 'parity',
       lines: [{ description: 'Parity probe line', hsnSac: '3004', quantity: 10, rate: 15000, taxRate: 0.12 }] } },
   },
   {
@@ -515,7 +530,7 @@ const VOUCHERS = [
       // generated internal_ref — two different purchases, deliberately.
       volatile: ['id', 'bill_number', 'internal_ref', 'ledger_entry_id'],
     },
-    agentCall: { command: 'purchase.create', args: { vendorId: 1, billNumber: 'VB-PARITY-API', billDate: '2026-02-12',
+    agentCall: { command: 'create_purchase', args: { vendorId: 1, billNumber: 'VB-PARITY-API', billDate: '2026-02-12',
       placeOfSupply: 'MH', agentName: 'parity',
       lines: [{ description: 'API bulk drum', hsnSac: '2941', quantity: 5, rate: 250000, taxRate: 0.18 }] } },
   },
@@ -553,6 +568,13 @@ async function batchStructural() {
       formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
       formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
   }
+
+  // C43 — CMP-08 takes its quarter from fyQuarterRange, the one function C42 holds to the
+  // calendar. Its own copy of the date arithmetic had the same IST shift.
+  const cmp = formSourceOf('renderCmp08');
+  record('C43', 'CMP-08 derives its quarter from fyQuarterRange, with no date arithmetic of its own',
+    cmp.length > 0 && cmp.includes('fyQuarterRange(') && !cmp.includes('toISOString()'),
+    cmp.length === 0 ? 'could not locate renderCmp08' : `usesShared=${cmp.includes('fyQuarterRange(')} ownToISOString=${cmp.includes('toISOString()')}`);
 
   for (const v of VOUCHERS) {
     // Structural: the form delegates and carries no posting path of its own.
@@ -625,10 +647,10 @@ async function batchParity() {
 // signatures are the tamper evidence; losing them silently is the worst kind of failure.
 async function batchSigningKeys() {
   const run = await runCalls({ book: 'pharma', calls: [
-    { command: 'file.verifyIntegrity' },
-    { command: 'journal.post', args: { lines: [{ accountId: 1, debit: 500 }, { accountId: 2, credit: 500 }], agentName: 'keys' } },
-    { command: 'file.save' },
-    { command: 'file.verifyIntegrity' },
+    { command: 'verify_integrity' },
+    { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 500 }, { accountId: 2, credit: 500 }], agentName: 'keys' } },
+    { command: 'save_file' },
+    { command: 'verify_integrity' },
   ] });
   const [before, , save, after] = run.results;
 
@@ -645,7 +667,160 @@ async function batchSigningKeys() {
   return run;
 }
 
-// Batches run only when the selection needs them. A full run does all seven.
+// --- batch 7: the doors and the approval gate --------------------------------
+// v2 of the agent face. A write call stages a proposal and touches nothing until the person
+// approves it; person-only acts are refused on every door; an applied write records its
+// door, caller, proposal and approver; the cross-tab channel is closed until the person
+// opens it; WebMCP carries exactly the tools describe_tools lists. One session, with a fake
+// WebMCP host installed before the app loads. Each step drives the page directly, because
+// approving is the person's act and has no tool.
+const JOURNAL = (amount, agentName, postedAt) => JSON.stringify({ lines: [{ accountId: 1, debit: amount }, { accountId: 2, credit: amount }], agentName, postedAt });
+const COUNTS = `
+  const count = () => STATE.db.exec('SELECT COUNT(*) FROM entries')[0].values[0][0];
+  const auditMax = () => STATE.db.exec('SELECT MAX(id) FROM audit_log')[0].values[0][0];`;
+
+async function batchDoors() {
+  const run = await runCalls({ book: 'pharma', fakeModelContext: true, calls: [
+    { label: 'stage', evalJs: `${COUNTS}
+      const e0 = count(), a0 = auditMax();
+      const staged = await bahi.call('post_journal', ${JOURNAL(777, 'stage', '2025-06-16')});
+      const e1 = count(), a1 = auditMax();
+      const pid = staged.ok && staged.data ? staged.data.proposalId : null;
+      const pend = pid ? await bahi.call('get_proposal', { proposalId: pid }) : null;
+      const listed = await bahi.call('list_proposals', { status: 'pending' });
+      if (pid) await approveAgentProposal(pid);
+      const after = pid ? await bahi.call('get_proposal', { proposalId: pid }) : null;
+      return { staged, e0, e1, e2: count(), a0, a1, pend, listed: listed.ok ? listed.data.proposals.length : -1, after };` },
+    { label: 'decide', evalJs: `${COUNTS}
+      const e0 = count();
+      const r1 = await bahi.call('post_journal', ${JOURNAL(111, 'rejected', '2025-06-17')});
+      const id1 = r1.ok && r1.data ? r1.data.proposalId : null;
+      rejectAgentProposal(id1);
+      await approveAgentProposal(id1);              // approving a rejected proposal must do nothing
+      const v1 = await bahi.call('get_proposal', { proposalId: id1 });
+      const r2 = await bahi.call('post_journal', ${JOURNAL(222, 'withdrawn', '2025-06-17')});
+      const id2 = r2.ok && r2.data ? r2.data.proposalId : null;
+      const w = await bahi.call('withdraw_proposal', { proposalId: id2 });
+      await approveAgentProposal(id2);              // nor approving a withdrawn one
+      const v2 = await bahi.call('get_proposal', { proposalId: id2 });
+      const w2 = await bahi.call('withdraw_proposal', { proposalId: id2 });
+      const nf = await bahi.call('get_proposal', { proposalId: 'prop_nope' });
+      return { e0, e1: count(), v1, w, v2, w2, nf };` },
+    { label: 'person-only', evalJs: `
+      const tries = [await bahi.call('approve_proposal', {}), await bahi.call('run_sql', { sql: 'DELETE FROM entries' }), await bahi.call('set_agent_channel', {})];
+      const m = await bahi.call('describe_tools');
+      const names = m.data.tools.map((t) => t.name);
+      const person = m.data.personOnly.map((p) => p.name);
+      const exposed = person.filter((n) => names.includes(n) || Object.keys(bahi.tools).includes(n) || (window.__mcTools || []).some((d) => d.name === n));
+      return { codes: tries.map((r) => (r.ok ? 'ok' : r.error.code)), exposed, person: person.length };` },
+    { label: 'attribution', evalJs: `
+      const r = await bahi.call('post_journal', ${JOURNAL(4242, 'attrib', '2025-06-18')}, { caller: 'checks-caller' });
+      const id = r.ok && r.data ? r.data.proposalId : null;
+      await approveAgentProposal(id);
+      const tail = await bahi.call('list_audit_entries', { limit: 1, includePayload: true });
+      const e = tail.ok ? tail.data.entries[0] : {};
+      const chain = await bahi.call('verify_integrity');
+      return { id, actor: e.actor, action: e.action, agentCall: (e.payload && e.payload.agentCall) || null, chainOk: chain.ok && chain.data.chainOk, breaks: chain.ok ? chain.data.chainBreaks : -1 };` },
+    { label: 'channel', evalJs: `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const peer = new BroadcastChannel('bahi-agent');
+      const inbox = [];
+      peer.onmessage = (ev) => inbox.push(ev.data);
+      peer.postMessage({ type: 'bahi:discover', id: 'd1' });
+      await sleep(300);
+      const closedReplies = inbox.filter((m) => m.id === 'd1').length;
+      setAgentChannel(true);
+      peer.postMessage({ type: 'bahi:discover', id: 'd2' });
+      await sleep(300);
+      const here = inbox.find((m) => m.type === 'bahi:here' && m.id === 'd2');
+      const tab = here ? here.tab : null;
+      peer.postMessage({ type: 'bahi:call', id: 'c1', target: tab, tool: 'get_status', args: {}, caller: 'peer-tab' });
+      peer.postMessage({ type: 'bahi:call', id: 'c2', target: tab, tool: 'post_journal', args: ${JOURNAL(333, 'peer', '2025-06-19')}, caller: 'peer-tab' });
+      peer.postMessage({ type: 'bahi:call', id: 'c3', target: 'tab_someone_else', tool: 'get_status', args: {} });
+      await sleep(1000);
+      const res = (id) => inbox.find((m) => m.type === 'bahi:result' && m.id === id);
+      const c1 = res('c1'), c2 = res('c2'), c3 = res('c3');
+      const pid = c2 && c2.result.ok ? c2.result.data.proposalId : null;
+      const prop = pid ? BAHI_AGENT.proposals.get(pid) : null;
+      setAgentChannel(false);
+      peer.close();
+      return { closedReplies, tab, ownTab: BAHI_AGENT.tab, c1ok: !!(c1 && c1.result.ok), c2status: c2 && c2.result.ok ? c2.result.data.status : null, c3answered: !!c3, door: prop ? prop.door : null, caller: prop ? prop.caller : null };` },
+    { label: 'webmcp', evalJs: `
+      const regs = window.__mcTools || [];
+      const m = await bahi.call('describe_tools');
+      const byName = Object.fromEntries(m.data.tools.map((t) => [t.name, t]));
+      const toolNames = Object.keys(byName).sort().join();
+      const regNames = regs.map((d) => d.name).sort().join();
+      const hintsOk = regs.every((d) => byName[d.name] && d.annotations.readOnlyHint === (byName[d.name].kind === 'read'));
+      const schemasOk = regs.every((d) => byName[d.name] && JSON.stringify(d.inputSchema) === JSON.stringify(byName[d.name].inputSchema));
+      const st = regs.find((d) => d.name === 'get_status');
+      const pj = regs.find((d) => d.name === 'post_journal');
+      const status = st ? await st.execute({}) : { ok: false };
+      const post = pj ? await pj.execute(${JOURNAL(555, 'webmcp', '2025-06-20')}) : { ok: false };
+      const pid = post.ok ? post.data.proposalId : null;
+      const prop = pid ? BAHI_AGENT.proposals.get(pid) : null;
+      const self = await bahi.call('run_selftest');
+      return { same: toolNames === regNames, regCount: regs.length, toolCount: m.data.tools.length, hintsOk, schemasOk,
+        statusOk: status.ok === true, mcDoor: status.ok ? status.data.doors.modelContext : null,
+        postStatus: post.ok ? post.data.status : null, door: prop ? prop.door : null,
+        selftest: self.ok && self.data.pass, failures: self.ok ? self.data.failures : null };` },
+  ] });
+  const V = run.results.map((r) => r.value || { threw: r.threw });
+  const [stage, decide, person, attrib, chan, mcp] = V;
+
+  // C36 — a write stages and touches nothing until the person approves; approval posts it
+  // and saves. Reintroduce by letting write tools run on the call.
+  const s = stage;
+  record('C36', 'a write call stages a proposal; the books change only after approval, which saves',
+    !!s.staged && s.staged.ok && s.staged.data.status === 'pending_approval' && s.e1 === s.e0 && s.a1 === s.a0 &&
+    s.pend && s.pend.data.status === 'pending' && s.listed >= 1 &&
+    s.after && s.after.data.status === 'applied' && s.after.data.result.entryId > 0 && s.after.data.result.saved === true && s.e2 === s.e0 + 1,
+    s.threw || `staged=${s.staged && s.staged.data && s.staged.data.status} entries ${s.e0}->${s.e1} (staged) ->${s.e2} (approved) audit ${s.a0}->${s.a1} after=${s.after && s.after.data.status} saved=${s.after && s.after.data.result && s.after.data.result.saved}`);
+
+  // C37 — rejected and withdrawn proposals never apply, even if approval is attempted later.
+  // Reintroduce by letting approval ignore the proposal's status.
+  const d = decide;
+  record('C37', 'rejected and withdrawn proposals never apply; unknown ids are E_NOT_FOUND',
+    !d.threw && d.e1 === d.e0 && d.v1.data.status === 'rejected' && d.w.ok && d.v2.data.status === 'withdrawn' &&
+    !d.w2.ok && d.w2.error.code === 'E_BAD_ARGS' && !d.nf.ok && d.nf.error.code === 'E_NOT_FOUND',
+    d.threw || `entries ${d.e0}->${d.e1} rejected=${d.v1.data && d.v1.data.status} withdrawn=${d.v2.data && d.v2.data.status} rewithdraw=${d.w2.ok ? 'ok' : d.w2.error.code} unknown=${d.nf.ok ? 'ok' : d.nf.error.code}`);
+
+  // C38 — person-only acts are declared but no door reaches them. Reintroduce by dropping
+  // the person-only refusal, so they fall through to E_UNKNOWN_TOOL like a typo.
+  record('C38', 'person-only acts refused with E_PERSON_ONLY and absent from every door',
+    !person.threw && person.codes.every((c) => c === 'E_PERSON_ONLY') && person.exposed.length === 0 && person.person >= 10,
+    person.threw || `codes=${person.codes.join(',')} exposed=${person.exposed.join(',') || 'none'} personOnly=${person.person}`);
+
+  // C39 — an applied write records which door, which caller, which proposal and who approved.
+  // Reintroduce by dropping the agentCall stamp from audit payloads.
+  const ac = attrib.agentCall || {};
+  record('C39', 'an applied write records door, caller, proposal and approver in the audit payload',
+    !attrib.threw && attrib.actor === 'agent:attrib' && attrib.action === 'entry.post' && ac.door === 'window' &&
+    ac.caller === 'checks-caller' && ac.proposalId === attrib.id && ac.approvedBy === 'owner' && attrib.chainOk === true && attrib.breaks === 0,
+    attrib.threw || `actor=${attrib.actor} agentCall=${JSON.stringify(attrib.agentCall)} chainOk=${attrib.chainOk}`);
+
+  // C40 — the cross-tab door is closed until the person opens it, then answers only calls
+  // addressed to this tab, and stages writes as door 'channel'. Reintroduce by opening it on load.
+  record('C40', 'cross-tab channel closed by default; once opened it answers its own tab and stages writes',
+    !chan.threw && chan.closedReplies === 0 && chan.tab === chan.ownTab && chan.c1ok && chan.c2status === 'pending_approval' &&
+    !chan.c3answered && chan.door === 'channel' && chan.caller === 'peer-tab',
+    chan.threw || `closedReplies=${chan.closedReplies} tab=${chan.tab === chan.ownTab ? 'own' : chan.tab} read=${chan.c1ok} write=${chan.c2status} otherTab=${chan.c3answered} door=${chan.door}`);
+
+  // C41 — WebMCP carries exactly the callable tools, with the same schemas, read-only hints
+  // that match each kind, and the same staging. Reintroduce by not registering write tools.
+  record('C41', 'WebMCP registers exactly the callable tools, same schemas and hints, and stages writes',
+    !mcp.threw && mcp.same && mcp.regCount === mcp.toolCount && mcp.hintsOk && mcp.schemasOk && mcp.statusOk &&
+    /^registered/.test(mcp.mcDoor || '') && mcp.postStatus === 'pending_approval' && mcp.door === 'modelContext' && mcp.selftest === true,
+    mcp.threw || `registered=${mcp.regCount}/${mcp.toolCount} same=${mcp.same} hints=${mcp.hintsOk} schemas=${mcp.schemasOk} door=${mcp.mcDoor} write=${mcp.postStatus} via=${mcp.door} selftest=${mcp.selftest} ${mcp.failures && mcp.failures.length ? JSON.stringify(mcp.failures) : ''}`);
+
+  // C18 for this batch: the doors must not log errors either.
+  if (run.consoleErrors.length || run.pageErrors.length) {
+    process.stdout.write(`  doors batch console errors: ${[...run.consoleErrors, ...run.pageErrors].slice(0, 3).join(' | ')}\n`);
+  }
+  return run;
+}
+
+// Batches run only when the selection needs them. A full run does all eight.
 if (wants('noFile'))     await batchNoFile();
 if (wants('sample'))     await batchSample();
 if (wants('readOnly'))   await batchReadOnly();
@@ -653,6 +828,7 @@ if (wants('reconcile'))  await batchReconcile();
 if (wants('structural')) await batchStructural();
 if (wants('parity'))     await batchParity();
 if (wants('signing'))    await batchSigningKeys();
+if (wants('doors'))      await batchDoors();
 
 const shown = only ? results.filter((r) => only.includes(r.id)) : results;
 let red = 0;

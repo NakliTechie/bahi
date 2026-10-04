@@ -35,7 +35,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-SAMPLE_DIR = Path("/Users/chiragpatnaik/Code/Browser/Bahi/sample-data")
+SAMPLE_DIR = Path(__file__).resolve().parent
 
 FILES = {
     "pharma":        SAMPLE_DIR / "pharma.khata",

@@ -19,7 +19,7 @@ Covers:
     J. Per-company assertions
 
 Run:
-    python3 -m unittest /Users/chiragpatnaik/Code/Browser/Bahi/sample-data/test_khata.py -v
+    cd sample-data && python3 -m unittest test_khata -v
 """
 
 import hashlib
@@ -31,7 +31,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-SAMPLE_DIR = Path("/Users/chiragpatnaik/Code/Browser/Bahi/sample-data")
+SAMPLE_DIR = Path(__file__).resolve().parent
 
 FILES = {
     "pharma":        SAMPLE_DIR / "pharma.khata",

@@ -27,8 +27,8 @@ const DEFECTS = [
   { id: 'C2', note: 'change a tool description in code without regenerating manifest.json',
     find: "the UI routes not yet covered. Start here.'", replace: "the UI routes not yet covered. Start here (drifted).'" },
   { id: 'C3', note: 'drop the unknown-tool guard so an unknown name falls through to the spec lookup',
-    find: "  if (typeof name !== 'string' || !Object.prototype.hasOwnProperty.call(BAHI_AGENT_TOOLS, name)) {",
-    replace: "  if (false) {" },
+    find: "async function agentRoute(name, args, ctx) {\n  if (typeof name !== 'string' || !Object.prototype.hasOwnProperty.call(BAHI_AGENT_TOOLS, name)) {",
+    replace: "async function agentRoute(name, args, ctx) {\n  if (false) {" },
   { id: 'C4', target: 'C4', also: ['C5'], note: 'remove the file-scope guard so file tools run with no book open',
     find: "  if (spec.scope === 'file' && !(STATE.db && STATE.manifest)) {", replace: "  if (false) {" },
   { id: 'C6', note: 'interpolate the q filter into SQL instead of binding it',
@@ -162,6 +162,17 @@ const DEFECTS = [
   { id: 'C50', target: 'C50', note: 'list paging ignores the offset',
     find: "  if (limit != null) { tail += ' LIMIT ? OFFSET ?'; params.push(limit, opts.offset || 0); }",
     replace: "  if (limit != null) { tail += ' LIMIT ? OFFSET ?'; params.push(limit, 0); }" },
+  { id: 'C51', target: 'C51', note: 'create_customer stops checking the party when the agent calls',
+    find: "  create_customer: (a) => { checkParty(a); return {", replace: "  create_customer: (a) => { return {" },
+  { id: 'C52', target: 'C52', note: 'read the TDS table\'s threshold column as the rate again',
+    find: "  return Array.isArray(r) ? { section: r[0], threshold: r[1], rate: r[2], rateNoPan: r[3], description: r[4] } : r;",
+    replace: "  return Array.isArray(r) ? { section: r[0], threshold: r[1], rate: r[1], rateNoPan: r[3], description: r[4] } : r;" },
+  { id: 'C53', target: 'C53', note: 'bahiUi skips the prepare step',
+    find: "      const args = spec.kind === 'write' ? BAHI_AGENT_PREPARE[name](v.value).args : v.value;\n      const data = await BAHI_AGENT_HANDLERS[name](args, { door: 'ui', caller: null });",
+    replace: "      const args = v.value;\n      const data = await BAHI_AGENT_HANDLERS[name](args, { door: 'ui', caller: null });" },
+  { id: 'C54', target: 'C54', note: 'the series modal saves on its own again instead of through bahiUi',
+    find: "    const r = await bahiUi(isEdit ? 'update_invoice_series' : 'create_invoice_series', isEdit ? { seriesId, ...input } : input);",
+    replace: "    const r = { ok: true, data: { ...(await saveInvoiceSeries(STATE.db, { ...input, id: isEdit ? seriesId : null })), saved: (await persistKhata()) !== false } };" },
 ];
 
 // A defect may need further edits, applied in order, to stay syntactically valid or to

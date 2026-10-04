@@ -9471,12 +9471,30 @@ async function exportReviewReportPdf(db, caProfile, asOfDate) {
 // === TDS / TCS engine ===
 
 // Look up the TDS rate for a section from REF.tdsSections.
+// The bundled reference rows are positional; a reference-data update may supply objects. These
+// two readers name the columns once. Reading them by position elsewhere took the TDS threshold
+// (30000 for 194C) as its rate and the TCS description as its rate.
+//   TDS: [section, threshold, rate with PAN, rate without PAN, description]
+//   TCS: [section, description, rate]
+function tdsRow(r) {
+  return Array.isArray(r) ? { section: r[0], threshold: r[1], rate: r[2], rateNoPan: r[3], description: r[4] } : r;
+}
+function tcsRow(r) {
+  return Array.isArray(r) ? { section: r[0], description: r[1], rate: r[2] } : r;
+}
+
 function getTdsRateForSection(section) {
   if (!section) return 0;
-  const row = (REF.tdsSections.data || []).find(r => (r.section || r[0]) === section);
-  if (!row) return 0;
-  // Support both array shape ([section, rate, ...]) and object shape ({section, rate})
-  return row.rate != null ? row.rate : (row[1] || 0);
+  const row = (REF.tdsSections.data || []).map(tdsRow).find((r) => r.section === section);
+  return row ? (row.rate || 0) : 0;
+}
+
+// The first row for a section: 206C(1) has several goods at different rates, which the TCS form
+// tells apart by option.
+function getTcsRateForSection(section) {
+  if (!section) return 0;
+  const row = (REF.tcsSections.data || []).map(tcsRow).find((r) => r.section === section);
+  return row ? (row.rate || 0) : 0;
 }
 
 // Get the vendor's default TDS section, or null if not set.
@@ -14815,74 +14833,20 @@ function renderAdvanceForm(main) {
   }
 
   async function doPostAdvance() {
-    try {
-      const customer = customers.find(c => c.id === form.customerId);
-      if (!customer) { toast('Pick a customer', 'err'); return; }
-      const gross = parseRupees(form.grossAmount);
-      if (gross <= 0) { toast('Enter an amount', 'err'); return; }
-      const rate = form.taxRate || 0;
-      const taxable = Math.round(gross / (1 + rate));
-      const totalTax = gross - taxable;
-
-      const customerStateRow = parseStateInput($('af-pos').value);
-      const customerState = customerStateRow ? customerStateRow[0] : customer.state || null;
-      const isInter = customerState !== companyState;
-      const cgst = isInter ? 0 : Math.round(totalTax / 2);
-      const sgst = isInter ? 0 : (totalTax - cgst);
-      const igst = isInter ? totalTax : 0;
-
-      // Snapshots
-      const cR2 = STATE.db.exec('SELECT name, gstin, pan, state, email, phone, address FROM customers WHERE id = ?', [customer.id]);
-      const cv = cR2.length && cR2[0].values.length ? cR2[0].values[0] : [];
-      const csRow = cv[3] && STATE_BY_ISO.has(cv[3]) ? STATE_BY_ISO.get(cv[3]) : null;
-      const customerSnap = JSON.stringify({
-        name: cv[0], gstin: cv[1], pan: cv[2], state: cv[3],
-        stateName: csRow ? csRow[2] : null, gstinStateCode: csRow ? csRow[1] : null,
-        email: cv[4], phone: cv[5], address: cv[6],
-      });
-      const bankR = STATE.db.exec('SELECT id, name FROM accounts WHERE id = ?', [form.bankAccountId]);
-      if (!bankR.length || !bankR[0].values.length) { toast('Bank account missing', 'err'); return; }
-      const bankAcc = { id: bankR[0].values[0][0], name: bankR[0].values[0][1] };
-      const posName = customerStateRow ? customerStateRow[2] : (csRow ? csRow[2] : null);
-      const rateId = rateIdForDecimal(rate, $('af-date').value);
-      const advanceNumber = $('af-number').value;
-      const advanceDate = $('af-date').value;
-
-      STATE.db.run('BEGIN');
-      try {
-        STATE.db.run(
-          `INSERT INTO advances (advance_number, advance_date, customer_id, bank_account_id,
-             amount, taxable, tax_rate, rate_id, cgst, sgst, igst, place_of_supply,
-             place_of_supply_name, nature_of_supply, payment_mode, reference, notes,
-             adjusted_amount, remaining_balance, status, customer_snapshot, bank_account_snapshot, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,'open',?,?,?)`,
-          [advanceNumber, advanceDate, customer.id, bankAcc.id,
-           gross, taxable, rate, rateId, cgst, sgst, igst, customerState,
-           posName, $('af-nature').value, $('af-mode').value, $('af-ref').value.trim() || null, $('af-notes').value.trim() || null,
-           gross, customerSnap, bankAcc.name, nowIso()]
-        );
-        const advanceId = lastInsertId(STATE.db);
-
-        const entryId = await postAdvanceToLedger(STATE.db, {
-          advance_number: advanceNumber, advance_date: advanceDate,
-          amount: gross, taxable, tax_rate: rate, cgst, sgst, igst,
-        }, customer, bankAcc, isInter);
-        STATE.db.run('UPDATE advances SET ledger_entry_id = ? WHERE id = ?', [entryId, advanceId]);
-        STATE.db.run('COMMIT');
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        toast(`Advance ${advanceNumber} posted (${fmtINR(gross)}) and saved`, 'ok');
-        nav('#/advances');
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
-    }
+    if (!form.customerId) { toast('Pick a customer', 'err'); return; }
+    if (parseRupees(form.grossAmount) <= 0) { toast('Enter an amount', 'err'); return; }
+    const posRow = parseStateInput($('af-pos').value);
+    // Shared with create_advance: the GST split, the snapshots and the posting live in createAdvance.
+    const r = await bahiUi('create_advance', {
+      customerId: form.customerId, bankAccountId: form.bankAccountId, amount: parseRupees(form.grossAmount),
+      taxRate: form.taxRate || 0, natureOfSupply: $('af-nature').value, placeOfSupply: posRow ? posRow[0] : '',
+      paymentMode: $('af-mode').value, advanceDate: $('af-date').value || undefined, advanceNumber: $('af-number').value,
+      reference: $('af-ref').value, notes: $('af-notes').value,
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(`Advance ${r.data.advanceNumber} posted (${fmtINR(r.data.amount)}) and saved`, 'ok');
+    nav('#/advances');
   }
 }
 
@@ -17979,76 +17943,27 @@ function renderDeliveryChallanForm(main) {
   }
 
   async function doPost() {
-    try {
-      const challanType = $('dc-type').value;
-      const isVendorOutward = challanType === 'outward-return';
-      const partyId = isVendorOutward ? parseInt($('dc-vend').value, 10) : parseInt($('dc-cust').value, 10);
-      if (!partyId) { toast(isVendorOutward ? 'Pick a vendor' : 'Pick a customer', 'err'); return; }
-
-      const computedLines = form.lines
-        .map((ln, i) => ({
-          line_no: i + 1,
-          item_id: ln.itemId ? parseInt(ln.itemId, 10) : null,
-          description: ln.description || '',
-          quantity: parseInt(ln.quantity, 10) || 0,
-        }))
-        .filter(ln => ln.item_id && ln.quantity > 0);
-      if (!computedLines.length) { toast('Add at least one valid line', 'err'); return; }
-
-      const challanNumber = $('dc-num').value;
-      const challanDate = $('dc-date').value;
-      const isReturnable = $('dc-returnable').value === '1' ? 1 : 0;
-      const expRet = $('dc-expret').value || null;
-      const notes = $('dc-notes').value.trim() || null;
-      const godownId = getDefaultGodownId(STATE.db);
-
-      // Snapshots
-      const companySnapshot = JSON.stringify(STATE.manifest.company || {});
-      let partySnapshot = '{}';
-      if (isVendorOutward) {
-        const r = STATE.db.exec('SELECT name, gstin, state, address FROM vendors WHERE id=?', [partyId]);
-        if (r.length && r[0].values.length) partySnapshot = JSON.stringify({ name: r[0].values[0][0], gstin: r[0].values[0][1], state: r[0].values[0][2], address: r[0].values[0][3] });
-      } else {
-        const r = STATE.db.exec('SELECT name, gstin, state, address FROM customers WHERE id=?', [partyId]);
-        if (r.length && r[0].values.length) partySnapshot = JSON.stringify({ name: r[0].values[0][0], gstin: r[0].values[0][1], state: r[0].values[0][2], address: r[0].values[0][3] });
-      }
-
-      STATE.db.run('BEGIN');
-      try {
-        STATE.db.run(
-          'INSERT INTO delivery_challans (challan_number, challan_date, challan_type, customer_id, vendor_id, godown_id, destination, vehicle_no, transporter, reason, is_returnable, expected_return_date, status, company_snapshot, party_snapshot, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [challanNumber, challanDate, challanType, isVendorOutward ? null : partyId, isVendorOutward ? partyId : null, godownId, $('dc-dest').value.trim() || null, $('dc-vehicle').value.trim() || null, $('dc-transporter').value.trim() || null, $('dc-reason').value.trim() || null, isReturnable, expRet, 'open', companySnapshot, partySnapshot, notes, nowIso()]
-        );
-        const challanId = lastInsertId(STATE.db);
-        const lineStmt = STATE.db.prepare('INSERT INTO delivery_challan_lines (challan_id, line_no, item_id, description, quantity, unit, rate) VALUES (?,?,?,?,?,?,?)');
-        for (const ln of computedLines) {
-          const it = items.find(x => x.id === ln.item_id);
-          lineStmt.run([challanId, ln.line_no, ln.item_id, ln.description, ln.quantity, it?.unit || null, null]);
-        }
-        lineStmt.free();
-        STATE.db.run('COMMIT');
-
-        // Stock effects (NO GL posting)
-        try {
-          postChallanStockEffects(STATE.db, {
-            id: challanId, challan_number: challanNumber, challan_date: challanDate,
-            challan_type: challanType, godown_id: godownId,
-          }, computedLines);
-        } catch (stockErr) {
-          console.error('Stock effect failed:', stockErr);
-          toast('Challan posted, but stock effect failed: ' + stockErr.message, 'err');
-        }
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        toast(`Challan ${challanNumber} posted`, 'ok');
-        nav('#/delivery-challans');
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
-    } catch (e) { console.error(e); toast('Post failed: ' + e.message, 'err'); }
+    const challanType = $('dc-type').value;
+    const isVendorOutward = challanType === 'outward-return';
+    const partyId = isVendorOutward ? parseInt($('dc-vend').value, 10) : parseInt($('dc-cust').value, 10);
+    if (!partyId) { toast(isVendorOutward ? 'Pick a vendor' : 'Pick a customer', 'err'); return; }
+    const lines = form.lines
+      .map(ln => ({ itemId: ln.itemId ? parseInt(ln.itemId, 10) : 0, description: ln.description || '', quantity: parseInt(ln.quantity, 10) || 0 }))
+      .filter(ln => ln.itemId && ln.quantity > 0);
+    if (!lines.length) { toast('Add at least one valid line', 'err'); return; }
+    // Shared with create_delivery_challan: the rows, the snapshots and the stock effect live in createDeliveryChallan.
+    const r = await bahiUi('create_delivery_challan', {
+      challanType, ...(isVendorOutward ? { vendorId: partyId } : { customerId: partyId }), lines,
+      challanNumber: $('dc-num').value, challanDate: $('dc-date').value || undefined,
+      destination: $('dc-dest').value, vehicleNo: $('dc-vehicle').value, transporter: $('dc-transporter').value,
+      reason: $('dc-reason').value, isReturnable: $('dc-returnable').value === '1',
+      ...($('dc-expret').value ? { expectedReturnDate: $('dc-expret').value } : {}), notes: $('dc-notes').value,
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    for (const w of r.data.warnings || []) toast(w, 'err');
+    if (!r.data.saved) { render(); return; }
+    toast(`Challan ${r.data.challanNumber} posted`, 'ok');
+    nav('#/delivery-challans');
   }
 }
 
@@ -18155,17 +18070,13 @@ function openEwayBillDetail(ewbId) {
   };
   const save = h('button', { class: 'primary' }, ['Save EWB number']);
   save.onclick = async () => {
-    const num = $('ewb-num-in').value.trim();
-    if (num) {
-      STATE.db.run("UPDATE eway_bills SET ewb_number=?, status='generated' WHERE id=?", [num, ewbId]);
-      setSaveStatus('unsaved');
-      await persistKhata();
-      toast('EWB number saved', 'ok');
-      closeModal();
-      render();
-    } else {
-      toast('Enter the EWB number', 'err');
-    }
+    if (!$('ewb-num-in').value.trim()) { toast('Enter the EWB number', 'err'); return; }
+    // Shared with record_eway_bill_number.
+    const r = await bahiUi('record_eway_bill_number', { ewbId, ewbNumber: $('ewb-num-in').value });
+    if (!r.ok) { toast('Save failed: ' + r.error.message, 'err'); return; }
+    toast('EWB number saved', 'ok');
+    closeModal();
+    render();
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, dlJson, dlPdf, save]));
   wrap.appendChild(m);
@@ -18515,54 +18426,18 @@ function renderEwayBillForm(main) {
   main.appendChild(panel);
 
   async function doSave() {
-    try {
-      const [srcType, srcIdStr] = $('ewbf-source').value.split(':');
-      const srcId = parseInt(srcIdStr, 10);
-      let supplierSnap = '{}', recipientSnap = '{}', goodsSnap = '[]';
-      let sourceRef = '', taxable = 0, cgst = 0, sgst = 0, igst = 0, total = 0;
-
-      if (srcType === 'invoice') {
-        const inv = invoices.find(i => i.id === srcId);
-        if (!inv) { toast('Invoice not found', 'err'); return; }
-        sourceRef = inv.number;
-        supplierSnap = inv.companySnapshot || '{}';
-        recipientSnap = inv.customerSnapshot || '{}';
-        taxable = inv.subtotal; cgst = inv.cgst; sgst = inv.sgst; igst = inv.igst; total = inv.total;
-        const linesR = STATE.db.exec('SELECT description, hsn_sac, quantity, unit, taxable, tax_rate, cgst, sgst, igst FROM invoice_lines WHERE invoice_id=? ORDER BY line_no', [inv.id]);
-        if (linesR.length) {
-          goodsSnap = JSON.stringify(linesR[0].values.map(v => ({
-            desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: v[4], tax_rate: v[5], cgst: v[6], sgst: v[7], igst: v[8],
-          })));
-        }
-      } else {
-        const dc = challans.find(c => c.id === srcId);
-        if (!dc) { toast('Challan not found', 'err'); return; }
-        sourceRef = dc.number;
-        supplierSnap = dc.companySnapshot || '{}';
-        recipientSnap = dc.partySnapshot || '{}';
-        const linesR = STATE.db.exec('SELECT description, NULL as hsn, quantity, unit, 0, 0, 0, 0, 0 FROM delivery_challan_lines WHERE challan_id=? ORDER BY line_no', [dc.id]);
-        if (linesR.length) {
-          goodsSnap = JSON.stringify(linesR[0].values.map(v => ({
-            desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: 0, tax_rate: 0, cgst: 0, sgst: 0, igst: 0,
-          })));
-        }
-      }
-
-      STATE.db.run(
-        'INSERT INTO eway_bills (ewb_date, source_type, source_id, source_ref, transporter_name, transporter_id, vehicle_no, vehicle_type, mode, distance_km, reason_code, supplier_snapshot, recipient_snapshot, goods_snapshot, taxable_value, cgst, sgst, igst, total, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [nowIso().slice(0, 10), srcType, srcId, sourceRef,
-          $('ewbf-trname').value.trim() || null, $('ewbf-trid').value.trim().toUpperCase() || null,
-          $('ewbf-veh').value.trim().toUpperCase() || null, $('ewbf-vtype').value, $('ewbf-mode').value,
-          parseInt($('ewbf-dist').value, 10) || 0, $('ewbf-reason').value,
-          supplierSnap, recipientSnap, goodsSnap,
-          taxable, cgst, sgst, igst, total, 'draft', nowIso()]
-      );
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast('E-way bill draft saved', 'ok');
-      nav('#/eway-bills');
-    } catch (e) { console.error(e); toast('Save failed: ' + e.message, 'err'); }
+    const [srcType, srcIdStr] = $('ewbf-source').value.split(':');
+    // Shared with create_eway_bill: the snapshots come from the invoice or challan in createEwayBill.
+    const r = await bahiUi('create_eway_bill', {
+      sourceType: srcType, sourceId: parseInt(srcIdStr, 10),
+      transporterName: $('ewbf-trname').value, transporterId: $('ewbf-trid').value, vehicleNo: $('ewbf-veh').value,
+      vehicleType: $('ewbf-vtype').value, mode: $('ewbf-mode').value,
+      distanceKm: parseInt($('ewbf-dist').value, 10) || 0, reasonCode: $('ewbf-reason').value,
+    });
+    if (!r.ok) { toast('Save failed: ' + r.error.message, 'err'); return; }
+    if (!r.data.saved) { render(); return; }
+    toast('E-way bill draft saved', 'ok');
+    nav('#/eway-bills');
   }
 }
 
@@ -18730,75 +18605,21 @@ function renderStockTransferOut(main) {
   }
 
   async function doPost() {
+    const toStateRow = parseStateInput($('st-tostate').value);
+    if (!toStateRow) { toast('Receiver state required', 'err'); return; }
+    const lines = form.lines
+      .map(ln => ({ itemId: parseInt(ln.itemId, 10) || 0, quantity: parseFloat(ln.quantity) || 0, rate: parseRupees(ln.rate), taxRate: ln.taxRate || 0 }))
+      .filter(ln => ln.itemId && Math.round(ln.quantity * ln.rate) > 0);
+    if (!lines.length) { toast('Add at least one valid line', 'err'); return; }
+    // Shared with create_stock_transfer: the record and the receiver's payload come from createStockTransfer.
+    const r = await bahiUi('create_stock_transfer', {
+      toGstin: $('st-togstin').value, toState: toStateRow[0], lines,
+      transferNumber: $('st-num').value, transferDate: $('st-date').value || undefined,
+    });
+    if (!r.ok) { toast(r.error.message, 'err'); return; }
+    if (!r.data.saved) { render(); return; }
+    const { transferNumber, payload } = r.data;
     try {
-      const toGstin = $('st-togstin').value.trim().toUpperCase();
-      if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(toGstin)) {
-        toast('Receiver GSTIN format invalid', 'err'); return;
-      }
-      const toStateRow = parseStateInput($('st-tostate').value);
-      if (!toStateRow) { toast('Receiver state required', 'err'); return; }
-      const toState = toStateRow[0];
-      if (toGstin.slice(0, 2) !== toStateRow[1]) { toast('GSTIN/state mismatch', 'err'); return; }
-      if (toGstin === fromGstin) { toast('Receiver GSTIN must be different from sender', 'err'); return; }
-
-      let subtotal = 0, igst = 0;
-      const computedLines = [];
-      for (const [i, ln] of form.lines.entries()) {
-        const qty = parseFloat(ln.quantity) || 0;
-        const rate = parseRupees(ln.rate);
-        const taxable = Math.round(qty * rate);
-        const lineIgst = Math.round(taxable * (ln.taxRate || 0));
-        if (taxable <= 0) continue;
-        subtotal += taxable;
-        igst += lineIgst;
-        computedLines.push({
-          line_no: i + 1,
-          item_id: ln.itemId,
-          quantity: qty, rate, taxable,
-          tax_rate: ln.taxRate || 0,
-          igst: lineIgst,
-          cgst: 0, sgst: 0,
-          total: taxable + lineIgst,
-        });
-      }
-      if (!computedLines.length) { toast('Add at least one valid line', 'err'); return; }
-      const total = subtotal + igst;
-      const transferNumber = $('st-num').value;
-      const transferDate = $('st-date').value;
-
-      // Create payload snapshot for cross-file export
-      const itemsForPayload = computedLines.map(ln => {
-        const it = items.find(x => x.id === ln.item_id);
-        return {
-          item_name: it?.name || '',
-          hsn_sac: it?.hsn_sac || null,
-          unit: it?.unit || null,
-          quantity: ln.quantity,
-          rate: ln.rate,
-          taxable: ln.taxable,
-          tax_rate: ln.tax_rate,
-          igst: ln.igst,
-        };
-      });
-      const payload = {
-        format: 'bahi-stock-transfer/1.0',
-        transfer_number: transferNumber,
-        transfer_date: transferDate,
-        from: { gstin: fromGstin, state: fromState, name: STATE.manifest.company?.name || '' },
-        to: { gstin: toGstin, state: toState },
-        lines: itemsForPayload,
-        totals: { subtotal, igst, total },
-      };
-
-      STATE.db.run(
-        'INSERT INTO stock_transfers (transfer_number, transfer_date, direction, from_gstin, from_state, to_gstin, to_state, total_value, payload_snapshot, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-        [transferNumber, transferDate, 'out', fromGstin, fromState, toGstin, toState, total, JSON.stringify(payload), 'sent', nowIso()]
-      );
-      const transferId = lastInsertId(STATE.db);
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-
       // Auto-export the JSON for the receiver
       try {
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -18811,7 +18632,7 @@ function renderStockTransferOut(main) {
       } catch (e) { if (e.name !== 'AbortError') toast('Save dialog cancelled — transfer is recorded', 'err'); }
 
       nav('#/stock-transfers');
-    } catch (e) { console.error(e); toast('Post failed: ' + e.message, 'err'); }
+    } catch (e) { console.error(e); toast('Export failed: ' + e.message, 'err'); }
   }
 }
 
@@ -20356,10 +20177,10 @@ function renderVendorPaymentForm(main) {
   const vendorOptions = vendors.map(v => `<option value="${v.id}">${escapeHtml(v.name)}${v.gstin ? ' · ' + escapeHtml(v.gstin) : ''}${v.tdsSection ? ' · TDS ' + v.tdsSection : ''}</option>`).join('');
   const bankOptions = banks.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
   // TDS section options from REF
-  const tdsSecOptions = '<option value="">— No TDS —</option>' + (REF.tdsSections.data || []).map(r => {
-    const sec = r.section || r[0];
-    const rate = r.rate != null ? r.rate : (r[1] || 0);
-    const desc = r.description || r[2] || '';
+  const tdsSecOptions = '<option value="">— No TDS —</option>' + (REF.tdsSections.data || []).map(tdsRow).map(r => {
+    const sec = r.section;
+    const rate = r.rate || 0;
+    const desc = r.description || '';
     return `<option value="${sec}">${sec} — ${escapeHtml(desc)} (${(rate * 100).toFixed(2)}%)</option>`;
   }).join('');
 
@@ -20456,84 +20277,24 @@ function renderVendorPaymentForm(main) {
   }
 
   async function doPost() {
-    try {
-      const vendor = vendors.find(v => v.id === form.vendorId);
-      if (!vendor) { toast('Pick a vendor', 'err'); return; }
-      const gross = parseRupees($('vp-gross').value);
-      if (gross <= 0) { toast('Gross amount must be positive', 'err'); return; }
-      const bankAcc = banks.find(b => b.id === parseInt($('vp-bank').value, 10));
-      if (!bankAcc) { toast('Pick a bank/cash account', 'err'); return; }
-      const tdsSection = $('vp-tds-sec').value || null;
-      const tdsRate = form.tdsRate || 0;
-      const tdsAmount = tdsSection ? Math.round(gross * tdsRate) : 0;
-      const netToVendor = gross - tdsAmount;
-
-      const paymentNumber = $('vp-num').value;
-      const paymentDate = $('vp-date').value;
-      const mode = $('vp-mode').value;
-      const reference = $('vp-ref').value.trim() || null;
-      const notes = $('vp-notes').value.trim() || null;
-
-      // Snapshots
-      const vendorSnapshot = JSON.stringify({
-        name: vendor.name, gstin: vendor.gstin, pan: vendor.pan, tdsSection: vendor.tdsSection,
-      });
-
-      STATE.db.run('BEGIN');
-      try {
-        // Insert payment row with payment_direction='out' + tds_amount + tds_section
-        STATE.db.run(
-          'INSERT INTO payments (payment_number, payment_date, vendor_id, payment_direction, bank_account_id, amount, payment_mode, reference, notes, status, customer_snapshot, bank_account_snapshot, tds_amount, tds_section, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [paymentNumber, paymentDate, vendor.id, 'out', bankAcc.id, gross, mode, reference, notes, 'posted', vendorSnapshot, bankAcc.name, tdsAmount, tdsSection, nowIso()]
-        );
-        const paymentId = lastInsertId(STATE.db);
-
-        // Post the journal in the SAME transaction (postEntry uses a SAVEPOINT) so the
-        // payment row + ledger entry + TDS deduction row commit (or roll back) atomically:
-        // Dr Sundry Creditors (gross) / Cr Bank (net) / Cr TDS Payable (tds, if any).
-        const lines = [
-          { accountId: getAccountIdByName(STATE.db, 'Sundry Creditors'), debit: gross, credit: 0 },
-          { accountId: bankAcc.id, debit: 0, credit: netToVendor },
-        ];
-        if (tdsAmount > 0 && tdsSection) {
-          lines.push({ accountId: getOrCreateTdsPayableAccount(STATE.db, tdsSection), debit: 0, credit: tdsAmount });
-        }
-        const result = await postEntry(STATE.db, {
-          voucherType: 'payment',
-          voucherRef: paymentNumber,
-          narration: `Payment to ${vendor.name}` + (tdsAmount > 0 ? ` (TDS ${tdsSection} @ ${(tdsRate * 100).toFixed(2)}% deducted)` : ''),
-          postedAt: paymentDate,
-          actor: auditActor(),
-          lines,
-        });
-        STATE.db.run('UPDATE payments SET ledger_entry_id = ? WHERE id = ?', [result.entryId, paymentId]);
-
-        // Record the TDS deduction row separately for Form 26Q
-        if (tdsAmount > 0 && tdsSection) {
-          // The full GL effect (Dr Creditors / Cr Bank / Cr TDS Payable) is already posted
-          // inline above, so just insert the tds_deductions row here for Form 26Q.
-          const vR2 = STATE.db.exec('SELECT name, pan FROM vendors WHERE id = ?', [vendor.id]);
-          const [vName2, vPan2] = (vR2.length && vR2[0].values.length) ? vR2[0].values[0] : [null, null];
-          STATE.db.run(
-            'INSERT INTO tds_deductions (payment_id, vendor_id, section, rate, taxable_amount, tds_amount, payment_date, vendor_pan, vendor_name_snapshot, ledger_entry_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-            [paymentId, vendor.id, tdsSection, tdsRate, gross, tdsAmount, paymentDate, vPan2, vName2, result.entryId, nowIso()]
-          );
-        }
-        STATE.db.run('COMMIT');
-
-        setSaveStatus('unsaved');
-        const ok = await persistKhata();
-        if (!ok) { render(); return; }
-        toast(`Vendor payment ${paymentNumber} posted${tdsAmount > 0 ? ` (TDS ${fmtINR(tdsAmount)} withheld)` : ''}`, 'ok');
-        nav('#/payments');
-      } catch (e) {
-        try { STATE.db.run('ROLLBACK'); } catch (_) {}
-        throw e;
-      }
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
-    }
+    if (!vendors.find(v => v.id === form.vendorId)) { toast('Pick a vendor', 'err'); return; }
+    const gross = parseRupees($('vp-gross').value);
+    if (gross <= 0) { toast('Gross amount must be positive', 'err'); return; }
+    const bankId = parseInt($('vp-bank').value, 10);
+    if (!banks.find(b => b.id === bankId)) { toast('Pick a bank/cash account', 'err'); return; }
+    const tdsSection = $('vp-tds-sec').value || '';
+    // Shared with create_vendor_payment: the payment row, the ledger entry and the Form 26Q row
+    // commit together in createVendorPayment.
+    const r = await bahiUi('create_vendor_payment', {
+      vendorId: form.vendorId, bankAccountId: bankId, amount: gross, paymentMode: $('vp-mode').value,
+      paymentDate: $('vp-date').value || undefined, paymentNumber: $('vp-num').value,
+      reference: $('vp-ref').value, notes: $('vp-notes').value,
+      tdsSection, ...(tdsSection ? { tdsRate: form.tdsRate || 0 } : {}),
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(`Vendor payment ${r.data.paymentNumber} posted${r.data.tdsAmount > 0 ? ` (TDS ${fmtINR(r.data.tdsAmount)} withheld)` : ''}`, 'ok');
+    nav('#/payments');
   }
 }
 
@@ -20705,10 +20466,10 @@ function renderTcsCollectionForm(main) {
   const body = h('div', { class: 'panel-b' });
   const customerOptions = customers.map(c => `<option value="${c.id}">${escapeHtml(c.name)}${c.gstin ? ' · ' + escapeHtml(c.gstin) : ''}${c.pan ? ' · PAN ' + escapeHtml(c.pan) : ' · NO PAN'}</option>`).join('');
   // Section options from REF
-  const tcsSecOptions = (REF.tcsSections.data || []).map(r => {
-    const sec = r.section || r[0];
-    const rate = r.rate != null ? r.rate : (r[1] || 0);
-    const desc = r.description || r[2] || '';
+  const tcsSecOptions = (REF.tcsSections.data || []).map(tcsRow).map(r => {
+    const sec = r.section;
+    const rate = r.rate || 0;
+    const desc = r.description || '';
     return `<option value="${sec}" data-rate="${rate}">${sec} — ${escapeHtml(desc)} (${(rate * 100).toFixed(3)}%)</option>`;
   }).join('') || `<option value="206C(1H)" data-rate="0.001">206C(1H) — Sale of goods > 50L (0.100%)</option>`;
 
@@ -20780,31 +20541,18 @@ function renderTcsCollectionForm(main) {
   }
 
   async function doPost() {
-    try {
-      const customer = customers.find(c => c.id === form.customerId);
-      if (!customer) { toast('Pick a customer', 'err'); return; }
-      const taxable = parseRupees($('tcs-amt').value);
-      if (taxable <= 0) { toast('Taxable amount must be positive', 'err'); return; }
-      const section = $('tcs-sec').value;
-      const rate = form.rate;
-      const tcsAmount = Math.round(taxable * rate);
-      const invoiceDate = $('tcs-date').value;
-      const invoiceId = form.invoiceId || null;
-
-      // Use the existing helper which writes the row + posts the journal
-      await recordTcsCollection(STATE.db, {
-        invoiceId, customerId: customer.id,
-        section, rate, taxableAmount: taxable, tcsAmount, invoiceDate,
-      });
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(`TCS collection recorded (${section}, ${fmtINR(tcsAmount)})`, 'ok');
-      nav('#/form-27eq');
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
-    }
+    if (!customers.find(c => c.id === form.customerId)) { toast('Pick a customer', 'err'); return; }
+    const taxable = parseRupees($('tcs-amt').value);
+    if (taxable <= 0) { toast('Taxable amount must be positive', 'err'); return; }
+    // Shared with create_tcs_collection.
+    const r = await bahiUi('create_tcs_collection', {
+      customerId: form.customerId, section: $('tcs-sec').value, rate: form.rate, taxableAmount: taxable,
+      collectionDate: $('tcs-date').value || undefined, ...(form.invoiceId ? { invoiceId: form.invoiceId } : {}),
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(`TCS collection recorded (${r.data.section}, ${fmtINR(r.data.tcsAmount)})`, 'ok');
+    nav('#/form-27eq');
   }
 }
 
@@ -21054,34 +20802,13 @@ function renderBankReconciliation(main) {
 
     const saveBtn = h('button', { class: 'primary', style: 'margin-top:10px' }, ['Save reconciliation']);
     saveBtn.onclick = async () => {
-      try {
-        const stmtBal = parseRupees($('br-stmt-bal').value);
-        const matched = Array.from(rec.cleared);
-        let unclearedDr = 0, unclearedCr = 0;
-        for (const ln of lines) {
-          if (rec.cleared.has(ln.line_id)) continue;
-          unclearedDr += ln.debit;
-          unclearedCr += ln.credit;
-        }
-        const diff = bookBalance - stmtBal;
-        await saveBankReconciliation(STATE.db, {
-          bankAccountId: accId,
-          throughDate: to,
-          bookBalance,
-          statementBalance: stmtBal,
-          unclearedDebits: unclearedDr,
-          unclearedCredits: unclearedCr,
-          difference: diff,
-          matchedEntryLines: matched,
-          notes: $('br-notes').value.trim(),
-        });
-        setSaveStatus('unsaved');
-        await persistKhata();
-        toast(`Reconciliation saved. ${matched.length} cleared, difference ${fmtINR(Math.abs(diff))}.`, 'ok');
-      } catch (e) {
-        console.error(e);
-        toast('Save failed: ' + e.message, 'err');
-      }
+      // Shared with save_bank_reconciliation: reconcileBank works out the totals from the lines.
+      const r = await bahiUi('save_bank_reconciliation', {
+        accountId: accId, from, to, statementBalance: parseRupees($('br-stmt-bal').value),
+        clearedLineIds: Array.from(rec.cleared), notes: $('br-notes').value,
+      });
+      if (!r.ok) { toast('Save failed: ' + r.error.message, 'err'); return; }
+      toast(`Reconciliation saved. ${r.data.cleared} cleared, difference ${fmtINR(Math.abs(r.data.difference))}.`, 'ok');
     };
     out.appendChild(saveBtn);
 
@@ -21262,12 +20989,11 @@ function buildSnapshotsPanel() {
   if (!STATE.readOnly) {
     const manualBtn = h('button', { class: 'small' }, ['Save snapshot now']);
     manualBtn.onclick = async () => {
-      try {
-        STATE.pendingManualSnapshot = true;
-        await persistKhata();
-        toast('Snapshot saved.', 'ok');
-        render();
-      } catch (e) { toast('Snapshot save failed: ' + e.message, 'err'); }
+      // Shared with save_snapshot.
+      const r = await bahiUi('save_snapshot', {});
+      if (!r.ok || !r.data.saved) { toast('Snapshot save failed' + (r.ok ? '' : ': ' + r.error.message), 'err'); return; }
+      toast('Snapshot saved.', 'ok');
+      render();
     };
     headBtns.appendChild(manualBtn);
   }
@@ -21934,7 +21660,7 @@ function renderSettings(main) {
     const card = h('div', {
       style: `border:2px solid ${id === currentTheme ? 'var(--saffron)' : 'var(--rule)'};border-radius:6px;padding:14px;cursor:pointer;background:${t.vars['--bg']};transition:border-color .15s`,
     });
-    card.onclick = () => { applyTheme(id); render(); };
+    card.onclick = () => { bahiUi('set_theme', { theme: id }); };
     // Inline swatches sourced from the theme's own vars (so the preview is accurate even
     // when this card is being viewed under a different active theme)
     card.innerHTML = `
@@ -23035,9 +22761,8 @@ async function createTcsCollection(db, input) {
   if (!(taxableAmount > 0)) throw new VoucherError('Taxable amount must be positive', 'taxableAmount');
   const cR = db.exec('SELECT id FROM customers WHERE id = ?', [customerId]);
   if (!cR.length || !cR[0].values.length) throw new VoucherError('Pick a customer', 'customerId');
-  const secRow = (REF.tcsSections.data || []).find((r) => (r.section || r[0]) === section);
-  if (!secRow) throw new VoucherError(`TCS section "${section}" is not in the TCS reference table`, 'section');
-  const rate = input.rate != null ? input.rate : (secRow.rate != null ? secRow.rate : (secRow[1] || 0));
+  if (!(REF.tcsSections.data || []).map(tcsRow).some((r) => r.section === section)) throw new VoucherError(`TCS section "${section}" is not in the TCS reference table`, 'section');
+  const rate = input.rate != null ? input.rate : getTcsRateForSection(section);
   if (!(rate > 0 && rate <= 1)) throw new VoucherError('TCS rate must be a decimal fraction above 0', 'rate');
   const tcsAmount = Math.round(taxableAmount * rate);
   const invoiceDate = input.collectionDate || todayLocal();
@@ -23120,7 +22845,7 @@ async function createEwayBill(db, input) {
     supplierSnap = supplierSnap || '{}'; recipientSnap = recipientSnap || '{}';
     const linesR = db.exec('SELECT description, hsn_sac, quantity, unit, taxable, tax_rate, cgst, sgst, igst FROM invoice_lines WHERE invoice_id=? ORDER BY line_no', [sourceId]);
     if (linesR.length) goodsSnap = JSON.stringify(linesR[0].values.map((v) => ({ desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: v[4], tax_rate: v[5], cgst: v[6], sgst: v[7], igst: v[8] })));
-  } else if (sourceType === 'challan') {
+  } else if (sourceType === 'delivery-challan') {
     const r = db.exec('SELECT challan_number, company_snapshot, party_snapshot FROM delivery_challans WHERE id = ?', [sourceId]);
     if (!r.length || !r[0].values.length) throw new VoucherError('Challan not found', 'sourceId');
     [sourceRef, supplierSnap, recipientSnap] = r[0].values[0];
@@ -23128,7 +22853,7 @@ async function createEwayBill(db, input) {
     const linesR = db.exec('SELECT description, NULL as hsn, quantity, unit, 0, 0, 0, 0, 0 FROM delivery_challan_lines WHERE challan_id=? ORDER BY line_no', [sourceId]);
     if (linesR.length) goodsSnap = JSON.stringify(linesR[0].values.map((v) => ({ desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: 0, tax_rate: 0, cgst: 0, sgst: 0, igst: 0 })));
   } else {
-    throw new VoucherError('Source must be an invoice or a challan', 'sourceType');
+    throw new VoucherError('Source must be an invoice or a delivery-challan', 'sourceType');
   }
   const vehicleType = input.vehicleType || 'regular';
   const mode = input.mode || 'road';
@@ -23207,6 +22932,30 @@ async function createStockTransfer(db, input) {
   const transferId = lastInsertId(db);
   await appendAuditEntry(db, { actor: auditActor(), action: 'transfer.create', ref: transferNumber, payload: { transferId, toGstin, total } });
   return { transferId, transferNumber, transferDate, total, payload };
+}
+
+// Bank reconciliation for one account over a period: the lines the person cleared against the
+// statement, the book balance, the uncleared totals and the difference. A cleared line must be
+// one of the period's lines.
+async function reconcileBank(db, { accountId, from, through, statementBalance, clearedLineIds = [], notes }) {
+  const lines = getBankAccountLines(db, accountId, from, through);
+  const ids = new Set(lines.map((ln) => ln.line_id));
+  const stray = clearedLineIds.filter((id) => !ids.has(id));
+  if (stray.length) throw new VoucherError(`Lines ${stray.slice(0, 5).join(', ')} are not this account's lines in the period`, 'clearedLineIds');
+  const cleared = new Set(clearedLineIds);
+  let bookBalance = 0, unclearedDebits = 0, unclearedCredits = 0;
+  for (const ln of lines) {
+    bookBalance += ln.debit - ln.credit;
+    if (cleared.has(ln.line_id)) continue;
+    unclearedDebits += ln.debit;
+    unclearedCredits += ln.credit;
+  }
+  const difference = bookBalance - statementBalance;
+  const reconcileId = await saveBankReconciliation(db, {
+    bankAccountId: accountId, throughDate: through, bookBalance, statementBalance,
+    unclearedDebits, unclearedCredits, difference, matchedEntryLines: [...cleared], notes: masterText(notes) || '',
+  });
+  return { reconcileId, cleared: cleared.size, lines: lines.length, bookBalance, difference };
 }
 
 //------------------------------------------------------------
@@ -24025,6 +23774,108 @@ const BAHI_AGENT_TOOLS = {
     description: 'Change the company\'s identity, address, FY start or composition scheme. Every changed field gets its own audit entry and history row.',
     params: agentMasterParams(AGENT_COMPANY_FIELDS) },
 
+  // Layer 3 — the remaining vouchers. Each form and its tool share one engine function.
+  create_advance: { title: 'Record an advance receipt', kind: 'write', scope: 'file', route: '#/advance/new',
+    description: 'Record a customer advance received before supply. The amount is gross of GST: the taxable value is backed out at taxRate and the tax split CGST+SGST intra-state, IGST inter-state.',
+    params: {
+      customerId: { type: 'int', required: true, min: 1 },
+      bankAccountId: { type: 'int', required: true, min: 1, desc: 'Bank or cash account id from list_bank_accounts.' },
+      amount: { type: 'int', required: true, min: 1, max: MAX_AGENT_PAISE, desc: 'Amount received, including GST, in integer paise.' },
+      taxRate: { type: 'number', min: 0, max: 1, desc: 'GST rate as a decimal fraction; 0.18 for 18%.' },
+      natureOfSupply: { type: 'string', maxLength: 10, enum: ['services', 'goods'] },
+      placeOfSupply: AGENT_STATE_PARAM,
+      paymentMode: { type: 'string', maxLength: 10, enum: ADVANCE_MODES },
+      advanceDate: { type: 'date', desc: 'Defaults to today.' },
+      advanceNumber: { type: 'string', maxLength: 60, desc: 'Generated when omitted.' },
+      reference: { type: 'string', maxLength: 120 }, notes: { type: 'string', maxLength: 2000 },
+      agentName: AGENT_NAME_PARAM,
+    } },
+  create_vendor_payment: { title: 'Pay a vendor', kind: 'write', scope: 'file', route: '#/vendor-payment/new',
+    description: 'Pay a vendor, withholding TDS when a section applies: Dr Sundry Creditors (gross) / Cr Bank (net) / Cr TDS Payable. Records the Form 26Q deduction.',
+    params: {
+      vendorId: { type: 'int', required: true, min: 1 },
+      bankAccountId: { type: 'int', required: true, min: 1 },
+      amount: { type: 'int', required: true, min: 1, max: MAX_AGENT_PAISE, desc: 'Gross amount before TDS, in integer paise.' },
+      tdsSection: { type: 'string', maxLength: 20, desc: 'TDS section, e.g. 194C. Empty or omitted for none.' },
+      tdsRate: { type: 'number', min: 0, max: 1, desc: 'Overrides the section\'s rate; decimal fraction.' },
+      paymentMode: { type: 'string', maxLength: 10, enum: VENDOR_PAYMENT_MODES },
+      paymentDate: { type: 'date', desc: 'Defaults to today.' },
+      paymentNumber: { type: 'string', maxLength: 60, desc: 'Generated when omitted.' },
+      reference: { type: 'string', maxLength: 120 }, notes: { type: 'string', maxLength: 2000 },
+      agentName: AGENT_NAME_PARAM,
+    } },
+  create_tcs_collection: { title: 'Record TCS collected', kind: 'write', scope: 'file', route: '#/tcs-collection/new',
+    description: 'Record TCS collected from a customer: the Form 27EQ row and Dr Sundry Debtors / Cr TCS Payable.',
+    params: {
+      customerId: { type: 'int', required: true, min: 1 },
+      section: { type: 'string', required: true, maxLength: 20, desc: 'TCS section from the reference table, e.g. 206C(1H).' },
+      taxableAmount: { type: 'int', required: true, min: 1, max: MAX_AGENT_PAISE },
+      rate: { type: 'number', min: 0, max: 1, desc: 'Overrides the section\'s rate; decimal fraction.' },
+      collectionDate: { type: 'date', desc: 'Defaults to today.' },
+      invoiceId: { type: 'int', min: 1, desc: 'The invoice the collection relates to, if any.' },
+      agentName: AGENT_NAME_PARAM,
+    } },
+  create_delivery_challan: { title: 'Raise a delivery challan', kind: 'write', scope: 'file', route: '#/delivery-challan/new',
+    description: 'Goods leaving or returning without a sale. Moves stock; posts no ledger entry. outward-return names a vendor; the other types name a customer.',
+    params: {
+      challanType: { type: 'string', maxLength: 20, enum: CHALLAN_TYPES },
+      customerId: { type: 'int', min: 1 }, vendorId: { type: 'int', min: 1 },
+      lines: { type: 'array', required: true, minItems: 1, maxItems: 500, items: { type: 'object', properties: {
+        itemId: { type: 'integer', minimum: 1 }, description: { type: 'string', maxLength: 500 }, quantity: { type: 'integer', minimum: 1 } }, required: ['itemId', 'quantity'] } },
+      challanDate: { type: 'date', desc: 'Defaults to today.' },
+      challanNumber: { type: 'string', maxLength: 60, desc: 'Generated when omitted.' },
+      destination: { type: 'string', maxLength: 200 }, vehicleNo: { type: 'string', maxLength: 20 },
+      transporter: { type: 'string', maxLength: 200 }, reason: { type: 'string', maxLength: 200 },
+      isReturnable: { type: 'bool' }, expectedReturnDate: { type: 'date' },
+      notes: { type: 'string', maxLength: 2000 },
+      agentName: AGENT_NAME_PARAM,
+    } },
+  create_eway_bill: { title: 'Draft an e-way bill', kind: 'write', scope: 'file', route: '#/eway-bill/new',
+    description: 'Draft an e-way bill from a posted invoice or a delivery challan. The portal issues the number; record it with record_eway_bill_number.',
+    params: {
+      sourceType: { type: 'string', required: true, maxLength: 20, enum: ['invoice', 'delivery-challan'] },
+      sourceId: { type: 'int', required: true, min: 1 },
+      transporterName: { type: 'string', maxLength: 200 }, transporterId: { type: 'string', maxLength: 20 },
+      vehicleNo: { type: 'string', maxLength: 20 },
+      vehicleType: { type: 'string', maxLength: 20, enum: EWB_VEHICLE_TYPES },
+      mode: { type: 'string', maxLength: 10, enum: EWB_MODES },
+      distanceKm: { type: 'int', min: 0, max: 10000 },
+      reasonCode: { type: 'string', maxLength: 2, enum: EWB_REASONS },
+      agentName: AGENT_NAME_PARAM,
+    } },
+  record_eway_bill_number: { title: 'Record an e-way bill number', kind: 'write', scope: 'file', route: '#/eway-bills',
+    description: 'Record the number the e-way bill portal issued for a draft; the bill becomes generated.',
+    params: { ewbId: { type: 'int', required: true, min: 1 }, ewbNumber: { type: 'string', required: true, maxLength: 20 }, agentName: AGENT_NAME_PARAM } },
+  create_stock_transfer: { title: 'Send a stock transfer', kind: 'write', scope: 'file', route: '#/stock-transfer/out/new',
+    description: 'Record an outbound inter-GSTIN stock transfer with IGST per line. Returns the payload the receiving branch imports; saving it as a file is the person\'s.',
+    params: {
+      toGstin: { type: 'string', required: true, maxLength: 15 },
+      toState: { type: 'string', required: true, maxLength: 2, pattern: '^[A-Z]{2}$' },
+      lines: { type: 'array', required: true, minItems: 1, maxItems: 500, items: { type: 'object', properties: {
+        itemId: { type: 'integer', minimum: 1 }, quantity: { type: 'number', exclusiveMinimum: 0 },
+        rate: { type: 'integer', minimum: 0, description: 'Integer paise per unit.' }, taxRate: { type: 'number', minimum: 0, maximum: 1 } }, required: ['itemId', 'quantity', 'rate'] } },
+      transferDate: { type: 'date', desc: 'Defaults to today.' },
+      transferNumber: { type: 'string', maxLength: 60, desc: 'Generated when omitted.' },
+      agentName: AGENT_NAME_PARAM,
+    } },
+
+  save_bank_reconciliation: { title: 'Save a bank reconciliation', kind: 'write', scope: 'file', route: '#/bank-reconcile', range: ['from', 'to'],
+    description: 'Save a reconciliation of one bank account over a period: the ledger lines cleared against the statement and the statement\'s closing balance. Bahi works out the book balance, the uncleared totals and the difference.',
+    params: {
+      accountId: { type: 'int', required: true, min: 1 },
+      from: { type: 'date', required: true }, to: { type: 'date', required: true, desc: 'Reconciled through this date.' },
+      statementBalance: { type: 'int', required: true, min: -MAX_AGENT_PAISE, max: MAX_AGENT_PAISE, desc: 'Closing balance per the bank statement, integer paise.' },
+      clearedLineIds: { type: 'array', maxItems: 20000, items: { type: 'integer', minimum: 1 }, desc: 'line_id values from get_bank_reconciliation that the statement shows.' },
+      notes: { type: 'string', maxLength: 2000 },
+      agentName: AGENT_NAME_PARAM,
+    } },
+  save_snapshot: { title: 'Save a snapshot', kind: 'write', scope: 'file', route: '#/file', selfSaving: true,
+    description: 'Save the books and keep the previous on-disk state as a manual snapshot inside the .khata, retained indefinitely.',
+    params: { agentName: AGENT_NAME_PARAM } },
+  set_theme: { title: 'Set the theme', kind: 'session', scope: 'app', route: '#/settings',
+    description: 'Switch this browser\'s colour theme. A local preference; the books are untouched.',
+    params: { theme: { type: 'string', required: true, maxLength: 20, enum: Object.keys(THEMES) } } },
+
   list_proposals: { title: 'List proposals', kind: 'read', scope: 'app', untrusted: true,
     description: 'Proposals staged in this tab, newest first, with their status: pending, applied, rejected, withdrawn or failed.',
     params: { status: { type: 'string', maxLength: 20, enum: ['pending', 'applied', 'rejected', 'withdrawn', 'failed'] }, limit: { type: 'int', min: 1, max: 500, default: 50 } } },
@@ -24061,6 +23912,36 @@ const BAHI_AGENT_PERSON_ONLY = [
     description: 'The Debug Console.', reason: 'Raw SQL bypasses validation, double entry and attribution. It serves a person at the keyboard.' },
   { name: 'update_reference_data', title: 'Update reference data', route: '#/ref-data-update',
     description: 'Fetch new GST, HSN and state reference data.', reason: 'Bahi reaches the network only when you ask it to.' },
+  { name: 'undo_last_post', title: 'Undo my last post',
+    description: 'Reverse the person\'s own last post in this session with a counter-entry (Ctrl+Z).',
+    reason: 'Undo walks the person\'s own stack of this session\'s posts. An agent reverses an entry by proposing a counter-entry with post_journal.' },
+  { name: 'post_ca_adjustment', title: 'Post a CA adjustment', route: '#/ca/adjustment/new',
+    description: 'A journal the CA posts in CA mode, carrying their name and membership number.',
+    reason: 'A CA adjustment is the CA\'s own professional entry, signed with their membership number.' },
+  { name: 'annotate_as_ca', title: 'Annotate, review or resolve as the CA',
+    description: 'CA notes on entries and documents, review marks, and resolving them.',
+    reason: 'Annotations and review marks are the CA\'s professional record. Agents read them with list_annotations.' },
+  { name: 'export_ca_report', title: 'Issue the CA report', route: '#/ca/report',
+    description: 'The CA\'s report on the books as a PDF.',
+    reason: 'The report is the CA\'s to issue. The figures behind it are in the read tools.' },
+  { name: 'import_books_data', title: 'Import from Tally or SAP',
+    description: 'Import masters and vouchers from a Tally XML or SAP B1 export, and export to SAP.',
+    reason: 'An import reads a file the person chooses, and an export writes one through the save picker.' },
+  { name: 'import_stock_transfer', title: 'Import an inbound stock transfer', route: '#/stock-transfer/in/import',
+    description: 'Receive a transfer from another branch from the JSON file it sent.',
+    reason: 'It reads the file the person received from the sending branch.' },
+  { name: 'backup_books', title: 'Back up the books',
+    description: 'Write a dated backup archive of the .khata and its audit log.',
+    reason: 'A backup is written through the browser\'s save picker, which answers only to a person.' },
+  { name: 'restore_snapshot', title: 'Restore a snapshot to a new file',
+    description: 'Write an earlier saved state of the books to a new .khata.',
+    reason: 'Restoring writes a new file through the save picker; which state to restore is the person\'s choice.' },
+  { name: 'switch_mode', title: 'Switch between Owner and CA mode',
+    description: 'Change who the books are being worked on as.',
+    reason: 'The mode decides who the audit log names as acting.' },
+  { name: 'configure_ai', title: 'Set up Smart Capture and AI providers',
+    description: 'Turn on Smart Capture, download its on-device model, and hold provider API keys.',
+    reason: 'It downloads a model on the person\'s consent and holds their API keys.' },
   { name: 'approve_proposal', title: 'Approve a proposal',
     description: 'Apply an agent proposal to the books.', reason: 'Approval is the point of staging. An agent cannot approve its own change.' },
   { name: 'reject_proposal', title: 'Reject a proposal',
@@ -24072,18 +23953,8 @@ const BAHI_AGENT_PERSON_ONLY = [
 // Surfaces the UI has that the agent face does NOT yet cover. Declared, not hidden:
 // run_selftest asserts every route is covered by a tool, a person-only act or an entry
 // here, so a new UI route cannot quietly appear without someone deciding about it.
-const BAHI_AGENT_GAPS = [
-  { route: '#/vendor-payment/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/tcs-collection/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/advance/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/delivery-challan/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/eway-bill/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/stock-transfer/out/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/stock-transfer/in/import', reason: 'Needs a file import.' },
-  { route: '#/ca/adjustment/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/ca/report', reason: 'PDF generation, not data.' },
-  { route: '#/settings', reason: 'Local preferences, not books data. The one agent setting, the cross-tab channel, is person-only.' },
-];
+// Empty since layer 3: every route has a tool or a person-only act.
+const BAHI_AGENT_GAPS = [];
 
 function agentToolDescription(name) {
   const spec = BAHI_AGENT_TOOLS[name];
@@ -24316,6 +24187,110 @@ const BAHI_AGENT_PREPARE = {
     checkCompany(merged.args);
     return merged;
   },
+
+  create_advance: (a) => {
+    const c = agentRow('SELECT name FROM customers WHERE id = ?', [a.customerId]);
+    if (!c) throw new AgentBadArgs(`customerId ${a.customerId} is not a customer — see list_customers`);
+    const b = agentRow('SELECT name FROM accounts WHERE id = ?', [a.bankAccountId]);
+    if (!b) throw new AgentBadArgs(`bankAccountId ${a.bankAccountId} is not an account — see list_bank_accounts`);
+    if (a.placeOfSupply && !STATE_BY_ISO.has(a.placeOfSupply)) throw new AgentBadArgs(`placeOfSupply ${a.placeOfSupply} is not a state code`);
+    const advanceDate = a.advanceDate || todayLocal();
+    return { args: { ...a, advanceDate }, summary: `Advance of ${fmtINR(a.amount)} from ${c.name} into ${b.name} on ${advanceDate}`,
+      details: [`GST ${fmtRatePct(a.taxRate || 0)}% included`, `Nature: ${a.natureOfSupply || 'services'}`] };
+  },
+  create_vendor_payment: (a) => {
+    const v = agentRow('SELECT name, tds_section FROM vendors WHERE id = ?', [a.vendorId]);
+    if (!v) throw new AgentBadArgs(`vendorId ${a.vendorId} is not a vendor — see list_vendors`);
+    const b = agentRow('SELECT name FROM accounts WHERE id = ?', [a.bankAccountId]);
+    if (!b) throw new AgentBadArgs(`bankAccountId ${a.bankAccountId} is not an account — see list_bank_accounts`);
+    const sec = masterText(a.tdsSection);
+    if (sec && !(REF.tdsSections.data || []).some((r) => r[0] === sec)) throw new AgentBadArgs(`TDS section "${sec}" is not in the TDS reference table`);
+    const rate = sec ? (a.tdsRate != null ? a.tdsRate : getTdsRateForSection(sec)) || 0 : 0;
+    const tds = sec ? Math.round(a.amount * rate) : 0;
+    const paymentDate = a.paymentDate || todayLocal();
+    return { args: { ...a, paymentDate }, summary: `Pay ${v.name} ${fmtINR(a.amount)} from ${b.name} on ${paymentDate}`,
+      details: sec ? [`TDS ${sec} @ ${fmtRatePct(rate)}%: ${fmtINR(tds)} withheld`, `Net to vendor: ${fmtINR(a.amount - tds)}`] : ['No TDS'] };
+  },
+  create_tcs_collection: (a) => {
+    const c = agentRow('SELECT name FROM customers WHERE id = ?', [a.customerId]);
+    if (!c) throw new AgentBadArgs(`customerId ${a.customerId} is not a customer — see list_customers`);
+    if (!(REF.tcsSections.data || []).map(tcsRow).some((r) => r.section === a.section)) throw new AgentBadArgs(`TCS section "${a.section}" is not in the TCS reference table`);
+    const rate = a.rate != null ? a.rate : getTcsRateForSection(a.section);
+    if (!(rate > 0)) throw new AgentBadArgs('the TCS rate must be above 0');
+    const collectionDate = a.collectionDate || todayLocal();
+    return { args: { ...a, collectionDate }, summary: `TCS ${a.section} of ${fmtINR(Math.round(a.taxableAmount * rate))} from ${c.name} on ${collectionDate}`,
+      details: [`${fmtRatePct(rate)}% on ${fmtINR(a.taxableAmount)}`] };
+  },
+  create_delivery_challan: (a) => {
+    const type = a.challanType || 'outward-job';
+    const toVendor = type === 'outward-return';
+    const partyId = toVendor ? a.vendorId : a.customerId;
+    if (!partyId) throw new AgentBadArgs(toVendor ? 'an outward-return challan needs vendorId' : 'this challan type needs customerId');
+    const party = agentRow(`SELECT name FROM ${toVendor ? 'vendors' : 'customers'} WHERE id = ?`, [partyId]);
+    if (!party) throw new AgentBadArgs(`${toVendor ? 'vendorId' : 'customerId'} ${partyId} not found`);
+    const details = [];
+    for (let i = 0; i < a.lines.length; i++) {
+      const ln = a.lines[i];
+      if (!ln || typeof ln !== 'object' || !Number.isSafeInteger(ln.itemId) || ln.itemId < 1) throw new AgentBadArgs(`lines[${i}].itemId must be a positive integer`);
+      if (!Number.isSafeInteger(ln.quantity) || ln.quantity < 1) throw new AgentBadArgs(`lines[${i}].quantity must be a positive whole number`);
+      const it = agentRow('SELECT name, unit FROM items WHERE id = ?', [ln.itemId]);
+      if (!it) throw new AgentBadArgs(`lines[${i}].itemId ${ln.itemId} is not an item`);
+      details.push(`${ln.quantity} ${it.unit || ''} ${it.name}`.replace(/\s+/g, ' '));
+    }
+    const challanDate = a.challanDate || todayLocal();
+    return { args: { ...a, challanDate }, summary: `Delivery challan (${type}) for ${party.name} on ${challanDate}`, details: agentDetailCap(details) };
+  },
+  create_eway_bill: (a) => {
+    const src = a.sourceType === 'invoice'
+      ? agentRow("SELECT invoice_number AS ref, total FROM invoices WHERE id = ? AND status = 'posted'", [a.sourceId])
+      : agentRow('SELECT challan_number AS ref, 0 AS total FROM delivery_challans WHERE id = ?', [a.sourceId]);
+    if (!src) throw new AgentBadArgs(`${a.sourceType} ${a.sourceId} not found${a.sourceType === 'invoice' ? ' among posted invoices' : ''}`);
+    return { args: a, summary: `E-way bill draft for ${a.sourceType} ${src.ref}${src.total ? ` (${fmtINR(src.total)})` : ''}`,
+      details: [a.vehicleNo ? `Vehicle ${a.vehicleNo}` : 'No vehicle yet', `Mode: ${a.mode || 'road'}`] };
+  },
+  record_eway_bill_number: (a) => {
+    const e = agentRow('SELECT source_ref, status FROM eway_bills WHERE id = ?', [a.ewbId]);
+    if (!e) throw new AgentBadArgs(`ewbId ${a.ewbId} is not an e-way bill — see list_eway_bills`);
+    if (!masterText(a.ewbNumber)) throw new AgentBadArgs('ewbNumber is empty');
+    return { args: a, summary: `E-way bill for ${e.source_ref}: number ${a.ewbNumber}`, details: [`Status ${e.status} → generated`] };
+  },
+  create_stock_transfer: (a) => {
+    const toGstin = String(a.toGstin).trim().toUpperCase();
+    if (!GSTIN_PATTERN.test(toGstin)) throw new AgentBadArgs('toGstin format invalid');
+    const row = STATE_BY_ISO.get(a.toState);
+    if (!row) throw new AgentBadArgs(`toState ${a.toState} is not a state code`);
+    if (toGstin.slice(0, 2) !== row[1]) throw new AgentBadArgs(`toGstin starts with ${toGstin.slice(0, 2)} but ${row[2]} has GST code ${row[1]}`);
+    const details = [];
+    let total = 0;
+    for (let i = 0; i < a.lines.length; i++) {
+      const ln = a.lines[i];
+      if (!ln || typeof ln !== 'object' || !Number.isSafeInteger(ln.itemId) || ln.itemId < 1) throw new AgentBadArgs(`lines[${i}].itemId must be a positive integer`);
+      if (typeof ln.quantity !== 'number' || !(ln.quantity > 0)) throw new AgentBadArgs(`lines[${i}].quantity must be a positive number`);
+      if (!Number.isInteger(ln.rate) || ln.rate < 0 || ln.rate > MAX_AGENT_PAISE) throw new AgentBadArgs(`lines[${i}].rate must be integer paise`);
+      if (ln.taxRate != null && !(ln.taxRate >= 0 && ln.taxRate <= 1)) throw new AgentBadArgs(`lines[${i}].taxRate must be a decimal fraction`);
+      const it = agentRow('SELECT name FROM items WHERE id = ?', [ln.itemId]);
+      if (!it) throw new AgentBadArgs(`lines[${i}].itemId ${ln.itemId} is not an item`);
+      const taxable = Math.round(ln.quantity * ln.rate);
+      total += taxable + Math.round(taxable * (ln.taxRate || 0));
+      details.push(`${ln.quantity} × ${it.name} @ ${fmtINR(ln.rate)}, IGST ${fmtRatePct(ln.taxRate || 0)}%`);
+    }
+    const transferDate = a.transferDate || todayLocal();
+    return { args: { ...a, toGstin, transferDate }, summary: `Stock transfer to ${toGstin} (${row[2]}) on ${transferDate}: ${fmtINR(total)} with IGST`, details: agentDetailCap(details) };
+  },
+
+  save_bank_reconciliation: (a) => {
+    const acc = agentRow('SELECT name FROM accounts WHERE id = ?', [a.accountId]);
+    if (!acc) throw new AgentBadArgs(`accountId ${a.accountId} is not an account — see list_bank_accounts`);
+    const lines = getBankAccountLines(STATE.db, a.accountId, a.from, a.to);
+    const ids = new Set(lines.map((ln) => ln.line_id));
+    const cleared = a.clearedLineIds || [];
+    const stray = cleared.filter((id) => !ids.has(id));
+    if (stray.length) throw new AgentBadArgs(`clearedLineIds ${stray.slice(0, 5).join(', ')} are not this account's lines between ${a.from} and ${a.to}`);
+    const book = lines.reduce((t, ln) => t + ln.debit - ln.credit, 0);
+    return { args: a, summary: `Reconcile ${acc.name} through ${a.to}: ${cleared.length} of ${lines.length} lines cleared`,
+      details: [`Book balance ${fmtINR(book)}`, `Statement balance ${fmtINR(a.statementBalance)}`, `Difference ${fmtINR(book - a.statementBalance)}`] };
+  },
+  save_snapshot: (a) => ({ args: a, summary: 'Save the books and keep a manual snapshot', details: [] }),
 
   save_file: (a) => ({
     args: a,
@@ -24682,6 +24657,26 @@ const BAHI_AGENT_HANDLERS = {
     if (r.changes.length) { setSaveStatus('unsaved'); saved = (await persistKhata()) !== false; }
     return { changed: r.changes.map((c) => c.field), saved };
   },
+
+  create_advance: async (a) => createAdvance(STATE.db, a),
+  create_vendor_payment: async (a) => createVendorPayment(STATE.db, a),
+  create_tcs_collection: async (a) => createTcsCollection(STATE.db, a),
+  create_delivery_challan: async (a) => createDeliveryChallan(STATE.db, a),
+  create_eway_bill: async (a) => createEwayBill(STATE.db, a),
+  record_eway_bill_number: async (a) => recordEwayBillNumber(STATE.db, a),
+  create_stock_transfer: async (a) => createStockTransfer(STATE.db, a),
+
+  save_bank_reconciliation: async (a) => reconcileBank(STATE.db, {
+    accountId: a.accountId, from: a.from, through: a.to, statementBalance: a.statementBalance,
+    clearedLineIds: a.clearedLineIds || [], notes: a.notes,
+  }),
+  save_snapshot: async () => {
+    STATE.pendingManualSnapshot = true;
+    setSaveStatus('unsaved');
+    const saved = (await persistKhata()) !== false;
+    return { saved, snapshotCount: ((STATE.manifest && STATE.manifest.snapshots) || []).length };
+  },
+  set_theme: async (a) => { applyTheme(a.theme); render(); return { theme: a.theme }; },
 
   list_proposals: async (a) => {
     const rows = [...BAHI_AGENT.proposals.values()].filter((p) => !a.status || p.status === a.status);

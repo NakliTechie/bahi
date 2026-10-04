@@ -28,11 +28,12 @@ const BATCH_CHECKS = {
   sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C42', 'C44'],
   readOnly:   ['C21'],
   reconcile:  ['C23', 'C24', 'C25', 'C26', 'C27'],
-  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43', 'C49'],
+  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43', 'C49', 'C54'],
   parity:     ['C29', 'C31'],
   signing:    ['C32'],
   doors:      ['C36', 'C37', 'C38', 'C39', 'C40', 'C41'],
   reads:      ['C45', 'C46', 'C47', 'C48', 'C50'],
+  writes:     ['C51', 'C52', 'C53'],
 };
 const wants = (batch) => !only || BATCH_CHECKS[batch].some((c) => only.includes(c));
 
@@ -577,7 +578,7 @@ async function batchStructural() {
   const formSourceOf = (formFn) => {
     const a = src.indexOf(`function ${formFn}(`);
     if (a < 0) return '';
-    const m = src.slice(a + 10).match(/\nfunction [A-Za-z0-9_]+\(/);
+    const m = src.slice(a + 10).match(/\n(?:async )?function [A-Za-z0-9_]+\(/);
     return m ? src.slice(a, a + 10 + m.index) : '';
   };
 
@@ -612,6 +613,28 @@ async function batchStructural() {
   const missing = SHARED_READS.filter(([fn, call]) => !formSourceOf(fn).includes(call)).map(([fn]) => fn);
   record('C49', 'every list, register and summary screen reads through the function its agent tool uses',
     missing.length === 0, `screens=${SHARED_READS.length} notShared=${missing.join(',') || 'none'}`);
+
+  // C54 — every form layer 3 moved dispatches through bahiUi to its tool and keeps no write of
+  // its own: no INSERT or UPDATE, no posting, no audit entry, no save.
+  const BUS_FORMS = [
+    ['openCustomerModal', 'create_customer'], ['openVendorModal', 'create_vendor'], ['openItemModal', 'create_item'],
+    ['openBankAccountModal', 'create_bank_account'], ['openSeriesModal', 'create_invoice_series'], ['openGodownModal', 'create_godown'],
+    ['openEditCompanyModal', 'update_company'], ['renderAdvanceForm', 'create_advance'], ['renderVendorPaymentForm', 'create_vendor_payment'],
+    ['renderTcsCollectionForm', 'create_tcs_collection'], ['renderDeliveryChallanForm', 'create_delivery_challan'], ['renderEwayBillForm', 'create_eway_bill'],
+    ['openEwayBillDetail', 'record_eway_bill_number'], ['renderStockTransferOut', 'create_stock_transfer'],
+    ['renderBankReconciliation', 'save_bank_reconciliation'], ['buildSnapshotsPanel', 'save_snapshot'],
+  ];
+  const WRITE_TEXT = ['INSERT INTO', ".run('UPDATE", '.run("UPDATE', 'postEntry(', 'appendAuditEntry(', 'persistKhata('];
+  const busProblems = [];
+  for (const [fn, tool] of BUS_FORMS) {
+    const body = formSourceOf(fn);
+    if (!body) { busProblems.push(`${fn}: not found`); continue; }
+    if (!body.includes('bahiUi(') || !body.includes(`'${tool}'`)) busProblems.push(`${fn}: no bahiUi('${tool}')`);
+    const own = WRITE_TEXT.filter((t) => body.includes(t));
+    if (own.length) busProblems.push(`${fn}: ${own.join(' ')}`);
+  }
+  record('C54', 'every form layer 3 moved dispatches through bahiUi and keeps no write of its own',
+    busProblems.length === 0, `forms=${BUS_FORMS.length} problems=${busProblems.join('; ') || 'none'}`);
 
   for (const v of VOUCHERS) {
     // Structural: the form delegates and carries no posting path of its own.
@@ -956,7 +979,107 @@ async function batchReads() {
   return run;
 }
 
-// Batches run only when the selection needs them. A full run does all nine.
+// --- batch 9: write parity — masters, vouchers and the person's door ---------------------
+// Layer 3 moved every remaining write into an engine function shared by its form and its
+// tool, and sent the forms through bahiUi. These checks hold the agent's side (refusals at the
+// call, correct effects once approved) and the person's side (the forms post as the person).
+async function batchWrites() {
+  const run = await runCalls({ book: 'pharma', calls: [
+    { label: 'masters', evalJs: `
+      const pending = () => BAHI_AGENT.proposals.size;
+      const p0 = pending();
+      const bad = [
+        await bahi.call('create_customer', { name: 'Mismatch Co', gstin: '29AAAPA1234A1Z5', state: 'MH', agentName: 'w' }),
+        await bahi.call('create_vendor', { name: 'Bad TDS Co', tdsSection: '999Z', agentName: 'w' }),
+        await bahi.call('create_bank_account', { name: 'HDFC Current A/c', agentName: 'w' }),
+        await bahi.call('create_invoice_series', { name: 'No prefix', prefix: '   ', agentName: 'w' }),
+      ];
+      const refusedStaged = pending() - p0;
+      const c = await bahi.call('create_customer', { name: 'Checks Retail', gstin: '27AAAPC1234C1Z5', state: 'MH', agentName: 'w' });
+      await approveAgentProposal(c.data.proposalId);
+      const id = (await bahi.call('list_customers', { q: 'Checks Retail' })).data.rows[0].id;
+      const u = await bahi.call('update_customer', { customerId: id, phone: '022 5555 0000', agentName: 'w' });
+      await approveAgentProposal(u.data.proposalId);
+      const row = STATE.db.exec('SELECT name, gstin, state, phone FROM customers WHERE id = ?', [id])[0].values[0];
+      const dupes = STATE.db.exec("SELECT COUNT(*) FROM customers WHERE name = 'Checks Retail'")[0].values[0][0];
+      const tail = (await bahi.call('list_audit_entries', { limit: 2, includePayload: true })).data.entries.map((e) => [e.action, e.actor, e.payload.agentCall ? e.payload.agentCall.door : null]);
+      return { codes: bad.map((r) => (r.ok ? 'ok:' + (r.data.status || '') : r.error.code)), refusedStaged, row, dupes, tail };` },
+    { label: 'vouchers', evalJs: `
+      const take = async (tool, args) => { const r = await bahi.call(tool, { ...args, agentName: 'w' }); if (!r.ok) return { error: r.error.code + ' ' + r.error.message }; await approveAgentProposal(r.data.proposalId); const p = (await bahi.call('get_proposal', { proposalId: r.data.proposalId })).data; return p.status === 'applied' ? p.result : { error: p.status + ' ' + (p.error && p.error.message) }; };
+      const vp = await take('create_vendor_payment', { vendorId: 1, bankAccountId: 38, amount: 1000000, tdsSection: '194C', paymentDate: '2026-02-11' });
+      const tdsRow = STATE.db.exec('SELECT tds_amount, rate, section FROM tds_deductions WHERE payment_id = ?', [vp.paymentId || -1])[0];
+      const q4 = (await bahi.call('get_form26q', { fyStartYear: 2025, quarter: 4 })).data.rows.some((r) => r.paymentId === vp.paymentId);
+      const adv = await take('create_advance', { customerId: 1, bankAccountId: 38, amount: 118000, taxRate: 0.18, advanceDate: '2026-02-10' });
+      const tcs = await take('create_tcs_collection', { customerId: 1, section: '206C(1H)', taxableAmount: 6000000, collectionDate: '2026-02-12' });
+      const onHand = (id) => (STATE.db.exec('SELECT COALESCE(SUM(qty_balance),0) FROM batches WHERE item_id = ?', [id])[0].values[0][0]);
+      const before = onHand(1);
+      const dc = await take('create_delivery_challan', { challanType: 'outward-job', customerId: 1, lines: [{ itemId: 1, quantity: 3 }], challanDate: '2026-02-13' });
+      const after = onHand(1);
+      const ewb = await take('create_eway_bill', { sourceType: 'invoice', sourceId: 1, reasonCode: '1' });
+      const num = await take('record_eway_bill_number', { ewbId: ewb.ewbId || -1, ewbNumber: '331000123456' });
+      const st = await take('create_stock_transfer', { toGstin: '29AAAPA1234A1Z5', toState: 'KA', lines: [{ itemId: 1, quantity: 2, rate: 15000, taxRate: 0.12 }], transferDate: '2026-02-14' });
+      const tb = (await bahi.call('get_trial_balance')).data;
+      const chain = (await bahi.call('verify_integrity')).data;
+      return { vp, tds: tdsRow ? tdsRow.values[0] : null, inQ4: q4, adv, tcs, dc, moved: before - after, ewb, num, st, balanced: tb.balanced, chainOk: chain.chainOk };` },
+    { label: 'ui', evalJs: `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const setv = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+      const closed = async () => { for (let i = 0; i < 100; i++) { await sleep(100); if (document.getElementById('modal').classList.contains('hidden')) return true; } return false; };
+      const saveModal = async () => { [...document.querySelectorAll('#modal .modal-f button')].pop().click(); return closed(); };
+      openCustomerModal(); await sleep(80); setv('cm-name', '');
+      const blankClosed = await saveModal();
+      const blankMsg = [...document.querySelectorAll('#modal .modal-b div')].map((d) => d.textContent).find((t) => /required/.test(t)) || null;
+      setv('cm-name', 'Form Customer'); setv('cm-gstin', '27AAAPF1234F1Z5');
+      await saveModal();
+      const id = STATE.db.exec("SELECT id FROM customers WHERE name = 'Form Customer'")[0].values[0][0];
+      openCustomerModal(id); await sleep(80); setv('cm-phone', '0000');
+      await saveModal();
+      const rows = STATE.db.exec("SELECT COUNT(*), MAX(phone) FROM customers WHERE name = 'Form Customer'")[0].values[0];
+      nav('#/vendor-payment/new'); await sleep(400);
+      setv('vp-tds-sec', '194C'); setv('vp-gross', '10000'); await sleep(150);
+      const n0 = STATE.db.exec('SELECT COUNT(*) FROM tds_deductions')[0].values[0][0];
+      [...document.querySelectorAll('#main button')].find((b) => /post/i.test(b.textContent)).click();
+      for (let i = 0; i < 80 && location.hash !== '#/payments'; i++) await sleep(100);
+      const tds = STATE.db.exec('SELECT tds_amount, rate FROM tds_deductions ORDER BY id DESC LIMIT 1')[0].values[0];
+      const added = STATE.db.exec('SELECT COUNT(*) FROM tds_deductions')[0].values[0][0] - n0;
+      const tail = STATE.db.exec('SELECT action, actor, payload FROM audit_log ORDER BY id DESC LIMIT 3')[0].values.map(([a, b, p]) => [a, b, !!JSON.parse(p).agentCall]);
+      return { blankClosed, blankMsg, rows, tds, added, tail };` },
+  ] });
+  const V = run.results.map((r) => r.value || { threw: r.threw });
+  const [m, v, ui] = V;
+
+  // C51 — a master's checks run when the agent calls, so a bad GSTIN, an unknown TDS section, a
+  // duplicate bank account or a blank prefix never reaches the person as a proposal; good input
+  // applies, and an update changes the row instead of adding one. Reintroduce by dropping the
+  // party check from create_customer's prepare step.
+  record('C51', 'masters: bad input refused at the call (nothing staged); create and update apply, attributed',
+    !m.threw && m.codes.every((c) => c === 'E_BAD_ARGS') && m.refusedStaged === 0 && m.row[0] === 'Checks Retail' && m.row[3] === '022 5555 0000' &&
+    m.dupes === 1 && m.tail[0][0] === 'customer.update' && m.tail[0][1] === 'agent:w' && m.tail[0][2] === 'window' && m.tail[1][0] === 'customer.create',
+    m.threw || `refusals=${m.codes.join(',')} staged=${m.refusedStaged} row=${JSON.stringify(m.row)} copies=${m.dupes} tail=${JSON.stringify(m.tail)}`);
+
+  // C52 — each voucher's effects once approved: 194C withholds 1% and reaches Form 26Q; an
+  // advance's GST split sums to the receipt; TCS at the section's rate; a challan moves stock;
+  // an e-way bill takes the portal's number; the books still balance and the chain holds.
+  // Reintroduce by reading the TDS table's threshold column as the rate again.
+  const ok = (x) => x && !x.error;
+  record('C52', 'vouchers: TDS 1% for 194C in Form 26Q; advance GST sums; TCS at the section rate; challan moves stock; books balance',
+    !v.threw && ok(v.vp) && v.vp.tdsAmount === 10000 && v.tds && v.tds[0] === 10000 && v.tds[1] === 0.01 && v.inQ4 &&
+    ok(v.adv) && v.adv.taxable + v.adv.cgst + v.adv.sgst + v.adv.igst === 118000 && v.adv.taxable === 100000 &&
+    ok(v.tcs) && v.tcs.tcsAmount === 6000 && ok(v.dc) && v.moved === 3 && ok(v.ewb) && ok(v.num) && v.num.status === 'generated' &&
+    ok(v.st) && v.st.total === 33600 && v.balanced === true && v.chainOk === true,
+    v.threw || `vendorPayment=${JSON.stringify(v.vp && (v.vp.error || [v.vp.tdsAmount]))} tdsRow=${JSON.stringify(v.tds)} q4=${v.inQ4} advance=${JSON.stringify(v.adv && (v.adv.error || [v.adv.taxable, v.adv.cgst, v.adv.sgst, v.adv.igst]))} tcs=${JSON.stringify(v.tcs && (v.tcs.error || v.tcs.tcsAmount))} moved=${v.moved} ewb=${v.num && (v.num.error || v.num.status)} transfer=${v.st && (v.st.error || v.st.total)} balanced=${v.balanced} chain=${v.chainOk}`);
+
+  // C53 — the person's door: a refusal stays in the modal; an edit changes the row instead of
+  // adding one; the vendor-payment form withholds 1% for 194C; and the person's entries are
+  // theirs — actor owner, no agent stamp. Reintroduce by letting bahiUi skip the prepare step.
+  record('C53', 'forms post through bahiUi as the person: refusal in the modal, edit updates, 194C withholds 1%, no agent stamp',
+    !ui.threw && ui.blankClosed === false && !!ui.blankMsg && ui.rows[0] === 1 && ui.rows[1] === '0000' &&
+    ui.added === 1 && ui.tds[0] === 10000 && ui.tds[1] === 0.01 && ui.tail.every((t) => t[1] === 'owner' && t[2] === false),
+    ui.threw || `blankStayedOpen=${ui.blankClosed === false} msg=${ui.blankMsg} customerRows=${JSON.stringify(ui.rows)} tds=${JSON.stringify(ui.tds)} added=${ui.added} tail=${JSON.stringify(ui.tail)}`);
+  return run;
+}
+
+// Batches run only when the selection needs them. A full run does all ten.
 if (wants('noFile'))     await batchNoFile();
 if (wants('sample'))     await batchSample();
 if (wants('readOnly'))   await batchReadOnly();
@@ -966,6 +1089,7 @@ if (wants('parity'))     await batchParity();
 if (wants('signing'))    await batchSigningKeys();
 if (wants('doors'))      await batchDoors();
 if (wants('reads'))      await batchReads();
+if (wants('writes'))     await batchWrites();
 
 const shown = only ? results.filter((r) => only.includes(r.id)) : results;
 let red = 0;

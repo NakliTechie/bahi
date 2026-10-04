@@ -231,7 +231,7 @@ class TestAiOriginatedSamples(unittest.TestCase):
             m, con, _ = open_khata(path)
             try:
                 rows = con.execute(
-                    "SELECT origin, payload, prev_hash, hash FROM audit_log ORDER BY id ASC"
+                    "SELECT ts, actor, action, ref, origin, payload, prev_hash, hash, hash_version FROM audit_log ORDER BY id ASC"
                 ).fetchall()
                 prev = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
                 # Bahi's existing chain uses raw 64-hex (no sha256: prefix); fall back to that
@@ -243,7 +243,15 @@ class TestAiOriginatedSamples(unittest.TestCase):
                         bad += 1
                         prev = r["hash"]
                         continue
-                    combined = (prev + (r["origin"] or "") + r["payload"]).encode("utf-8")
+                    # hash_version 2 hashes every semantic field; 1 / NULL is the legacy
+                    # prev + origin + payload. Generated books are v2 since the chain was locked.
+                    if r["hash_version"] == 2:
+                        combined = json.dumps({"v": 2, "prev": prev, "ts": r["ts"], "actor": r["actor"],
+                                               "action": r["action"], "ref": r["ref"], "origin": r["origin"],
+                                               "payload": r["payload"]}, sort_keys=True, separators=(",", ":"),
+                                              ensure_ascii=False).encode("utf-8")
+                    else:
+                        combined = (prev + (r["origin"] or "") + r["payload"]).encode("utf-8")
                     computed = hashlib.sha256(combined).hexdigest()
                     if computed != r["hash"]:
                         bad += 1

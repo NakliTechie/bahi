@@ -36,6 +36,7 @@ const BATCH_CHECKS = {
   doors:      ['C36', 'C37', 'C38', 'C39', 'C40', 'C41'],
   reads:      ['C45', 'C46', 'C47', 'C48', 'C50'],
   writes:     ['C51', 'C52', 'C53'],
+  reference:  ['C56', 'C57', 'C58', 'C59'],
 };
 const wants = (batch) => !only || BATCH_CHECKS[batch].some((c) => only.includes(c));
 
@@ -1022,8 +1023,15 @@ async function batchWrites() {
       const vp = await take('create_vendor_payment', { vendorId: 1, bankAccountId: 38, amount: 1000000, tdsSection: '194C', paymentDate: '2026-02-11' });
       const tdsRow = STATE.db.exec('SELECT tds_amount, rate, section FROM tds_deductions WHERE payment_id = ?', [vp.paymentId || -1])[0];
       const q4 = (await bahi.call('get_form26q', { fyStartYear: 2025, quarter: 4 })).data.rows.some((r) => r.paymentId === vp.paymentId);
+      // The same vendor's saved 194C after the Income-tax Act 2025: resolves to 1024 (company payee), on Form 140.
+      const vp2 = await take('create_vendor_payment', { vendorId: 1, bankAccountId: 38, amount: 1000000, tdsSection: '194C', paymentDate: '2026-05-11' });
+      const tds2Row = STATE.db.exec('SELECT tds_amount, rate, section FROM tds_deductions WHERE payment_id = ?', [vp2.paymentId || -1])[0];
+      const f140 = (await bahi.call('get_form26q', { fyStartYear: 2026, quarter: 1 })).data;
+      const in140 = f140.formName === 'Form 140' && f140.rows.some((r) => r.paymentId === vp2.paymentId);
       const adv = await take('create_advance', { customerId: 1, bankAccountId: 38, amount: 118000, taxRate: 0.18, advanceDate: '2026-02-10' });
-      const tcs = await take('create_tcs_collection', { customerId: 1, section: '206C(1H)', taxableAmount: 6000000, collectionDate: '2026-02-12' });
+      const tcs = await take('create_tcs_collection', { customerId: 1, section: '206C(1)-scrap', taxableAmount: 6000000, collectionDate: '2026-02-12' });
+      const tcsGone = await bahi.call('create_tcs_collection', { customerId: 1, section: '206C(1H)', taxableAmount: 6000000, collectionDate: '2026-02-12', agentName: 'w' });
+      const tcs2 = await take('create_tcs_collection', { customerId: 1, section: '206C(1)-scrap', taxableAmount: 6000000, collectionDate: '2026-05-12' });
       const onHand = (id) => (STATE.db.exec('SELECT COALESCE(SUM(qty_balance),0) FROM batches WHERE item_id = ?', [id])[0].values[0][0]);
       const before = onHand(1);
       const dc = await take('create_delivery_challan', { challanType: 'outward-job', customerId: 1, lines: [{ itemId: 1, quantity: 3 }], challanDate: '2026-02-13' });
@@ -1033,7 +1041,8 @@ async function batchWrites() {
       const st = await take('create_stock_transfer', { toGstin: '29AAAPA1234A1Z5', toState: 'KA', lines: [{ itemId: 1, quantity: 2, rate: 15000, taxRate: 0.12 }], transferDate: '2026-02-14' });
       const tb = (await bahi.call('get_trial_balance')).data;
       const chain = (await bahi.call('verify_integrity')).data;
-      return { vp, tds: tdsRow ? tdsRow.values[0] : null, inQ4: q4, adv, tcs, dc, moved: before - after, ewb, num, st, balanced: tb.balanced, chainOk: chain.chainOk };` },
+      return { vp, tds: tdsRow ? tdsRow.values[0] : null, inQ4: q4, vp2, tds2: tds2Row ? tds2Row.values[0] : null, in140,
+        adv, tcs, tcsGone: tcsGone.ok ? 'staged' : tcsGone.error.code, tcs2, dc, moved: before - after, ewb, num, st, balanced: tb.balanced, chainOk: chain.chainOk };` },
     { label: 'ui', evalJs: `
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const setv = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
@@ -1049,7 +1058,7 @@ async function batchWrites() {
       await saveModal();
       const rows = STATE.db.exec("SELECT COUNT(*), MAX(phone) FROM customers WHERE name = 'Form Customer'")[0].values[0];
       nav('#/vendor-payment/new'); await sleep(400);
-      setv('vp-tds-sec', '194C'); setv('vp-gross', '10000'); await sleep(150);
+      setv('vp-date', '2026-02-11'); await sleep(100); setv('vp-tds-sec', '194C'); setv('vp-gross', '10000'); await sleep(150);
       const n0 = STATE.db.exec('SELECT COUNT(*) FROM tds_deductions')[0].values[0][0];
       [...document.querySelectorAll('#main button')].find((b) => /post/i.test(b.textContent)).click();
       for (let i = 0; i < 80 && location.hash !== '#/payments'; i++) await sleep(100);
@@ -1070,25 +1079,120 @@ async function batchWrites() {
     m.dupes === 1 && m.tail[0][0] === 'customer.update' && m.tail[0][1] === 'agent:w' && m.tail[0][2] === 'window' && m.tail[1][0] === 'customer.create',
     m.threw || `refusals=${m.codes.join(',')} staged=${m.refusedStaged} row=${JSON.stringify(m.row)} copies=${m.dupes} tail=${JSON.stringify(m.tail)}`);
 
-  // C52 — each voucher's effects once approved: 194C withholds 1% and reaches Form 26Q; an
-  // advance's GST split sums to the receipt; TCS at the section's rate; a challan moves stock;
-  // an e-way bill takes the portal's number; the books still balance and the chain holds.
-  // Reintroduce by reading the TDS table's threshold column as the rate again.
+  // C52 — each voucher's effects once approved. Vendor 1 is a company: 194C withholds 2% on
+  // 2026-02-11 (Form 26Q, 1961 Act) and the same saved 194C resolves to 1024 at 2% on 2026-05-11
+  // (Form 140, 2025 Act). An advance's GST split sums to the receipt; TCS on scrap is 1% before
+  // the switch and 2% under section 394 after it; 206C(1H), ended 2025-03-31, is refused; a challan
+  // moves stock; an e-way bill takes the portal's number; the books balance and the chain holds.
+  // Reintroduce by no longer following an old section's successor past 2026-03-31.
   const ok = (x) => x && !x.error;
-  record('C52', 'vouchers: TDS 1% for 194C in Form 26Q; advance GST sums; TCS at the section rate; challan moves stock; books balance',
-    !v.threw && ok(v.vp) && v.vp.tdsAmount === 10000 && v.tds && v.tds[0] === 10000 && v.tds[1] === 0.01 && v.inQ4 &&
+  record('C52', 'vouchers: 194C at 2% (company) on 26Q, resolved to 1024 on Form 140; TCS by date; 206C(1H) refused; advance, challan, books balance',
+    !v.threw && ok(v.vp) && v.vp.tdsAmount === 20000 && v.tds && v.tds[0] === 20000 && v.tds[1] === 0.02 && v.tds[2] === '194C' && v.inQ4 &&
+    ok(v.vp2) && v.tds2 && v.tds2[0] === 20000 && v.tds2[2] === '1024' && v.in140 &&
     ok(v.adv) && v.adv.taxable + v.adv.cgst + v.adv.sgst + v.adv.igst === 118000 && v.adv.taxable === 100000 &&
-    ok(v.tcs) && v.tcs.tcsAmount === 6000 && ok(v.dc) && v.moved === 3 && ok(v.ewb) && ok(v.num) && v.num.status === 'generated' &&
+    ok(v.tcs) && v.tcs.tcsAmount === 60000 && v.tcsGone === 'E_BAD_ARGS' && ok(v.tcs2) && v.tcs2.section === '394-4' && v.tcs2.tcsAmount === 120000 &&
+    ok(v.dc) && v.moved === 3 && ok(v.ewb) && ok(v.num) && v.num.status === 'generated' &&
     ok(v.st) && v.st.total === 33600 && v.balanced === true && v.chainOk === true,
-    v.threw || `vendorPayment=${JSON.stringify(v.vp && (v.vp.error || [v.vp.tdsAmount]))} tdsRow=${JSON.stringify(v.tds)} q4=${v.inQ4} advance=${JSON.stringify(v.adv && (v.adv.error || [v.adv.taxable, v.adv.cgst, v.adv.sgst, v.adv.igst]))} tcs=${JSON.stringify(v.tcs && (v.tcs.error || v.tcs.tcsAmount))} moved=${v.moved} ewb=${v.num && (v.num.error || v.num.status)} transfer=${v.st && (v.st.error || v.st.total)} balanced=${v.balanced} chain=${v.chainOk}`);
+    v.threw || `vendorPayment=${JSON.stringify(v.vp && (v.vp.error || [v.vp.tdsAmount]))} tdsRow=${JSON.stringify(v.tds)} q4=${v.inQ4} after2026=${JSON.stringify(v.vp2 && (v.vp2.error || v.tds2))} form140=${v.in140} tcs=${JSON.stringify(v.tcs && (v.tcs.error || v.tcs.tcsAmount))} 206C(1H)=${v.tcsGone} tcs394=${JSON.stringify(v.tcs2 && (v.tcs2.error || [v.tcs2.section, v.tcs2.tcsAmount]))} advance=${JSON.stringify(v.adv && (v.adv.error || [v.adv.taxable, v.adv.cgst, v.adv.sgst, v.adv.igst]))} moved=${v.moved} ewb=${v.num && (v.num.error || v.num.status)} transfer=${v.st && (v.st.error || v.st.total)} balanced=${v.balanced} chain=${v.chainOk}`);
 
   // C53 — the person's door: a refusal stays in the modal; an edit changes the row instead of
-  // adding one; the vendor-payment form withholds 1% for 194C; and the person's entries are
-  // theirs — actor owner, no agent stamp. Reintroduce by letting bahiUi skip the prepare step.
-  record('C53', 'forms post through bahiUi as the person: refusal in the modal, edit updates, 194C withholds 1%, no agent stamp',
+  // adding one; the vendor-payment form, dated before the 2025 Act, withholds 2% for 194C from a
+  // company vendor; and the person's entries are theirs — actor owner, no agent stamp.
+  // Reintroduce by letting bahiUi skip the prepare step.
+  record('C53', 'forms post through bahiUi as the person: refusal in the modal, edit updates, 194C withholds 2% from a company, no agent stamp',
     !ui.threw && ui.blankClosed === false && !!ui.blankMsg && ui.rows[0] === 1 && ui.rows[1] === '0000' &&
-    ui.added === 1 && ui.tds[0] === 10000 && ui.tds[1] === 0.01 && ui.tail.every((t) => t[1] === 'owner' && t[2] === false),
+    ui.added === 1 && ui.tds[0] === 20000 && ui.tds[1] === 0.02 && ui.tail.every((t) => t[1] === 'owner' && t[2] === false),
     ui.threw || `blankStayedOpen=${ui.blankClosed === false} msg=${ui.blankMsg} customerRows=${JSON.stringify(ui.rows)} tds=${JSON.stringify(ui.tds)} added=${ui.added} tail=${JSON.stringify(ui.tail)}`);
+  return run;
+}
+
+// Reference data: TDS / TCS by date and PAN, GST 2.0 by date, the reference-update path, and the
+// invoice line's Amount cell. Pure lookups run in the page; the form check drives the real screen.
+async function batchReference() {
+  const run = await runCalls({ book: 'pharma', calls: [
+    { label: 'tax', evalJs: `
+      const IND = 'AAAPA1234A', CO = 'AAACA1234A';
+      const t = (id, d, pan) => { const r = resolveTdsSection(id, d, pan); return r ? [r.id, +(tdsRateFor(r, pan) * 100).toFixed(3)] : null; };
+      const c = (id, d, pan) => { const r = resolveTcsSection(id, d, pan); return r ? [r.id, +(tcsRateFor(r, pan) * 100).toFixed(3)] : null; };
+      return {
+        c194Ind: t('194C', '2026-02-11', IND), c194Co: t('194C', '2026-02-11', CO), c194NoPan: t('194C', '2026-02-11', null),
+        newInd: t('194C', '2026-05-11', IND), newCo: t('194C', '2026-05-11', CO), j: t('194J', '2026-06-01', CO),
+        hBefore: t('194H', '2024-09-30', IND), hAfter: t('194H', '2024-10-01', IND), rentNote: (resolveTdsSection('194I(b)', '2025-06-01', CO) || {}).thresholdNote,
+        tcs1H: c('206C(1H)', '2025-03-31', CO), tcs1HGone: c('206C(1H)', '2025-04-01', CO),
+        scrapOld: c('206C(1)-scrap', '2026-03-31', CO), scrapNew: c('206C(1)-scrap', '2026-04-01', CO), scrapNoPan: c('206C(1)-scrap', '2026-04-01', null),
+        listed: (await bahi.call('list_tax_sections', { kind: 'tds', date: '2026-05-01' })).data.sections.map((r) => r.id),
+      };` },
+    { label: 'gst', evalJs: `
+      const bands = (d) => getActiveGstRates(d).map((r) => r.rate).sort((a, b) => a - b).join(',');
+      const hsn = (code, d) => { const r = getActiveHsnRate(code, d); return r ? r.rate : null; };
+      const look = (await bahi.call('lookup_gst_rate', { hsnSac: '30049099', date: '2025-10-01' })).data;
+      return {
+        b0921: bands('2025-09-21'), b0922: bands('2025-09-22'), b0201: bands('2026-02-01'),
+        med0921: hsn('30049099', '2025-09-21'), med0922: hsn('30049099', '2025-09-22'),
+        car: [hsn('8703', '2025-09-21'), hsn('8703', '2025-09-22')], panMasala: [hsn('21069020', '2026-01-31'), hsn('21069020', '2026-02-01')],
+        cess: [cessForLine('21069020', 100000, 1, '2026-01-31'), cessForLine('21069020', 100000, 1, '2026-02-01')],
+        item: itemTaxRateOn({ hsn_sac: '3004', default_tax_rate: 0.12 }, '2025-10-01', null),
+        look: [look.hsn && look.hsn.matched, look.hsn && look.hsn.taxRate, look.bands.some((b) => b.ratePct === 40)],
+      };` },
+    { label: 'refUpdate', evalJs: `
+      const saved = { tds: REF.tdsSections, gst: REF.gstRates };
+      const row = { id: 'TEST1', act: '2025', section: '393(9) Sl. 1', code: 'TEST1', description: 'Test', rates: { individual: 3, other: 3, noPan: 20 }, threshold: {}, validFrom: '2026-04-01', validTo: null };
+      let v2 = null, v1 = null, gst = null;
+      try {
+        await applyDatasetUpdate('tds-sections', { version: 'x' }, { schema: 'tds-sections/2', entries: [row] });
+        v2 = [Array.isArray(REF.tdsSections.data), tdsKnown('TEST1')];
+        await applyDatasetUpdate('tds-sections', { version: 'y' }, { sections: [row] });
+        v1 = [Array.isArray(REF.tdsSections.data), tdsKnown('TEST1')];
+        await applyDatasetUpdate('gst-rates', { version: 'z' }, { rates: [{ rateId: 'gst-18', rate: 18, validFrom: '2017-07-01', validTo: null }] });
+        gst = Array.isArray(REF.gstRates.data) && getActiveGstRates('2026-01-01').length === 1;
+      } finally { REF.tdsSections = saved.tds; REF.gstRates = saved.gst; }
+      return { v2, v1, gst };` },
+    { label: 'amountCell', evalJs: `
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      nav('#/invoice/new'); await sleep(500);
+      const row = document.querySelector('#main tbody tr');
+      const inputs = [...row.querySelectorAll('input[type=text]')];
+      const [qty, rate] = [inputs.find((i) => i.style.textAlign === 'right' && i.placeholder !== '0.00'), inputs.find((i) => i.placeholder === '0.00')];
+      qty.value = '3'; qty.dispatchEvent(new Event('input', { bubbles: true }));
+      rate.value = '250'; rate.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(100);
+      const cells = [...row.querySelectorAll('td.num')].map((td) => td.textContent.trim()).filter(Boolean);
+      return { cells, want: fmtINR(75000) };` },
+  ] });
+  const [tax, gst, ru, cell] = run.results.map((r) => r.value || { threw: r.threw });
+
+  // C56 — TDS and TCS follow the date and the payee's PAN. 194C: 1% individual, 2% company, 20% no
+  // PAN; after 2026-03-31 the same 194C becomes 1023 or 1024 by PAN; 194H drops to 2% on
+  // 2024-10-01; rent thresholds are monthly; 206C(1H) ends 2025-03-31; scrap TCS moves to 394(1)
+  // Sl. 4 at 2% (5% without PAN). Reintroduce by reading every PAN as an individual's.
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  record('C56', 'TDS / TCS by date and PAN: 194C 1/2/20%, 1023/1024 after the 2025 Act, 194H 2% from 2024-10-01, 206C(1H) ended, scrap 394(1) 2%',
+    !tax.threw && eq(tax.c194Ind, ['194C', 1]) && eq(tax.c194Co, ['194C', 2]) && eq(tax.c194NoPan, ['194C', 20]) &&
+    eq(tax.newInd, ['1023', 1]) && eq(tax.newCo, ['1024', 2]) && eq(tax.j, ['1027', 10]) &&
+    eq(tax.hBefore, ['194H', 5]) && eq(tax.hAfter, ['194H', 2]) && /month/.test(tax.rentNote || '') &&
+    eq(tax.tcs1H, ['206C(1H)', 0.1]) && tax.tcs1HGone === null && eq(tax.scrapOld, ['206C(1)-scrap', 1]) && eq(tax.scrapNew, ['394-4', 2]) && eq(tax.scrapNoPan, ['394-4', 5]) &&
+    tax.listed.includes('1023') && !tax.listed.includes('194C'),
+    tax.threw || JSON.stringify({ ...tax, listed: tax.listed && tax.listed.length }));
+
+  // C57 — GST 2.0 by date: the 40% band from 2025-09-22, 28% ends 2026-01-31, 12% stays (bricks);
+  // medicines (an 8-digit 3004 code, by prefix) 12% -> 5%; cars 28% -> 40%; pan masala 28% -> 40%
+  // and its cess ends on 2026-02-01; a picked item takes its HSN's rate on the document date; the
+  // lookup tool agrees. Reintroduce by dropping the HSN prefix match.
+  record('C57', 'GST 2.0 by date: bands, 3004 12->5% by prefix, cars and pan masala to 40%, cess ends, item pick and lookup_gst_rate agree',
+    !gst.threw && gst.b0921 === '0,0.25,3,5,12,18,28' && gst.b0922 === '0,0.25,3,5,12,18,28,40' && gst.b0201 === '0,0.25,3,5,12,18,40' &&
+    gst.med0921 === 12 && gst.med0922 === 5 && eq(gst.car, [28, 40]) && eq(gst.panMasala, [28, 40]) && eq(gst.cess, [60000, 0]) &&
+    gst.item === 0.05 && eq(gst.look, ['3004', 0.05, true]),
+    gst.threw || JSON.stringify(gst));
+
+  // C58 — the invoice line's Amount cell follows typing (it read ₹0.00 while the totals were
+  // right). Reintroduce by dropping the refresh from the quantity handler.
+  record('C58', 'invoice form: a line\'s Amount cell shows quantity x rate as you type',
+    !cell.threw && cell.cells.includes(cell.want), cell.threw || `cells=${JSON.stringify(cell.cells)} want=${cell.want}`);
+
+  // C59 — a reference update lands as an array whatever wrapper the dataset uses (schema 2
+  // "entries", schema 1 "sections" / "rates"). Reintroduce by taking the wrapper object itself.
+  record('C59', 'reference update: schema-2 entries and schema-1 sections / rates all land as lookup-ready arrays',
+    !ru.threw && eq(ru.v2, [true, true]) && eq(ru.v1, [true, true]) && ru.gst === true, ru.threw || JSON.stringify(ru));
   return run;
 }
 
@@ -1103,6 +1207,7 @@ if (wants('signing'))    await batchSigningKeys();
 if (wants('doors'))      await batchDoors();
 if (wants('reads'))      await batchReads();
 if (wants('writes'))     await batchWrites();
+if (wants('reference'))  await batchReference();
 
 const shown = only ? results.filter((r) => only.includes(r.id)) : results;
 let red = 0;

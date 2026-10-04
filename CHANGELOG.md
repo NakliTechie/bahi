@@ -2,6 +2,30 @@
 
 All notable changes to Bahi. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). The `.khata` file format and the database schema carry their own versions (format 1.0, schema 12).
 
+## [Unreleased]
+
+Tax reference data caught up with the law, and is now generated from khata-standard instead of hand-kept.
+
+### Fixed
+
+- **TDS used the Income-tax Act 1961 after it was replaced.** From 2026-04-01 the Income-tax Act 2025 numbers sections 392–393 with 4-digit return codes. A vendor saved with `194C` now pays under `1023` (individual or HUF) or `1024` (other payee), resolved by payment date and PAN; the quarter reports on Form 140, the certificate is Form 131.
+- **TDS ignored the payee and the PAN.** 194C took 1% from companies (the law says 2%), and a payee without a PAN was not charged the higher rate. Rates now follow the PAN's fourth letter, and no PAN takes the no-PAN rate (20% for most sections).
+- **Old-Act rates were stale.** 194H fell from 5% to 2% on 2024-10-01; thresholds for 194A, 194H, 194I and 194J rose on 2025-04-01, and rent's became monthly. Each period now has its own row.
+- **TCS offered 206C(1H) after it ended** (2025-03-31) and defaulted to it. TCS sections follow the collection date: 206C up to 2026-03-31, section 394 at the Finance Act 2026 rates after.
+- **GST 2.0 was missing.** The 40% band applies from 2025-09-22, 28% ends on 2026-01-31, and 12% stays for bricks and tiles. Medicines moved from 12% to 5%, larger cars and aerated drinks to 40%, pan masala and tobacco to 40% on 2026-02-01, when their compensation cess ended.
+- **A picked item kept its saved rate across a rate change.** A picked item takes the HSN's rate on the document's date, and changing the date redraws the rate list. HSN codes match their heading (30049099 takes 3004's rate).
+- **The invoice line's Amount cell read ₹0.00** while the totals were right; it now follows typing. Purchase bills and stock transfers had the same fault.
+- **The TDS certificate was labelled Form 27D**, the TCS certificate. It is Form 16A (Form 131 from FY 2026-27).
+- **A reference-data update broke TDS and TCS.** The update took the dataset's wrapper object instead of its rows, and a second update within five minutes failed on a cache hit.
+- The vendor form offered `194I`, which the engine refused; it now lists the sections in force.
+
+### Added
+
+- A PAN field on customers and vendors, checked against the PAN inside the GSTIN.
+- Agent read tools `list_tax_sections` and `lookup_gst_rate` (85 tools).
+- `tools/bundle-reference.mjs` writes the bundled TDS, TCS and GST tables from khata-standard's published files.
+- Checks C56–C59: tax sections by date and PAN, GST 2.0 by date, the Amount cell, the reference-update path.
+
 ## [0.1.0] — 2026-10-04
 
 The first tagged release. Bahi has been live at <https://bahi.naklitechie.com> through its alpha; the features that shipped before this tag are listed in [docs/FEATURES.md](docs/FEATURES.md). This release gives the app an agent face and puts every write behind one command bus.

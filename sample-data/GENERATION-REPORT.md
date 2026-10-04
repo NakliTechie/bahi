@@ -17,15 +17,15 @@ All audit log entries carry `origin = 'local-file://generator.py'` so they're ea
 - **GSTIN**: `27AABCV1234A1Z5`  ·  **PAN**: `AABCV1234A`  ·  **TAN**: `MUMB12345A`
 - **State**: Maharashtra (MH, GST code 27)
 - **UI tier**: `goods`  ·  **FY start**: 2021-04-01
-- **File size**: 3,430,515 bytes
+- **File size**: 3,431,955 bytes
 
 ### Row counts
 
 | Table | Count |
 | --- | --- |
-| accounts | 56 |
+| accounts | 65 |
 | entries | 8,693 |
-| entry_lines | 22,363 |
+| entry_lines | 22,367 |
 | audit_log | 9,185 |
 | customers | 40 |
 | vendors | 20 |
@@ -51,32 +51,32 @@ All audit log entries carry `origin = 'local-file://generator.py'` so they're ea
 
 ### Trial balance
 
-- **Sum of debits**: ₹257,947,161.27
-- **Sum of credits**: ₹257,947,161.27
+- **Sum of debits**: ₹257,918,794.51
+- **Sum of credits**: ₹257,918,794.51
 - **Difference**: 0 paise → TIES
 
 By account type:
 
 | Type | Debit | Credit | Net |
 | --- | ---: | ---: | ---: |
-| asset | ₹74,509,618.10 | ₹196,166,821.71 | ₹-121,657,203.61 |
+| asset | ₹74,516,628.10 | ₹196,174,021.71 | ₹-121,657,393.61 |
 | expense | ₹14,381,475.51 | ₹10,412,681.71 | ₹3,968,793.80 |
 | income | ₹8,940.91 | ₹29,834,450.20 | ₹-29,825,509.29 |
-| liability | ₹169,047,126.75 | ₹21,533,207.65 | ₹147,513,919.10 |
+| liability | ₹169,011,749.99 | ₹21,497,640.89 | ₹147,514,109.10 |
 
 ### Audit chain
 
 - **Length**: 9,186 entries
 - **Bad rows**: 0
-- **Final hash**: `09344672f62ac287289965b762f87b455966e9552ab7418576401e99c88129e8`
+- **Final hash**: `8238d95c3aabd9162d7663d01f033818a88250b0eee535477d12b3882477566e`
 - **Final signature verify**: ok
 
 ### Validation
 
 - **PRAGMA integrity_check**: `ok`
 - **Manifest workspaceId**: `46c080f8-2adb-4344-9516-e2858053eb97`
-- **Manifest auditHead**: `09344672f62ac287289965b762f87b455966e9552ab7418576401e99c88129e8`
-- **Manifest booksHash**: `93c0d3636db6a1a993d2ec018ab50aa279a092e0954148556e8fd0d08be177e9`
+- **Manifest auditHead**: `8238d95c3aabd9162d7663d01f033818a88250b0eee535477d12b3882477566e`
+- **Manifest booksHash**: `d0026f1185ca38dea68983b278fb3718cc780832e3bd0189834d38ae44414476`
 
 ---
 
@@ -86,7 +86,7 @@ By account type:
 - **GSTIN**: `24AAACS5678B1Z3`  ·  **PAN**: `AAACS5678B`  ·  **TAN**: `AHMS67890B`
 - **State**: Gujarat (GJ, GST code 24)
 - **UI tier**: `goods`  ·  **FY start**: 2021-04-01
-- **File size**: 2,048,355 bytes
+- **File size**: 2,048,249 bytes
 
 ### Row counts
 
@@ -137,15 +137,15 @@ By account type:
 
 - **Length**: 5,470 entries
 - **Bad rows**: 0
-- **Final hash**: `6b74dbb3e904cb36cc36830429807a1c4dae74c47e5adeb176c5cad6c4f9c5bd`
+- **Final hash**: `5d7727827b54d78064ca401e3694eadcb8f4939220281518097515ddd1ab04f4`
 - **Final signature verify**: ok
 
 ### Validation
 
 - **PRAGMA integrity_check**: `ok`
 - **Manifest workspaceId**: `c3066c8e-1055-460c-a886-26136aab7c64`
-- **Manifest auditHead**: `6b74dbb3e904cb36cc36830429807a1c4dae74c47e5adeb176c5cad6c4f9c5bd`
-- **Manifest booksHash**: `ea617c9c2833ad684271db62501d69f3cee8a0cacc101d202aa258bbb595b169`
+- **Manifest auditHead**: `5d7727827b54d78064ca401e3694eadcb8f4939220281518097515ddd1ab04f4`
+- **Manifest booksHash**: `879c26ce70f313f5b1f48eae082ae3cdf4e2091a35080601321e758cdf41d3a4`
 
 ---
 
@@ -155,7 +155,7 @@ By account type:
 - **GSTIN**: `29AAEFA9012C1Z7`  ·  **PAN**: `AAEFA9012C`  ·  **TAN**: `BLRA90123C`
 - **State**: Karnataka (KA, GST code 29)
 - **UI tier**: `service`  ·  **FY start**: 2021-04-01
-- **File size**: 420,501 bytes
+- **File size**: 420,480 bytes
 
 ### Row counts
 
@@ -205,15 +205,15 @@ By account type:
 
 - **Length**: 1,029 entries
 - **Bad rows**: 0
-- **Final hash**: `b1a984c62b7eb44f8454844ac31b7157b7ee6d37f7fa6937ba96949e328c2d6a`
+- **Final hash**: `584598ed50a787dbb51064da5d123d0dfea9d3cdfa14e4d54858512f984fb169`
 - **Final signature verify**: ok
 
 ### Validation
 
 - **PRAGMA integrity_check**: `ok`
 - **Manifest workspaceId**: `51a95604-29bd-4951-b357-836221330c2d`
-- **Manifest auditHead**: `b1a984c62b7eb44f8454844ac31b7157b7ee6d37f7fa6937ba96949e328c2d6a`
-- **Manifest booksHash**: `b3c3cd99bc9b24f46d0c16c7967ca787bc3a7f6b4ac53961ce82b511070515d4`
+- **Manifest auditHead**: `584598ed50a787dbb51064da5d123d0dfea9d3cdfa14e4d54858512f984fb169`
+- **Manifest booksHash**: `fa06e9384d7e3344d0ad4ff8bff51810b9c69858f3538a57adb5cb2fc607ef15`
 
 ---
 

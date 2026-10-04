@@ -53,6 +53,10 @@ corpus/**/.DS_Store
 !smoke
 !smoke/first-run-smoke.js
 
+# tools/ — generators for committed content (bundled reference data from khata-standard)
+!tools
+!tools/bundle-reference.mjs
+
 # agent/ — the agent surface (doctrine 6: two doors, one core)
 !agent
 !agent/AGENT.md

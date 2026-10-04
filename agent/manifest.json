@@ -2140,6 +2140,1432 @@
       }
     },
     {
+      "name": "create_customer",
+      "title": "Add a customer",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/customers",
+      "untrusted": false,
+      "description": "Add a customer. A GSTIN, when given, must be well formed and agree with the state. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "gstin": {
+            "type": "string",
+            "maxLength": 15,
+            "description": "GSTIN; its first two digits must match the state."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "openingBalance": {
+            "type": "integer",
+            "minimum": -2147483647,
+            "maximum": 2147483647,
+            "description": "Opening balance in integer paise."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_customer",
+      "title": "Edit a customer",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/customers",
+      "untrusted": false,
+      "description": "Change a customer's details. Fields left out keep their values; an empty string clears one. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customerId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "gstin": {
+            "type": "string",
+            "maxLength": 15,
+            "description": "GSTIN; its first two digits must match the state."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "openingBalance": {
+            "type": "integer",
+            "minimum": -2147483647,
+            "maximum": 2147483647,
+            "description": "Opening balance in integer paise."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "customerId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_vendor",
+      "title": "Add a vendor",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/vendors",
+      "untrusted": false,
+      "description": "Add a vendor, with its reverse-charge flag and default TDS section. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "gstin": {
+            "type": "string",
+            "maxLength": 15,
+            "description": "GSTIN; its first two digits must match the state."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "openingBalance": {
+            "type": "integer",
+            "minimum": -2147483647,
+            "maximum": 2147483647,
+            "description": "Opening balance in integer paise."
+          },
+          "rcmApplicable": {
+            "type": "boolean",
+            "description": "True when the vendor's supplies fall under reverse charge."
+          },
+          "tdsSection": {
+            "type": "string",
+            "maxLength": 20,
+            "description": "Default TDS section, e.g. 194C, from the TDS reference table."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_vendor",
+      "title": "Edit a vendor",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/vendors",
+      "untrusted": false,
+      "description": "Change a vendor's details. Fields left out keep their values; an empty string clears one. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "vendorId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "gstin": {
+            "type": "string",
+            "maxLength": 15,
+            "description": "GSTIN; its first two digits must match the state."
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "openingBalance": {
+            "type": "integer",
+            "minimum": -2147483647,
+            "maximum": 2147483647,
+            "description": "Opening balance in integer paise."
+          },
+          "rcmApplicable": {
+            "type": "boolean",
+            "description": "True when the vendor's supplies fall under reverse charge."
+          },
+          "tdsSection": {
+            "type": "string",
+            "maxLength": 20,
+            "description": "Default TDS section, e.g. 194C, from the TDS reference table."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "vendorId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_item",
+      "title": "Add an item or service",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/items",
+      "untrusted": false,
+      "description": "Add an item or service. A goods item with inventory and an opening quantity posts its opening stock into the default godown. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "isService": {
+            "type": "boolean"
+          },
+          "hsnSac": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "defaultRate": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "description": "Default price per unit in integer paise."
+          },
+          "taxRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "GST rate as a decimal fraction: 0.18 for 18%."
+          },
+          "enableInventory": {
+            "type": "boolean",
+            "description": "Track stock for this item (goods only)."
+          },
+          "valuationMethod": {
+            "type": "string",
+            "maxLength": 4,
+            "enum": [
+              "wac",
+              "fifo"
+            ]
+          },
+          "trackBatches": {
+            "type": "boolean"
+          },
+          "reorderLevel": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000000
+          },
+          "preferredVendorId": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Vendor id; 0 clears it."
+          },
+          "openingQty": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000000,
+            "description": "Opening stock quantity. Only on creation, or while the item has no movements."
+          },
+          "openingValue": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "description": "Opening stock value in integer paise."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_item",
+      "title": "Edit an item or service",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/items",
+      "untrusted": false,
+      "description": "Change an item. Opening stock changes only while the item has no stock movements, as in the item form. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "itemId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "isService": {
+            "type": "boolean"
+          },
+          "hsnSac": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "defaultRate": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "description": "Default price per unit in integer paise."
+          },
+          "taxRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "GST rate as a decimal fraction: 0.18 for 18%."
+          },
+          "enableInventory": {
+            "type": "boolean",
+            "description": "Track stock for this item (goods only)."
+          },
+          "valuationMethod": {
+            "type": "string",
+            "maxLength": 4,
+            "enum": [
+              "wac",
+              "fifo"
+            ]
+          },
+          "trackBatches": {
+            "type": "boolean"
+          },
+          "reorderLevel": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000000
+          },
+          "preferredVendorId": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Vendor id; 0 clears it."
+          },
+          "openingQty": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000000,
+            "description": "Opening stock quantity. Only on creation, or while the item has no movements."
+          },
+          "openingValue": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "description": "Opening stock value in integer paise."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "itemId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_bank_account",
+      "title": "Add a bank account",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": null,
+      "untrusted": false,
+      "description": "Add a bank account under Bank Accounts, for receipts and payments. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_invoice_series",
+      "title": "Add an invoice series",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/series",
+      "untrusted": false,
+      "description": "Add an invoice number series: prefix, suffix, starting number and FY reset. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 60
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "suffix": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "startingNumber": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000000
+          },
+          "resetOnFy": {
+            "type": "boolean"
+          },
+          "defaultFor": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "",
+              "domestic",
+              "export",
+              "sez-wp",
+              "sez-wop",
+              "bos",
+              "credit-note"
+            ],
+            "description": "The document kind this series numbers by default; an empty string for none."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "name",
+          "prefix"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_invoice_series",
+      "title": "Edit an invoice series",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/series",
+      "untrusted": false,
+      "description": "Change an invoice series. Fields left out keep their values. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "seriesId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 60
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "suffix": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "startingNumber": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000000
+          },
+          "resetOnFy": {
+            "type": "boolean"
+          },
+          "defaultFor": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "",
+              "domestic",
+              "export",
+              "sez-wp",
+              "sez-wop",
+              "bos",
+              "credit-note"
+            ],
+            "description": "The document kind this series numbers by default; an empty string for none."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "seriesId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_godown",
+      "title": "Add a godown",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/godowns",
+      "untrusted": false,
+      "description": "Add a godown or warehouse. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "Make this the default godown; the previous default stops being one."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_godown",
+      "title": "Edit a godown",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/godowns",
+      "untrusted": false,
+      "description": "Change a godown. Fields left out keep their values. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "godownId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "Make this the default godown; the previous default stops being one."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "godownId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_company",
+      "title": "Edit company details",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/file",
+      "untrusted": false,
+      "description": "Change the company's identity, address, FY start or composition scheme. Every changed field gets its own audit entry and history row. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "tradeName": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "companyType": {
+            "type": "string",
+            "maxLength": 30,
+            "enum": [
+              "",
+              "proprietorship",
+              "partnership",
+              "llp",
+              "private-limited",
+              "public-limited",
+              "huf",
+              "other"
+            ]
+          },
+          "gstin": {
+            "type": "string",
+            "maxLength": 15
+          },
+          "tan": {
+            "type": "string",
+            "maxLength": 10
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "fyStart": {
+            "type": "string",
+            "maxLength": 10,
+            "pattern": "^(\\d{4}-\\d{2}-\\d{2})?$",
+            "description": "Financial-year start date, YYYY-MM-DD."
+          },
+          "compositionEnabled": {
+            "type": "boolean"
+          },
+          "compositionType": {
+            "type": "string",
+            "maxLength": 12,
+            "enum": [
+              "trader",
+              "restaurant",
+              "service"
+            ]
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_advance",
+      "title": "Record an advance receipt",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/advance/new",
+      "untrusted": false,
+      "description": "Record a customer advance received before supply. The amount is gross of GST: the taxable value is backed out at taxRate and the tax split CGST+SGST intra-state, IGST inter-state. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customerId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "bankAccountId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Bank or cash account id from list_bank_accounts."
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "Amount received, including GST, in integer paise."
+          },
+          "taxRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "GST rate as a decimal fraction; 0.18 for 18%."
+          },
+          "natureOfSupply": {
+            "type": "string",
+            "maxLength": 10,
+            "enum": [
+              "services",
+              "goods"
+            ]
+          },
+          "placeOfSupply": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Two-letter state code, e.g. MH. An empty string clears it."
+          },
+          "paymentMode": {
+            "type": "string",
+            "maxLength": 10,
+            "enum": [
+              "cash",
+              "cheque",
+              "neft",
+              "rtgs",
+              "imps",
+              "upi",
+              "card",
+              "other"
+            ]
+          },
+          "advanceDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Defaults to today."
+          },
+          "advanceNumber": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Generated when omitted."
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "customerId",
+          "bankAccountId",
+          "amount"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_vendor_payment",
+      "title": "Pay a vendor",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/vendor-payment/new",
+      "untrusted": false,
+      "description": "Pay a vendor, withholding TDS when a section applies: Dr Sundry Creditors (gross) / Cr Bank (net) / Cr TDS Payable. Records the Form 26Q deduction. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "vendorId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "bankAccountId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "Gross amount before TDS, in integer paise."
+          },
+          "tdsSection": {
+            "type": "string",
+            "maxLength": 20,
+            "description": "TDS section, e.g. 194C. Empty or omitted for none."
+          },
+          "tdsRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Overrides the section's rate; decimal fraction."
+          },
+          "paymentMode": {
+            "type": "string",
+            "maxLength": 10,
+            "enum": [
+              "neft",
+              "rtgs",
+              "imps",
+              "upi",
+              "cheque",
+              "cash"
+            ]
+          },
+          "paymentDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Defaults to today."
+          },
+          "paymentNumber": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Generated when omitted."
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "vendorId",
+          "bankAccountId",
+          "amount"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_tcs_collection",
+      "title": "Record TCS collected",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/tcs-collection/new",
+      "untrusted": false,
+      "description": "Record TCS collected from a customer: the Form 27EQ row and Dr Sundry Debtors / Cr TCS Payable. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "customerId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "section": {
+            "type": "string",
+            "maxLength": 20,
+            "description": "TCS section from the reference table, e.g. 206C(1H)."
+          },
+          "taxableAmount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "rate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Overrides the section's rate; decimal fraction."
+          },
+          "collectionDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Defaults to today."
+          },
+          "invoiceId": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The invoice the collection relates to, if any."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "customerId",
+          "section",
+          "taxableAmount"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_delivery_challan",
+      "title": "Raise a delivery challan",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/delivery-challan/new",
+      "untrusted": false,
+      "description": "Goods leaving or returning without a sale. Moves stock; posts no ledger entry. outward-return names a vendor; the other types name a customer. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "challanType": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "outward-job",
+              "outward-sample",
+              "outward-return",
+              "inward-return"
+            ]
+          },
+          "customerId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "vendorId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "properties": {
+                "itemId": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "quantity": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "itemId",
+                "quantity"
+              ]
+            }
+          },
+          "challanDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Defaults to today."
+          },
+          "challanNumber": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Generated when omitted."
+          },
+          "destination": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "vehicleNo": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "transporter": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "isReturnable": {
+            "type": "boolean"
+          },
+          "expectedReturnDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_eway_bill",
+      "title": "Draft an e-way bill",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/eway-bill/new",
+      "untrusted": false,
+      "description": "Draft an e-way bill from a posted invoice or a delivery challan. The portal issues the number; record it with record_eway_bill_number. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sourceType": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "invoice",
+              "delivery-challan"
+            ]
+          },
+          "sourceId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "transporterName": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "transporterId": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "vehicleNo": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "vehicleType": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "regular",
+              "over-dimensional"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "maxLength": 10,
+            "enum": [
+              "road",
+              "rail",
+              "air",
+              "ship"
+            ]
+          },
+          "distanceKm": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "reasonCode": {
+            "type": "string",
+            "maxLength": 2,
+            "enum": [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "8"
+            ]
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "sourceType",
+          "sourceId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "record_eway_bill_number",
+      "title": "Record an e-way bill number",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/eway-bills",
+      "untrusted": false,
+      "description": "Record the number the e-way bill portal issued for a draft; the bill becomes generated. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ewbId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ewbNumber": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "ewbId",
+          "ewbNumber"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_stock_transfer",
+      "title": "Send a stock transfer",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/stock-transfer/out/new",
+      "untrusted": false,
+      "description": "Record an outbound inter-GSTIN stock transfer with IGST per line. Returns the payload the receiving branch imports; saving it as a file is the person's. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "toGstin": {
+            "type": "string",
+            "maxLength": 15
+          },
+          "toState": {
+            "type": "string",
+            "maxLength": 2,
+            "pattern": "^[A-Z]{2}$"
+          },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "properties": {
+                "itemId": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "quantity": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "rate": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Integer paise per unit."
+                },
+                "taxRate": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "itemId",
+                "quantity",
+                "rate"
+              ]
+            }
+          },
+          "transferDate": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Defaults to today."
+          },
+          "transferNumber": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Generated when omitted."
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "toGstin",
+          "toState",
+          "lines"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_bank_reconciliation",
+      "title": "Save a bank reconciliation",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/bank-reconcile",
+      "untrusted": false,
+      "range": [
+        "from",
+        "to"
+      ],
+      "description": "Save a reconciliation of one bank account over a period: the ledger lines cleared against the statement and the statement's closing balance. Bahi works out the book balance, the uncleared totals and the difference. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "from": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "to": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Reconciled through this date."
+          },
+          "statementBalance": {
+            "type": "integer",
+            "minimum": -2147483647,
+            "maximum": 2147483647,
+            "description": "Closing balance per the bank statement, integer paise."
+          },
+          "clearedLineIds": {
+            "type": "array",
+            "maxItems": 20000,
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "line_id values from get_bank_reconciliation that the statement shows."
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [
+          "accountId",
+          "from",
+          "to",
+          "statementBalance"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_snapshot",
+      "title": "Save a snapshot",
+      "kind": "write",
+      "staged": true,
+      "scope": "file",
+      "route": "#/file",
+      "untrusted": false,
+      "description": "Save the books and keep the previous on-disk state as a manual snapshot inside the .khata, retained indefinitely. Waits for the person's approval: returns {status:\"pending_approval\", proposalId}; call get_proposal for the outcome. Needs an open .khata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "agentName": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9._-]{1,60}$",
+            "description": "Your name for the audit log: the actor becomes agent:<agentName>. Letters, digits, dot, dash and underscore only."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_theme",
+      "title": "Set the theme",
+      "kind": "session",
+      "staged": false,
+      "scope": "app",
+      "route": "#/settings",
+      "untrusted": false,
+      "description": "Switch this browser's colour theme. A local preference; the books are untouched.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "theme": {
+            "type": "string",
+            "maxLength": 20,
+            "enum": [
+              "crisp-paper",
+              "sakura-wash",
+              "asagi-haze",
+              "kinari-washi",
+              "sumi"
+            ]
+          }
+        },
+        "required": [
+          "theme"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "list_proposals",
       "title": "List proposals",
       "kind": "read",
@@ -2310,6 +3736,76 @@
       "reason": "Bahi reaches the network only when you ask it to."
     },
     {
+      "name": "undo_last_post",
+      "title": "Undo my last post",
+      "route": null,
+      "description": "Reverse the person's own last post in this session with a counter-entry (Ctrl+Z).",
+      "reason": "Undo walks the person's own stack of this session's posts. An agent reverses an entry by proposing a counter-entry with post_journal."
+    },
+    {
+      "name": "post_ca_adjustment",
+      "title": "Post a CA adjustment",
+      "route": "#/ca/adjustment/new",
+      "description": "A journal the CA posts in CA mode, carrying their name and membership number.",
+      "reason": "A CA adjustment is the CA's own professional entry, signed with their membership number."
+    },
+    {
+      "name": "annotate_as_ca",
+      "title": "Annotate, review or resolve as the CA",
+      "route": null,
+      "description": "CA notes on entries and documents, review marks, and resolving them.",
+      "reason": "Annotations and review marks are the CA's professional record. Agents read them with list_annotations."
+    },
+    {
+      "name": "export_ca_report",
+      "title": "Issue the CA report",
+      "route": "#/ca/report",
+      "description": "The CA's report on the books as a PDF.",
+      "reason": "The report is the CA's to issue. The figures behind it are in the read tools."
+    },
+    {
+      "name": "import_books_data",
+      "title": "Import from Tally or SAP",
+      "route": null,
+      "description": "Import masters and vouchers from a Tally XML or SAP B1 export, and export to SAP.",
+      "reason": "An import reads a file the person chooses, and an export writes one through the save picker."
+    },
+    {
+      "name": "import_stock_transfer",
+      "title": "Import an inbound stock transfer",
+      "route": "#/stock-transfer/in/import",
+      "description": "Receive a transfer from another branch from the JSON file it sent.",
+      "reason": "It reads the file the person received from the sending branch."
+    },
+    {
+      "name": "backup_books",
+      "title": "Back up the books",
+      "route": null,
+      "description": "Write a dated backup archive of the .khata and its audit log.",
+      "reason": "A backup is written through the browser's save picker, which answers only to a person."
+    },
+    {
+      "name": "restore_snapshot",
+      "title": "Restore a snapshot to a new file",
+      "route": null,
+      "description": "Write an earlier saved state of the books to a new .khata.",
+      "reason": "Restoring writes a new file through the save picker; which state to restore is the person's choice."
+    },
+    {
+      "name": "switch_mode",
+      "title": "Switch between Owner and CA mode",
+      "route": null,
+      "description": "Change who the books are being worked on as.",
+      "reason": "The mode decides who the audit log names as acting."
+    },
+    {
+      "name": "configure_ai",
+      "title": "Set up Smart Capture and AI providers",
+      "route": null,
+      "description": "Turn on Smart Capture, download its on-device model, and hold provider API keys.",
+      "reason": "It downloads a model on the person's consent and holds their API keys."
+    },
+    {
       "name": "approve_proposal",
       "title": "Approve a proposal",
       "route": null,
@@ -2331,46 +3827,5 @@
       "reason": "It opens a door to callers you did not invite into this tab."
     }
   ],
-  "gaps": [
-    {
-      "route": "#/vendor-payment/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
-    },
-    {
-      "route": "#/tcs-collection/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
-    },
-    {
-      "route": "#/advance/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
-    },
-    {
-      "route": "#/delivery-challan/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
-    },
-    {
-      "route": "#/eway-bill/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
-    },
-    {
-      "route": "#/stock-transfer/out/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
-    },
-    {
-      "route": "#/stock-transfer/in/import",
-      "reason": "Needs a file import."
-    },
-    {
-      "route": "#/ca/adjustment/new",
-      "reason": "Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes."
-    },
-    {
-      "route": "#/ca/report",
-      "reason": "PDF generation, not data."
-    },
-    {
-      "route": "#/settings",
-      "reason": "Local preferences, not books data. The one agent setting, the cross-tab channel, is person-only."
-    }
-  ]
+  "gaps": []
 }

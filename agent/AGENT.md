@@ -1,7 +1,7 @@
 # Bahi — agent face
 
 Bahi is driven two ways over one core. The person gets the UI. A script, another tab or an
-agent gets the **agent face**: 61 tools declared once, published through three doors, over the
+agent gets the **agent face**: 83 tools declared once, published through three doors, over the
 same engine the forms post through.
 
 - Machine-readable contract: [`manifest.json`](manifest.json), also live from the `describe_tools` tool.
@@ -48,7 +48,8 @@ await bahi.call('get_proposal', { proposalId })
 The person sees each proposal under the 🤖 button in the header, with a summary and the lines
 it will post, and approves or rejects it. An approved write posts and then saves the file, as
 the form does. Bad arguments fail at the call, not after approval, so the person is never asked
-to approve something that cannot post. Proposals last as long as the tab: a reload drops the
+to approve something that cannot post: a master's checks (GSTIN against state, TDS section,
+duplicate bank account) run in the prepare step as well as in the save. Proposals last as long as the tab: a reload drops the
 pending ones, and `get_proposal` then answers `E_NOT_FOUND`.
 
 ## Five rules
@@ -108,6 +109,10 @@ Branch on `error.code`, never on the message text.
 | `list_stock_movements` `get_stock_register` `list_batches` `get_reorder_alerts` `get_stock_aging` `get_inventory_summary` `list_godowns` | read | Stock: movements, one item's register, live batches, reorder and aging, the inventory dashboard, godowns. |
 | `list_invoice_series` `get_cmp08` `get_form27eq` `get_form27d_summary` `list_challan_templates` `get_challan_template` | read | Series, the quarterly CMP-08 / 27EQ / 27D figures, and challan data sheets. |
 | `list_bank_accounts` `get_bank_reconciliation` `list_annotations` | read | Bank lines with cleared status and book balance; CA annotations. |
+| `create_customer` `update_customer` `create_vendor` `update_vendor` `create_item` `update_item` `create_bank_account` `create_invoice_series` `update_invoice_series` `create_godown` `update_godown` `update_company` | write | Masters, through the same save function as each modal. An update changes only the fields you pass; an empty string clears one. |
+| `create_advance` `create_vendor_payment` `create_tcs_collection` `create_delivery_challan` `create_eway_bill` `record_eway_bill_number` `create_stock_transfer` | write | The remaining vouchers, through the same engine function as each form: GST split, TDS and TCS from the reference tables, stock effects. |
+| `save_bank_reconciliation` `save_snapshot` | write | Reconcile a bank account against its statement; keep a manual snapshot. |
+| `set_theme` | session | This browser's colour theme. |
 | `list_proposals` `get_proposal` | read | This tab's proposals and their outcomes. |
 | `withdraw_proposal` | session | Take back a pending proposal. |
 | `list_routes` `navigate` | read / session | The UI's route index, and showing a route in this tab. |
@@ -187,16 +192,24 @@ These are declared in `manifest.personOnly` with a reason, and every door answer
 - **Merging divergent books.** A judgement on each conflict.
 - **Raw SQL.** The Debug Console serves a person at the keyboard. No agent tool reaches SQL or the filesystem.
 - **Updating reference data.** Bahi reaches the network only when asked.
+- **CA adjustments, annotations, review marks and the CA report.** The CA's professional record.
+- **Imports, exports, backups and snapshot restores.** Each reads or writes a file the person picks.
+- **Undo, the Owner/CA mode switch, and AI setup.** The person's own session stack, who the log names, and consent plus API keys.
 - **Approving and rejecting proposals, and opening the cross-tab channel.** Approval is the point of staging, and the channel is open to callers nobody invited.
 
 ## Not covered yet
 
-`manifest.gaps` lists the 10 UI routes no tool covers yet, each with a reason, and
-`run_selftest` asserts that every route in the app is covered by a tool, held by a person-only
-act, or named there. A new screen cannot quietly appear without someone deciding whether agents
-get it. Every list, register and report screen has a tool, and reads through the same function
-the tool calls. What is left is the remaining voucher forms and masters, then one command bus
-the UI dispatches through too.
+`manifest.gaps` is empty: every UI route is covered by a tool or held by a person-only act, and
+`run_selftest` asserts it. A new screen cannot quietly appear without someone deciding whether
+agents get it.
+
+## The person's door
+
+The forms are a client of the same tools. A master modal or a voucher form submits through
+`bahiUi(name, input)`, which runs the tool's validation, prepare step and handler at once, as the
+person, then saves — through the same queue agent calls and approvals use, so a person's post
+and an agent's can never interleave. The person's entries carry `owner` or `ca` as actor and no
+`agentCall`.
 
 ## Security note
 
@@ -226,7 +239,7 @@ echo '[{"command":"run_selftest"}]' | node drive.mjs --book pharma --calls -
 a sample name from `sample-data/`. Samples are copied to a temp dir first; the repo's books are
 never written to.
 
-`node checks.mjs` runs the full assertion suite (50 checks, all in IST). Every check prints the numbers it
+`node checks.mjs` runs the full assertion suite (54 checks, all in IST). Every check prints the numbers it
 compared, passing or failing, so the output is evidence rather than a row of the word PASS.
 `--only C24,C29` runs just those, and skips every batch that holds none of them.
 
@@ -237,6 +250,7 @@ compared, passing or failing, so the output is evidence rather than a row of the
 | C28–C35 | **two doors, one core**: forms delegate to the engine; invoice and purchase post identical rows through the form and the agent face, with different audit actors; signing keys survive a save |
 | C36–C41 | **doors and approval**: writes stage until approved; rejected and withdrawn proposals never apply; person-only acts are refused on every door; applied writes record door, caller, proposal and approver; the channel starts closed; WebMCP carries exactly the declared tools |
 | C42–C44 | **dates**: TDS and CMP-08 periods are the calendar quarters in IST, from one shared function; an entry stamped with a time still belongs to its day |
+| C51–C54 | **write parity**: a master's bad input is refused at the call; vouchers post their TDS, TCS, GST and stock effects correctly once approved; the forms post as the person through `bahiUi`; every moved form keeps no write of its own |
 | C45–C50 | **read parity**: P&L equals the trial balance; a year's sales agree across the register, GSTR-3B and the invoice list; every item's movements sum to its stock on hand; CMP-08 turnover equals the quarter's register; every screen reads through its tool's function; paging reproduces the list |
 
 `node prove-red.mjs` reintroduces each defect those checks guard, one at a time, and confirms the

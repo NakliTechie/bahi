@@ -12755,111 +12755,22 @@ function openEditCompanyModal() {
   const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, ['Save changes']);
   save.onclick = async () => {
-    const name = $('ec-name').value.trim();
-    if (!name) { showErr('Company name is required', 'ec-name'); return; }
-    let gstin = $('ec-gstin').value.trim().toUpperCase();
-    if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
-      showErr('GSTIN format invalid', 'ec-gstin'); return;
-    }
     const stateRow = parseStateInput($('ec-state').value);
     if ($('ec-state').value.trim() && !stateRow) { showErr('State not recognised', 'ec-state'); return; }
-    if (gstin && stateRow && gstin.slice(0, 2) !== stateRow[1]) {
-      showErr(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'ec-gstin');
-      return;
-    }
-    const stateIso = stateRow ? stateRow[0] : null;
-    const stateNameVal = stateRow ? stateRow[2] : null;
-    const gstinStateCode = stateRow ? stateRow[1] : (gstin ? gstin.slice(0, 2) : null);
-    const pan = (gstin && gstin.length >= 12) ? gstin.slice(2, 12) : null;
-
-    // Composition section
-    const compEnabled = $('ec-comp-enabled').value === '1';
-    const compType = $('ec-comp-type').value;
-    const compRates = { trader: 0.01, restaurant: 0.05, service: 0.06 };
-    const composition = compEnabled
-      ? { enabled: true, type: compType, rate: compRates[compType] || 0.06 }
-      : { enabled: false };
-
-    // Compute per-field diffs. Each tracked field gets its own audit entry + history row.
-    const newCompany = {
-      name,
-      trade_name: $('ec-trade').value.trim() || null,
-      company_type: $('ec-type').value || null,
-      gstin: gstin || null,
-      pan: pan,
-      tan: $('ec-tan').value.trim() || null,
-      state: stateIso,
-      stateName: stateNameVal,
-      gstinStateCode: gstinStateCode,
-      address: $('ec-address').value.trim() || null,
-      fy_start: $('ec-fy').value || null,
-      composition,
-    };
-    const tracked = ['name', 'trade_name', 'company_type', 'gstin', 'pan', 'tan', 'state', 'stateName', 'gstinStateCode', 'address', 'fy_start', 'composition'];
-    const changes = [];
-    for (const f of tracked) {
-      const oldV = (c[f] == null ? null : c[f]);
-      const newV = (newCompany[f] == null ? null : newCompany[f]);
-      // Compare structurally for object fields (composition)
-      const same = (typeof oldV === 'object' || typeof newV === 'object')
-        ? canonicalJson(oldV) === canonicalJson(newV)
-        : oldV === newV;
-      if (!same) changes.push({ field: f, oldValue: oldV, newValue: newV });
-    }
-    if (!changes.length) { closeModal(); toast('No changes to save', ''); return; }
-
-    try {
-      // Append one audit entry per changed field. The audit chain naturally records
-      // ts, actor, origin, hash, signature for each — so the forensic record is complete.
-      for (const ch of changes) {
-        await appendAuditEntry(STATE.db, {
-          actor: auditActor(),
-          action: 'company.update',
-          ref: ch.field,
-          payload: { field: ch.field, oldValue: ch.oldValue, newValue: ch.newValue },
-        });
-      }
-
-      // Apply to in-memory manifest. Mutate the existing object so any held references stay valid.
-      STATE.manifest.company = STATE.manifest.company || {};
-      Object.assign(STATE.manifest.company, newCompany);
-      STATE.manifest.company.changeHistory = STATE.manifest.company.changeHistory || [];
-      const ts = nowIso();
-      for (const ch of changes) {
-        STATE.manifest.company.changeHistory.push({
-          ts,
-          field: ch.field,
-          oldValue: ch.oldValue,
-          newValue: ch.newValue,
-          origin: CURRENT_ORIGIN,
-        });
-      }
-
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-
-      // Update workspace IDB so the workspace list and Layer 2 use the new identity.
-      try {
-        const existing = await idbGet(STORES.workspace, STATE.workspaceId);
-        if (existing) {
-          existing.name = name;
-          existing.gstin = gstin || null;
-          existing.state = stateIso;
-          existing.stateName = stateNameVal;
-          existing.lastOpened = nowIso();
-          await addWorkspaceEntry(existing);
-        }
-      } catch (e) { console.warn('Workspace IDB update failed:', e); }
-
-      closeModal();
-      showIdentityBanner();
-      toast(`${changes.length} field${changes.length === 1 ? '' : 's'} updated and logged`, 'ok');
-      render();
-    } catch (e) {
-      console.error(e);
-      toast('Save failed: ' + e.message, 'err');
-    }
+    // Shared with update_company: one audit entry and one history row per changed field.
+    const r = await bahiUi('update_company', {
+      name: $('ec-name').value, tradeName: $('ec-trade').value, companyType: $('ec-type').value || '',
+      gstin: $('ec-gstin').value, tan: $('ec-tan').value, state: stateRow ? stateRow[0] : '',
+      address: $('ec-address').value, fyStart: $('ec-fy').value || '',
+      compositionEnabled: $('ec-comp-enabled').value === '1', compositionType: $('ec-comp-type').value,
+    });
+    if (!r.ok) { showErr(r.error.message, { name: 'ec-name', gstin: 'ec-gstin', state: 'ec-state' }[r.error.field]); return; }
+    if (!r.data.changed.length) { closeModal(); toast('No changes to save', ''); return; }
+    if (!r.data.saved) { render(); return; }
+    closeModal();
+    showIdentityBanner();
+    toast(`${r.data.changed.length} field${r.data.changed.length === 1 ? '' : 's'} updated and logged`, 'ok');
+    render();
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
   wrap.appendChild(m);
@@ -13342,46 +13253,22 @@ function openCustomerModal(customerId) {
   const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add customer']);
   save.onclick = async () => {
-    const name = $('cm-name').value.trim();
-    if (!name) { showErr('Name is required', 'cm-name'); return; }
-    let gstin = $('cm-gstin').value.trim().toUpperCase();
-    if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
-      showErr('GSTIN format invalid', 'cm-gstin'); return;
-    }
     const stateRow = parseStateInput($('cm-state').value);
-    const stateIso = stateRow ? stateRow[0] : null;
     if ($('cm-state').value.trim() && !stateRow) {
       showErr(`State "${$('cm-state').value}" is not recognised.`, 'cm-state'); return;
     }
-    if (gstin && stateRow && gstin.slice(0, 2) !== stateRow[1]) {
-      showErr(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'cm-gstin');
-      return;
-    }
-    const pan = (gstin && gstin.length >= 12) ? gstin.slice(2, 12) : null;
-    const opening = parseRupees($('cm-opening').value);
-    try {
-      if (isEdit) {
-        STATE.db.run(
-          'UPDATE customers SET name=?, gstin=?, pan=?, state=?, email=?, phone=?, address=?, opening_balance=? WHERE id=?',
-          [name, gstin || null, pan, stateIso || null, $('cm-email').value.trim() || null, $('cm-phone').value.trim() || null, $('cm-address').value.trim() || null, opening, customerId]
-        );
-      } else {
-        STATE.db.run(
-          'INSERT INTO customers (name, gstin, pan, state, email, phone, address, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-          [name, gstin || null, pan, stateIso || null, $('cm-email').value.trim() || null, $('cm-phone').value.trim() || null, $('cm-address').value.trim() || null, opening, nowIso()]
-        );
-        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'customer.create', ref: name, payload: { name, gstin, stateIso } });
-      }
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(isEdit ? 'Customer updated' : 'Customer added', 'ok');
-      closeModal();
-      render();
-    } catch (e) {
-      console.error(e);
-      toast('Save failed: ' + e.message, 'err');
-    }
+    // Shared with create_customer / update_customer: the checks and the save live in saveCustomer.
+    const input = {
+      name: $('cm-name').value, gstin: $('cm-gstin').value, state: stateRow ? stateRow[0] : '',
+      email: $('cm-email').value, phone: $('cm-phone').value, address: $('cm-address').value,
+      openingBalance: parseRupees($('cm-opening').value),
+    };
+    const r = await bahiUi(isEdit ? 'update_customer' : 'create_customer', isEdit ? { customerId, ...input } : input);
+    if (!r.ok) { showErr(r.error.message, { name: 'cm-name', gstin: 'cm-gstin', state: 'cm-state' }[r.error.field]); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(isEdit ? 'Customer updated' : 'Customer added', 'ok');
+    closeModal();
+    render();
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
   wrap.appendChild(m);
@@ -13570,56 +13457,22 @@ function openItemModal(itemId) {
   const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add item']);
   save.onclick = async () => {
-    const name = $('im-name').value.trim();
-    if (!name) { showErr('Name is required', 'im-name'); return; }
-    const isService = $('im-type').value === 'service' ? 1 : 0;
-    const hsnSac = $('im-hsnsac').value.trim() || null;
-    const unit = $('im-unit').value.trim() || null;
-    const rate = parseRupees($('im-rate').value);
-    const taxRate = parseFloat($('im-tax').value);
-    // Inventory fields (only meaningful when type=goods)
-    const enableInv = (!isService && $('im-inv').value === '1') ? 1 : 0;
-    const valMethod = $('im-val').value || 'wac';
-    const trackBatches = (!isService && $('im-batch').value === '1') ? 1 : 0;
-    const reorderLevel = parseInt($('im-reorder').value, 10) || 0;
-    const preferredVendorId = $('im-pvendor').value ? parseInt($('im-pvendor').value, 10) : null;
-    const openingQty = parseInt($('im-opqty').value, 10) || 0;
-    const openingValue = parseRupees($('im-opval').value);
-    try {
-      if (isEdit) {
-        STATE.db.run('UPDATE items SET name=?, hsn_sac=?, is_service=?, unit=?, default_rate=?, default_tax_rate=?, enable_inventory=?, valuation_method=?, track_batches=?, reorder_level=?, preferred_vendor_id=? WHERE id=?',
-          [name, hsnSac, isService, unit, rate || null, taxRate, enableInv, valMethod, trackBatches, reorderLevel, preferredVendorId, itemId]);
-        // Don't touch opening_stock_qty/value on edit unless no movements exist (UI already disabled)
-        if (!hasMovements) {
-          STATE.db.run('UPDATE items SET opening_stock_qty=?, opening_stock_value=? WHERE id=?',
-            [openingQty, openingValue, itemId]);
-        }
-      } else {
-        STATE.db.run('INSERT INTO items (name, hsn_sac, is_service, unit, default_rate, default_tax_rate, enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor_id, opening_stock_qty, opening_stock_value, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [name, hsnSac, isService, unit, rate || null, taxRate, enableInv, valMethod, trackBatches, reorderLevel, preferredVendorId, openingQty, openingValue, nowIso()]);
-        const newItemId = lastInsertId(STATE.db);
-        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'item.create', ref: name, payload: { name, isService, hsnSac, taxRate, enableInv, valMethod } });
-        // Post opening stock movement if applicable
-        if (enableInv && openingQty > 0) {
-          const godownId = getDefaultGodownId(STATE.db);
-          const openingRate = openingQty > 0 ? Math.round(openingValue / openingQty) : 0;
-          postStockIn(STATE.db, {
-            itemId: newItemId, godownId, qty: openingQty, rate: openingRate,
-            voucherType: 'opening', voucherId: null, voucherRef: 'OPENING',
-            postedAt: nowIso(),
-          });
-        }
-      }
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(isEdit ? 'Item updated' : 'Item added', 'ok');
-      closeModal();
-      render();
-    } catch (e) {
-      console.error(e);
-      toast('Save failed: ' + e.message, 'err');
-    }
+    // Shared with create_item / update_item: the checks, the save and the opening stock live in saveItem.
+    const isService = $('im-type').value === 'service';
+    const input = {
+      name: $('im-name').value, isService, hsnSac: $('im-hsnsac').value, unit: $('im-unit').value,
+      defaultRate: parseRupees($('im-rate').value), taxRate: parseFloat($('im-tax').value) || 0,
+      enableInventory: !isService && $('im-inv').value === '1', valuationMethod: $('im-val').value || 'wac',
+      trackBatches: !isService && $('im-batch').value === '1', reorderLevel: parseInt($('im-reorder').value, 10) || 0,
+      preferredVendorId: $('im-pvendor').value ? parseInt($('im-pvendor').value, 10) : 0,
+      openingQty: parseInt($('im-opqty').value, 10) || 0, openingValue: parseRupees($('im-opval').value),
+    };
+    const r = await bahiUi(isEdit ? 'update_item' : 'create_item', isEdit ? { itemId, ...input } : input);
+    if (!r.ok) { showErr(r.error.message, { name: 'im-name', taxRate: 'im-tax', valuationMethod: 'im-val' }[r.error.field]); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(isEdit ? 'Item updated' : 'Item added', 'ok');
+    closeModal();
+    render();
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
   wrap.appendChild(m);
@@ -14471,32 +14324,13 @@ function openBankAccountModal(onCreated) {
   const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, ['Add']);
   save.onclick = async () => {
-    const name = $('ba-name').value.trim();
-    if (!name) { showErr('Name is required', 'ba-name'); return; }
-    try {
-      const parentId = getAccountIdByName(STATE.db, 'Bank Accounts');
-      // Check for duplicate
-      const existing = STATE.db.exec('SELECT id FROM accounts WHERE name = ? AND parent_id = ?', [name, parentId]);
-      if (existing.length && existing[0].values.length) { showErr('A bank account with that name already exists', 'ba-name'); return; }
-      STATE.db.run(
-        'INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, "asset", 0)',
-        [name, parentId]
-      );
-      const newId = lastInsertId(STATE.db);
-      await appendAuditEntry(STATE.db, {
-        actor: auditActor(), action: 'account.create', ref: name,
-        payload: { name, parentName: 'Bank Accounts', kind: 'bank' },
-      });
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(`Bank account "${name}" added`, 'ok');
-      closeModal();
-      if (onCreated) onCreated(newId);
-    } catch (e) {
-      console.error(e);
-      toast('Save failed: ' + e.message, 'err');
-    }
+    // Shared with create_bank_account.
+    const r = await bahiUi('create_bank_account', { name: $('ba-name').value });
+    if (!r.ok) { showErr(r.error.message, 'ba-name'); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(`Bank account "${$('ba-name').value.trim()}" added`, 'ok');
+    closeModal();
+    if (onCreated) onCreated(r.data.accountId);
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
   wrap.appendChild(m);
@@ -15171,31 +15005,18 @@ function openSeriesModal(seriesId) {
   const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save' : 'Add']);
   save.onclick = async () => {
-    const name = $('is-name').value.trim();
-    if (!name) { showErr('Name is required', 'is-name'); return; }
-    const prefix = $('is-prefix').value.trim();
-    if (!prefix) { showErr('Prefix is required', 'is-prefix'); return; }
-    const suffix = $('is-suffix').value.trim() || null;
-    const starting = parseInt($('is-start').value, 10) || 1;
-    const reset = $('is-reset').value === '1' ? 1 : 0;
-    const def = $('is-default').value || null;
-    try {
-      if (isEdit) {
-        STATE.db.run('UPDATE invoice_series SET name=?, prefix=?, suffix=?, starting_number=?, reset_on_fy=?, default_for=? WHERE id=?',
-          [name, prefix, suffix, starting, reset, def, seriesId]);
-      } else {
-        STATE.db.run('INSERT INTO invoice_series (name, prefix, suffix, starting_number, reset_on_fy, default_for, system_flag, created_at) VALUES (?,?,?,?,?,?,0,?)',
-          [name, prefix, suffix, starting, reset, def, nowIso()]);
-      }
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(isEdit ? 'Series updated' : 'Series added', 'ok');
-      closeModal();
-      render();
-    } catch (e) {
-      toast('Save failed: ' + e.message, 'err');
-    }
+    // Shared with create_invoice_series / update_invoice_series.
+    const input = {
+      name: $('is-name').value, prefix: $('is-prefix').value, suffix: $('is-suffix').value,
+      startingNumber: parseInt($('is-start').value, 10) || 1, resetOnFy: $('is-reset').value === '1',
+      defaultFor: $('is-default').value || '',
+    };
+    const r = await bahiUi(isEdit ? 'update_invoice_series' : 'create_invoice_series', isEdit ? { seriesId, ...input } : input);
+    if (!r.ok) { showErr(r.error.message, { name: 'is-name', prefix: 'is-prefix', defaultFor: 'is-default' }[r.error.field]); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(isEdit ? 'Series updated' : 'Series added', 'ok');
+    closeModal();
+    render();
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
   wrap.appendChild(m);
@@ -15761,48 +15582,23 @@ function openVendorModal(vendorId) {
   const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add vendor']);
   save.onclick = async () => {
-    const name = $('vm-name').value.trim();
-    if (!name) { showErr('Name is required', 'vm-name'); return; }
-    let gstin = $('vm-gstin').value.trim().toUpperCase();
-    if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/.test(gstin)) {
-      showErr('GSTIN format invalid', 'vm-gstin'); return;
-    }
     const stateRow = parseStateInput($('vm-state').value);
-    const stateIso = stateRow ? stateRow[0] : null;
     if ($('vm-state').value.trim() && !stateRow) {
       showErr(`State "${$('vm-state').value}" is not recognised.`, 'vm-state'); return;
     }
-    if (gstin && stateRow && gstin.slice(0, 2) !== stateRow[1]) {
-      showErr(`GSTIN starts with ${gstin.slice(0,2)} but ${stateRow[2]} has GST code ${stateRow[1]}.`, 'vm-gstin');
-      return;
-    }
-    const pan = (gstin && gstin.length >= 12) ? gstin.slice(2, 12) : null;
-    const opening = parseRupees($('vm-opening').value);
-    const rcm = parseInt($('vm-rcm').value, 10) || 0;
-    const tds = $('vm-tds').value || null;
-    try {
-      if (isEdit) {
-        STATE.db.run(
-          'UPDATE vendors SET name=?, gstin=?, pan=?, state=?, email=?, phone=?, address=?, rcm_applicable=?, tds_section=?, opening_balance=? WHERE id=?',
-          [name, gstin || null, pan, stateIso || null, $('vm-email').value.trim() || null, $('vm-phone').value.trim() || null, $('vm-address').value.trim() || null, rcm, tds, opening, vendorId]
-        );
-      } else {
-        STATE.db.run(
-          'INSERT INTO vendors (name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-          [name, gstin || null, pan, stateIso || null, $('vm-email').value.trim() || null, $('vm-phone').value.trim() || null, $('vm-address').value.trim() || null, rcm, tds, opening, nowIso()]
-        );
-        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'vendor.create', ref: name, payload: { name, gstin, stateIso, rcm, tds } });
-      }
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(isEdit ? 'Vendor updated' : 'Vendor added', 'ok');
-      closeModal();
-      render();
-    } catch (e) {
-      console.error(e);
-      toast('Save failed: ' + e.message, 'err');
-    }
+    // Shared with create_vendor / update_vendor: the checks and the save live in saveVendor.
+    const input = {
+      name: $('vm-name').value, gstin: $('vm-gstin').value, state: stateRow ? stateRow[0] : '',
+      email: $('vm-email').value, phone: $('vm-phone').value, address: $('vm-address').value,
+      rcmApplicable: $('vm-rcm').value === '1', tdsSection: $('vm-tds').value || '',
+      openingBalance: parseRupees($('vm-opening').value),
+    };
+    const r = await bahiUi(isEdit ? 'update_vendor' : 'create_vendor', isEdit ? { vendorId, ...input } : input);
+    if (!r.ok) { showErr(r.error.message, { name: 'vm-name', gstin: 'vm-gstin', state: 'vm-state', tdsSection: 'vm-tds' }[r.error.field]); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(isEdit ? 'Vendor updated' : 'Vendor added', 'ok');
+    closeModal();
+    render();
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
   wrap.appendChild(m);
@@ -17726,28 +17522,18 @@ function openGodownModal(godownId) {
   const showErr = makeModalErr(body);
   const save = h('button', { class: 'primary' }, [isEdit ? 'Save changes' : 'Add godown']);
   save.onclick = async () => {
-    const name = $('gd-name').value.trim();
-    if (!name) { showErr('Name is required', 'gd-name'); return; }
     const stateRow = parseStateInput($('gd-state').value);
-    const stateIso = stateRow ? stateRow[0] : null;
-    const isDef = parseInt($('gd-def').value, 10) || 0;
-    try {
-      if (isDef) STATE.db.run('UPDATE godowns SET is_default = 0');
-      if (isEdit) {
-        STATE.db.run('UPDATE godowns SET name=?, address=?, state=?, is_default=? WHERE id=?',
-          [name, $('gd-addr').value.trim() || null, stateIso, isDef, godownId]);
-      } else {
-        STATE.db.run('INSERT INTO godowns (name, address, state, is_default, created_at) VALUES (?,?,?,?,?)',
-          [name, $('gd-addr').value.trim() || null, stateIso, isDef, nowIso()]);
-        await appendAuditEntry(STATE.db, { actor: auditActor(), action: 'godown.create', ref: name, payload: { name, stateIso } });
-      }
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(isEdit ? 'Godown updated' : 'Godown added', 'ok');
-      closeModal();
-      render();
-    } catch (e) { console.error(e); toast('Save failed: ' + e.message, 'err'); }
+    // Shared with create_godown / update_godown.
+    const input = {
+      name: $('gd-name').value, address: $('gd-addr').value, state: stateRow ? stateRow[0] : '',
+      isDefault: parseInt($('gd-def').value, 10) === 1,
+    };
+    const r = await bahiUi(isEdit ? 'update_godown' : 'create_godown', isEdit ? { godownId, ...input } : input);
+    if (!r.ok) { showErr(r.error.message, { name: 'gd-name', state: 'gd-state' }[r.error.field]); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(isEdit ? 'Godown updated' : 'Godown added', 'ok');
+    closeModal();
+    render();
   };
   m.appendChild(h('div', { class: 'modal-f' }, [cancel, save]));
   wrap.appendChild(m);
@@ -22829,6 +22615,601 @@ function renderSettings(main) {
 //------------------------------------------------------------
 
 //------------------------------------------------------------
+// === Today, where the books are kept ===
+//------------------------------------------------------------
+// The calendar date in this browser's timezone. nowIso().slice(0, 10) is the UTC date, which
+// before 05:30 IST is still yesterday.
+function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+//------------------------------------------------------------
+// === Masters — one save path per master, shared by its modal and its agent tool ===
+//------------------------------------------------------------
+//
+// Each master's validation lives here, so the modal and the agent face refuse the same input.
+// A refusal is a VoucherError naming the field; the modal maps it to its own input. Every save
+// writes an audit entry, edits included: an edit with no entry would leave an agent's approved
+// change, or a person's, with no trace in the log.
+
+const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/;
+const SERIES_DEFAULTS = ['', 'domestic', 'export', 'sez-wp', 'sez-wop', 'bos', 'credit-note'];
+const COMPANY_TYPES = ['', 'proprietorship', 'partnership', 'llp', 'private-limited', 'public-limited', 'huf', 'other'];
+// Rate per composition type, from the bundled reference table.
+const COMPOSITION_RATE_BY_TYPE = Object.fromEntries(COMPOSITION_RATES.map(([type, rate]) => [type, rate]));
+
+const masterText = (v) => (v == null ? null : (String(v).trim() || null));
+
+// A party's GSTIN must be well formed and agree with its state. Returns the PAN inside it.
+function checkPartyGstin(gstin, stateIso) {
+  if (gstin && !GSTIN_PATTERN.test(gstin)) throw new VoucherError('GSTIN format invalid', 'gstin');
+  if (stateIso && !STATE_BY_ISO.has(stateIso)) throw new VoucherError(`State "${stateIso}" is not recognised.`, 'state');
+  const row = stateIso ? STATE_BY_ISO.get(stateIso) : null;
+  if (gstin && row && gstin.slice(0, 2) !== row[1]) {
+    throw new VoucherError(`GSTIN starts with ${gstin.slice(0, 2)} but ${row[2]} has GST code ${row[1]}.`, 'gstin');
+  }
+  return (gstin && gstin.length >= 12) ? gstin.slice(2, 12) : null;
+}
+
+function masterRowOrThrow(db, table, id, label) {
+  // `table` is a literal from this file.
+  const r = db.exec(`SELECT id FROM ${table} WHERE id = ?`, [id]);
+  if (!r.length || !r[0].values.length) throw new VoucherError(`${label} ${id} not found`, 'id');
+}
+
+// Checks and normalises a party; throws VoucherError. The prepare step calls it too, so an
+// agent's bad input fails when it calls, not after the person approves.
+function checkParty(input) {
+  const name = masterText(input.name);
+  if (!name) throw new VoucherError('Name is required', 'name');
+  const gstin = masterText(input.gstin) ? masterText(input.gstin).toUpperCase() : null;
+  const state = masterText(input.state);
+  const pan = checkPartyGstin(gstin, state);
+  return { name, gstin, state, pan };
+}
+
+async function saveCustomer(db, input) {
+  const { id = null, email, phone, address, openingBalance } = input;
+  const { name, gstin, state, pan } = checkParty(input);
+  const vals = [name, gstin, pan, state, masterText(email), masterText(phone), masterText(address), openingBalance || 0];
+  if (id) {
+    masterRowOrThrow(db, 'customers', id, 'Customer');
+    db.run('UPDATE customers SET name=?, gstin=?, pan=?, state=?, email=?, phone=?, address=?, opening_balance=? WHERE id=?', [...vals, id]);
+    await appendAuditEntry(db, { actor: auditActor(), action: 'customer.update', ref: name, payload: { id, name, gstin, stateIso: state } });
+    return { customerId: id, created: false };
+  }
+  db.run('INSERT INTO customers (name, gstin, pan, state, email, phone, address, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?)', [...vals, nowIso()]);
+  const customerId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'customer.create', ref: name, payload: { name, gstin, stateIso: state } });
+  return { customerId, created: true };
+}
+
+function checkVendor(input) {
+  const party = checkParty(input);
+  const tds = masterText(input.tdsSection);
+  if (tds && !(REF.tdsSections.data || []).some((r) => r[0] === tds)) throw new VoucherError(`TDS section "${tds}" is not in the TDS reference table`, 'tdsSection');
+  return { ...party, tds };
+}
+
+async function saveVendor(db, input) {
+  const { id = null, email, phone, address, rcmApplicable, openingBalance } = input;
+  const { name, gstin, state, pan, tds } = checkVendor(input);
+  const rcm = rcmApplicable ? 1 : 0;
+  const vals = [name, gstin, pan, state, masterText(email), masterText(phone), masterText(address), rcm, tds, openingBalance || 0];
+  if (id) {
+    masterRowOrThrow(db, 'vendors', id, 'Vendor');
+    db.run('UPDATE vendors SET name=?, gstin=?, pan=?, state=?, email=?, phone=?, address=?, rcm_applicable=?, tds_section=?, opening_balance=? WHERE id=?', [...vals, id]);
+    await appendAuditEntry(db, { actor: auditActor(), action: 'vendor.update', ref: name, payload: { id, name, gstin, stateIso: state, rcm, tds } });
+    return { vendorId: id, created: false };
+  }
+  db.run('INSERT INTO vendors (name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)', [...vals, nowIso()]);
+  const vendorId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'vendor.create', ref: name, payload: { name, gstin, stateIso: state, rcm, tds } });
+  return { vendorId, created: true };
+}
+
+// Items. Opening stock is set on creation, or on an edit only while the item has no movements,
+// exactly as the modal allowed. A goods item with inventory and opening quantity posts its
+// opening movement into the default godown.
+function checkItem(db, input) {
+  const name = masterText(input.name);
+  if (!name) throw new VoucherError('Name is required', 'name');
+  const taxRate = input.taxRate == null ? 0 : input.taxRate;
+  if (!(taxRate >= 0 && taxRate <= 1)) throw new VoucherError('Tax rate must be a decimal fraction between 0 and 1', 'taxRate');
+  if (!['wac', 'fifo'].includes(input.valuationMethod || 'wac')) throw new VoucherError('Valuation method must be wac or fifo', 'valuationMethod');
+  if (input.preferredVendorId) masterRowOrThrow(db, 'vendors', input.preferredVendorId, 'Vendor');
+  return name;
+}
+
+async function saveItem(db, input) {
+  const { id = null, isService = false, defaultRate = 0, taxRate = 0, enableInventory = false, valuationMethod = 'wac',
+    trackBatches = false, reorderLevel = 0, preferredVendorId = null, openingQty = 0, openingValue = 0 } = input;
+  const name = checkItem(db, input);
+  const svc = isService ? 1 : 0;
+  const inv = (!svc && enableInventory) ? 1 : 0;
+  const batches = (!svc && trackBatches) ? 1 : 0;
+  const hsnSac = masterText(input.hsnSac);
+  const unit = masterText(input.unit);
+  const fields = [name, hsnSac, svc, unit, defaultRate || null, taxRate, inv, valuationMethod, batches, reorderLevel || 0, preferredVendorId || null];
+  if (id) {
+    masterRowOrThrow(db, 'items', id, 'Item');
+    db.run('UPDATE items SET name=?, hsn_sac=?, is_service=?, unit=?, default_rate=?, default_tax_rate=?, enable_inventory=?, valuation_method=?, track_batches=?, reorder_level=?, preferred_vendor_id=? WHERE id=?', [...fields, id]);
+    const moved = db.exec('SELECT 1 FROM stock_movements WHERE item_id = ? LIMIT 1', [id]);
+    const hasMovements = !!(moved.length && moved[0].values.length);
+    if (!hasMovements) db.run('UPDATE items SET opening_stock_qty=?, opening_stock_value=? WHERE id=?', [openingQty, openingValue, id]);
+    await appendAuditEntry(db, { actor: auditActor(), action: 'item.update', ref: name, payload: { id, name, isService: svc, hsnSac, taxRate, enableInv: inv, valMethod: valuationMethod } });
+    return { itemId: id, created: false, openingStockChanged: !hasMovements };
+  }
+  db.run('INSERT INTO items (name, hsn_sac, is_service, unit, default_rate, default_tax_rate, enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor_id, opening_stock_qty, opening_stock_value, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [...fields, openingQty, openingValue, nowIso()]);
+  const itemId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'item.create', ref: name, payload: { name, isService: svc, hsnSac, taxRate, enableInv: inv, valMethod: valuationMethod } });
+  // Post opening stock movement if applicable
+  if (inv && openingQty > 0) {
+    const godownId = getDefaultGodownId(db);
+    const openingRate = Math.round(openingValue / openingQty);
+    postStockIn(db, {
+      itemId, godownId, qty: openingQty, rate: openingRate,
+      voucherType: 'opening', voucherId: null, voucherRef: 'OPENING',
+      postedAt: nowIso(),
+    });
+  }
+  return { itemId, created: true };
+}
+
+function checkBankAccount(db, input) {
+  const name = masterText(input.name);
+  if (!name) throw new VoucherError('Name is required', 'name');
+  const parentId = getAccountIdByName(db, 'Bank Accounts');
+  const existing = db.exec('SELECT id FROM accounts WHERE name = ? AND parent_id = ?', [name, parentId]);
+  if (existing.length && existing[0].values.length) throw new VoucherError('A bank account with that name already exists', 'name');
+  return { name, parentId };
+}
+
+async function createBankAccount(db, input) {
+  const { name, parentId } = checkBankAccount(db, input);
+  db.run('INSERT INTO accounts (name, parent_id, type, system_flag) VALUES (?, ?, "asset", 0)', [name, parentId]);
+  const accountId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'account.create', ref: name, payload: { name, parentName: 'Bank Accounts', kind: 'bank' } });
+  return { accountId };
+}
+
+function checkSeries(input) {
+  const name = masterText(input.name);
+  if (!name) throw new VoucherError('Name is required', 'name');
+  const prefix = masterText(input.prefix);
+  if (!prefix) throw new VoucherError('Prefix is required', 'prefix');
+  if (!SERIES_DEFAULTS.includes(input.defaultFor || '')) throw new VoucherError(`Default-for must be one of: ${SERIES_DEFAULTS.filter(Boolean).join(', ')}`, 'defaultFor');
+  return { name, prefix };
+}
+
+async function saveInvoiceSeries(db, input) {
+  const { id = null, suffix, startingNumber = 1, resetOnFy = false, defaultFor = '' } = input;
+  const { name, prefix } = checkSeries(input);
+  const vals = [name, prefix, masterText(suffix), startingNumber || 1, resetOnFy ? 1 : 0, defaultFor || null];
+  if (id) {
+    masterRowOrThrow(db, 'invoice_series', id, 'Series');
+    db.run('UPDATE invoice_series SET name=?, prefix=?, suffix=?, starting_number=?, reset_on_fy=?, default_for=? WHERE id=?', [...vals, id]);
+    await appendAuditEntry(db, { actor: auditActor(), action: 'series.update', ref: name, payload: { id, name, prefix } });
+    return { seriesId: id, created: false };
+  }
+  db.run('INSERT INTO invoice_series (name, prefix, suffix, starting_number, reset_on_fy, default_for, system_flag, created_at) VALUES (?,?,?,?,?,?,0,?)', [...vals, nowIso()]);
+  const seriesId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'series.create', ref: name, payload: { name, prefix } });
+  return { seriesId, created: true };
+}
+
+function checkGodown(input) {
+  const name = masterText(input.name);
+  if (!name) throw new VoucherError('Name is required', 'name');
+  const state = masterText(input.state);
+  if (state && !STATE_BY_ISO.has(state)) throw new VoucherError(`State "${state}" is not recognised.`, 'state');
+  return { name, state };
+}
+
+async function saveGodown(db, input) {
+  const { id = null, address, isDefault = false } = input;
+  const { name, state } = checkGodown(input);
+  if (id) masterRowOrThrow(db, 'godowns', id, 'Godown');
+  if (isDefault) db.run('UPDATE godowns SET is_default = 0');
+  if (id) {
+    db.run('UPDATE godowns SET name=?, address=?, state=?, is_default=? WHERE id=?', [name, masterText(address), state, isDefault ? 1 : 0, id]);
+    await appendAuditEntry(db, { actor: auditActor(), action: 'godown.update', ref: name, payload: { id, name, stateIso: state } });
+    return { godownId: id, created: false };
+  }
+  db.run('INSERT INTO godowns (name, address, state, is_default, created_at) VALUES (?,?,?,?,?)', [name, masterText(address), state, isDefault ? 1 : 0, nowIso()]);
+  const godownId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'godown.create', ref: name, payload: { name, stateIso: state } });
+  return { godownId, created: true };
+}
+
+// Company identity lives in the manifest, not a table. One audit entry and one history row per
+// changed field, so the forensic record of who renamed the company, and when, is complete.
+function checkCompany(input) {
+  const name = masterText(input.name);
+  if (!name) throw new VoucherError('Company name is required', 'name');
+  const gstin = masterText(input.gstin) ? masterText(input.gstin).toUpperCase() : null;
+  const state = masterText(input.state);
+  const pan = checkPartyGstin(gstin, state);
+  if (!COMPANY_TYPES.includes(input.companyType || '')) throw new VoucherError(`Company type must be one of: ${COMPANY_TYPES.filter(Boolean).join(', ')}`, 'companyType');
+  const compType = input.compositionType || 'service';
+  if (!COMPOSITION_RATE_BY_TYPE[compType]) throw new VoucherError('Composition type must be trader, restaurant or service', 'compositionType');
+  return { name, gstin, state, pan, compType };
+}
+
+async function updateCompany(db, manifest, input) {
+  const { name, gstin, state, pan, compType } = checkCompany(input);
+  const stateRow = state ? STATE_BY_ISO.get(state) : null;
+  const c = manifest.company || {};
+  const newCompany = {
+    name,
+    trade_name: masterText(input.tradeName),
+    company_type: input.companyType || null,
+    gstin,
+    pan,
+    tan: masterText(input.tan),
+    state,
+    stateName: stateRow ? stateRow[2] : null,
+    gstinStateCode: stateRow ? stateRow[1] : (gstin ? gstin.slice(0, 2) : null),
+    address: masterText(input.address),
+    fy_start: masterText(input.fyStart),
+    composition: input.compositionEnabled ? { enabled: true, type: compType, rate: COMPOSITION_RATE_BY_TYPE[compType] } : { enabled: false },
+  };
+  const changes = [];
+  for (const f of ['name', 'trade_name', 'company_type', 'gstin', 'pan', 'tan', 'state', 'stateName', 'gstinStateCode', 'address', 'fy_start', 'composition']) {
+    const oldV = (c[f] == null ? null : c[f]);
+    const newV = (newCompany[f] == null ? null : newCompany[f]);
+    const same = (typeof oldV === 'object' || typeof newV === 'object') ? canonicalJson(oldV) === canonicalJson(newV) : oldV === newV;
+    if (!same) changes.push({ field: f, oldValue: oldV, newValue: newV });
+  }
+  if (!changes.length) return { changes: [] };
+  for (const ch of changes) {
+    await appendAuditEntry(db, { actor: auditActor(), action: 'company.update', ref: ch.field, payload: { field: ch.field, oldValue: ch.oldValue, newValue: ch.newValue } });
+  }
+  // Mutate the existing object so any held references stay valid.
+  manifest.company = manifest.company || {};
+  Object.assign(manifest.company, newCompany);
+  manifest.company.changeHistory = manifest.company.changeHistory || [];
+  const ts = nowIso();
+  for (const ch of changes) manifest.company.changeHistory.push({ ts, field: ch.field, oldValue: ch.oldValue, newValue: ch.newValue, origin: CURRENT_ORIGIN });
+  // The workspace list in this browser shows the company's identity; keep it current.
+  try {
+    const existing = await idbGet(STORES.workspace, STATE.workspaceId);
+    if (existing) {
+      Object.assign(existing, { name, gstin, state, stateName: newCompany.stateName, lastOpened: nowIso() });
+      await addWorkspaceEntry(existing);
+    }
+  } catch (e) { console.warn('Workspace IDB update failed:', e); }
+  return { changes };
+}
+
+//------------------------------------------------------------
+// === The remaining vouchers — one engine function each, shared by its form and its tool ===
+//------------------------------------------------------------
+//
+// Each function does exactly what its form's submit handler did: the same rows, the same
+// snapshots, the same ledger legs, in the same transaction. Where the form wrote no audit
+// entry (challans, e-way bills, stock transfers), the function writes one, so an approved
+// agent voucher is attributable like every other write.
+
+const ADVANCE_MODES = ['cash', 'cheque', 'neft', 'rtgs', 'imps', 'upi', 'card', 'other'];
+const VENDOR_PAYMENT_MODES = ['neft', 'rtgs', 'imps', 'upi', 'cheque', 'cash'];
+const CHALLAN_TYPES = ['outward-job', 'outward-sample', 'outward-return', 'inward-return'];
+const EWB_VEHICLE_TYPES = ['regular', 'over-dimensional'];
+const EWB_MODES = ['road', 'rail', 'air', 'ship'];
+const EWB_REASONS = ['1', '2', '3', '4', '5', '6', '8'];
+
+function voucherCustomerSnapshot(db, customerId) {
+  const r = db.exec('SELECT name, gstin, pan, state, email, phone, address FROM customers WHERE id = ?', [customerId]);
+  if (!r.length || !r[0].values.length) throw new VoucherError(`Customer ${customerId} not found`, 'customerId');
+  const cv = r[0].values[0];
+  const csRow = cv[3] && STATE_BY_ISO.has(cv[3]) ? STATE_BY_ISO.get(cv[3]) : null;
+  return {
+    row: { id: customerId, name: cv[0], gstin: cv[1], pan: cv[2], state: cv[3] },
+    snapshot: JSON.stringify({
+      name: cv[0], gstin: cv[1], pan: cv[2], state: cv[3],
+      stateName: csRow ? csRow[2] : null, gstinStateCode: csRow ? csRow[1] : null,
+      email: cv[4], phone: cv[5], address: cv[6],
+    }),
+    stateRow: csRow,
+  };
+}
+
+function voucherBankAccount(db, bankAccountId) {
+  const r = db.exec('SELECT id, name FROM accounts WHERE id = ?', [bankAccountId]);
+  if (!r.length || !r[0].values.length) throw new VoucherError('Bank account missing', 'bankAccountId');
+  return { id: r[0].values[0][0], name: r[0].values[0][1] };
+}
+
+// Customer advance receipt. The amount received is gross of GST: the taxable value is backed
+// out at the advance's rate and the tax split CGST+SGST intra-state, IGST inter-state.
+async function createAdvance(db, input) {
+  const { customerId, bankAccountId, amount, taxRate = 0, natureOfSupply = 'services', paymentMode = 'neft' } = input;
+  if (!(amount > 0)) throw new VoucherError('Enter an amount', 'amount');
+  if (!(taxRate >= 0 && taxRate <= 1)) throw new VoucherError('Tax rate must be a decimal fraction between 0 and 1', 'taxRate');
+  const { row: customer, snapshot: customerSnap, stateRow: csRow } = voucherCustomerSnapshot(db, customerId);
+  const bankAcc = voucherBankAccount(db, bankAccountId);
+  const companyState = (STATE.manifest && STATE.manifest.company && STATE.manifest.company.state) || null;
+  const posRow = input.placeOfSupply ? STATE_BY_ISO.get(input.placeOfSupply) : null;
+  if (input.placeOfSupply && !posRow) throw new VoucherError(`Place of supply "${input.placeOfSupply}" is not a state code`, 'placeOfSupply');
+  const customerState = posRow ? posRow[0] : customer.state || null;
+  const isInter = customerState !== companyState;
+  const taxable = Math.round(amount / (1 + taxRate));
+  const totalTax = amount - taxable;
+  const cgst = isInter ? 0 : Math.round(totalTax / 2);
+  const sgst = isInter ? 0 : (totalTax - cgst);
+  const igst = isInter ? totalTax : 0;
+  const advanceDate = input.advanceDate || todayLocal();
+  const advanceNumber = input.advanceNumber || nextAdvanceNumber(db);
+  const posName = posRow ? posRow[2] : (csRow ? csRow[2] : null);
+  const rateId = rateIdForDecimal(taxRate, advanceDate);
+
+  db.run('BEGIN');
+  try {
+    db.run(
+      `INSERT INTO advances (advance_number, advance_date, customer_id, bank_account_id,
+         amount, taxable, tax_rate, rate_id, cgst, sgst, igst, place_of_supply,
+         place_of_supply_name, nature_of_supply, payment_mode, reference, notes,
+         adjusted_amount, remaining_balance, status, customer_snapshot, bank_account_snapshot, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,'open',?,?,?)`,
+      [advanceNumber, advanceDate, customer.id, bankAcc.id,
+       amount, taxable, taxRate, rateId, cgst, sgst, igst, customerState,
+       posName, natureOfSupply, paymentMode, masterText(input.reference), masterText(input.notes),
+       amount, customerSnap, bankAcc.name, nowIso()]
+    );
+    const advanceId = lastInsertId(db);
+    const entryId = await postAdvanceToLedger(db, {
+      advance_number: advanceNumber, advance_date: advanceDate,
+      amount, taxable, tax_rate: taxRate, cgst, sgst, igst,
+    }, customer, bankAcc, isInter);
+    db.run('UPDATE advances SET ledger_entry_id = ? WHERE id = ?', [entryId, advanceId]);
+    db.run('COMMIT');
+    return { advanceId, advanceNumber, entryId, advanceDate, amount, taxable, cgst, sgst, igst };
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+}
+
+// Payment to a vendor, with TDS withheld when a section applies:
+// Dr Sundry Creditors (gross) / Cr Bank (net) / Cr TDS Payable (tds). The payment row, the
+// ledger entry and the Form 26Q deduction row commit or roll back together.
+async function createVendorPayment(db, input) {
+  const { vendorId, bankAccountId, amount, paymentMode = 'neft' } = input;
+  if (!(amount > 0)) throw new VoucherError('Gross amount must be positive', 'amount');
+  const vR = db.exec('SELECT id, name, gstin, pan, tds_section FROM vendors WHERE id = ?', [vendorId]);
+  if (!vR.length || !vR[0].values.length) throw new VoucherError('Pick a vendor', 'vendorId');
+  const [, vName, vGstin, vPan, vTds] = vR[0].values[0];
+  const bankAcc = voucherBankAccount(db, bankAccountId);
+  const tdsSection = masterText(input.tdsSection);
+  if (tdsSection && !(REF.tdsSections.data || []).some((r) => r[0] === tdsSection)) throw new VoucherError(`TDS section "${tdsSection}" is not in the TDS reference table`, 'tdsSection');
+  const tdsRate = tdsSection ? (input.tdsRate != null ? input.tdsRate : getTdsRateForSection(tdsSection)) || 0 : 0;
+  if (!(tdsRate >= 0 && tdsRate <= 1)) throw new VoucherError('TDS rate must be a decimal fraction between 0 and 1', 'tdsRate');
+  const tdsAmount = tdsSection ? Math.round(amount * tdsRate) : 0;
+  const netToVendor = amount - tdsAmount;
+  const paymentNumber = input.paymentNumber || nextPaymentNumber(db);
+  const paymentDate = input.paymentDate || todayLocal();
+  const vendorSnapshot = JSON.stringify({ name: vName, gstin: vGstin, pan: vPan, tdsSection: vTds });
+
+  db.run('BEGIN');
+  try {
+    db.run(
+      'INSERT INTO payments (payment_number, payment_date, vendor_id, payment_direction, bank_account_id, amount, payment_mode, reference, notes, status, customer_snapshot, bank_account_snapshot, tds_amount, tds_section, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [paymentNumber, paymentDate, vendorId, 'out', bankAcc.id, amount, paymentMode, masterText(input.reference), masterText(input.notes), 'posted', vendorSnapshot, bankAcc.name, tdsAmount, tdsSection, nowIso()]
+    );
+    const paymentId = lastInsertId(db);
+    const lines = [
+      { accountId: getAccountIdByName(db, 'Sundry Creditors'), debit: amount, credit: 0 },
+      { accountId: bankAcc.id, debit: 0, credit: netToVendor },
+    ];
+    if (tdsAmount > 0 && tdsSection) {
+      lines.push({ accountId: getOrCreateTdsPayableAccount(db, tdsSection), debit: 0, credit: tdsAmount });
+    }
+    const result = await postEntry(db, {
+      voucherType: 'payment',
+      voucherRef: paymentNumber,
+      narration: `Payment to ${vName}` + (tdsAmount > 0 ? ` (TDS ${tdsSection} @ ${(tdsRate * 100).toFixed(2)}% deducted)` : ''),
+      postedAt: paymentDate,
+      actor: auditActor(),
+      lines,
+    });
+    db.run('UPDATE payments SET ledger_entry_id = ? WHERE id = ?', [result.entryId, paymentId]);
+    if (tdsAmount > 0 && tdsSection) {
+      db.run(
+        'INSERT INTO tds_deductions (payment_id, vendor_id, section, rate, taxable_amount, tds_amount, payment_date, vendor_pan, vendor_name_snapshot, ledger_entry_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        [paymentId, vendorId, tdsSection, tdsRate, amount, tdsAmount, paymentDate, vPan, vName, result.entryId, nowIso()]
+      );
+    }
+    db.run('COMMIT');
+    return { paymentId, paymentNumber, entryId: result.entryId, paymentDate, amount, tdsSection, tdsAmount, netToVendor };
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+}
+
+// TCS collected from a customer: the Form 27EQ row and Dr Debtors / Cr TCS Payable.
+async function createTcsCollection(db, input) {
+  const { customerId, section, taxableAmount } = input;
+  if (!(taxableAmount > 0)) throw new VoucherError('Taxable amount must be positive', 'taxableAmount');
+  const cR = db.exec('SELECT id FROM customers WHERE id = ?', [customerId]);
+  if (!cR.length || !cR[0].values.length) throw new VoucherError('Pick a customer', 'customerId');
+  const secRow = (REF.tcsSections.data || []).find((r) => (r.section || r[0]) === section);
+  if (!secRow) throw new VoucherError(`TCS section "${section}" is not in the TCS reference table`, 'section');
+  const rate = input.rate != null ? input.rate : (secRow.rate != null ? secRow.rate : (secRow[1] || 0));
+  if (!(rate > 0 && rate <= 1)) throw new VoucherError('TCS rate must be a decimal fraction above 0', 'rate');
+  const tcsAmount = Math.round(taxableAmount * rate);
+  const invoiceDate = input.collectionDate || todayLocal();
+  if (input.invoiceId) {
+    const iR = db.exec('SELECT customer_id FROM invoices WHERE id = ?', [input.invoiceId]);
+    if (!iR.length || !iR[0].values.length) throw new VoucherError(`Invoice ${input.invoiceId} not found`, 'invoiceId');
+  }
+  const tcsId = await recordTcsCollection(db, {
+    invoiceId: input.invoiceId || null, customerId, section, rate, taxableAmount, tcsAmount, invoiceDate,
+  });
+  return { tcsId, section, rate, taxableAmount, tcsAmount, collectionDate: invoiceDate };
+}
+
+// Delivery challan: goods leave or return without a sale. Stock moves; no ledger entry.
+async function createDeliveryChallan(db, input) {
+  const challanType = input.challanType || 'outward-job';
+  if (!CHALLAN_TYPES.includes(challanType)) throw new VoucherError(`Challan type must be one of: ${CHALLAN_TYPES.join(', ')}`, 'challanType');
+  const isVendorOutward = challanType === 'outward-return';
+  const partyId = isVendorOutward ? input.vendorId : input.customerId;
+  if (!partyId) throw new VoucherError(isVendorOutward ? 'Pick a vendor' : 'Pick a customer', isVendorOutward ? 'vendorId' : 'customerId');
+  const table = isVendorOutward ? 'vendors' : 'customers';
+  const pR = db.exec(`SELECT name, gstin, state, address FROM ${table} WHERE id=?`, [partyId]);
+  if (!pR.length || !pR[0].values.length) throw new VoucherError(`${isVendorOutward ? 'Vendor' : 'Customer'} ${partyId} not found`, isVendorOutward ? 'vendorId' : 'customerId');
+  const partySnapshot = JSON.stringify({ name: pR[0].values[0][0], gstin: pR[0].values[0][1], state: pR[0].values[0][2], address: pR[0].values[0][3] });
+  const lines = (input.lines || [])
+    .map((ln, i) => ({ line_no: i + 1, item_id: ln.itemId || null, description: ln.description || '', quantity: Math.trunc(ln.quantity || 0) }))
+    .filter((ln) => ln.item_id && ln.quantity > 0);
+  if (!lines.length) throw new VoucherError('Add at least one valid line', 'lines');
+  const units = new Map();
+  for (const ln of lines) {
+    const iR = db.exec('SELECT unit FROM items WHERE id = ?', [ln.item_id]);
+    if (!iR.length || !iR[0].values.length) throw new VoucherError(`Item ${ln.item_id} not found`, 'lines');
+    units.set(ln.item_id, iR[0].values[0][0]);
+  }
+  const challanNumber = input.challanNumber || nextChallanNumber(db);
+  const challanDate = input.challanDate || todayLocal();
+  const godownId = getDefaultGodownId(db);
+  const companySnapshot = JSON.stringify((STATE.manifest && STATE.manifest.company) || {});
+
+  db.run('BEGIN');
+  let challanId;
+  try {
+    db.run(
+      'INSERT INTO delivery_challans (challan_number, challan_date, challan_type, customer_id, vendor_id, godown_id, destination, vehicle_no, transporter, reason, is_returnable, expected_return_date, status, company_snapshot, party_snapshot, notes, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      [challanNumber, challanDate, challanType, isVendorOutward ? null : partyId, isVendorOutward ? partyId : null, godownId,
+       masterText(input.destination), masterText(input.vehicleNo), masterText(input.transporter), masterText(input.reason),
+       input.isReturnable ? 1 : 0, input.expectedReturnDate || null, 'open', companySnapshot, partySnapshot, masterText(input.notes), nowIso()]
+    );
+    challanId = lastInsertId(db);
+    const lineStmt = db.prepare('INSERT INTO delivery_challan_lines (challan_id, line_no, item_id, description, quantity, unit, rate) VALUES (?,?,?,?,?,?,?)');
+    for (const ln of lines) lineStmt.run([challanId, ln.line_no, ln.item_id, ln.description, ln.quantity, units.get(ln.item_id) || null, null]);
+    lineStmt.free();
+    await appendAuditEntry(db, { actor: auditActor(), action: 'challan.create', ref: challanNumber, payload: { challanType, partyId, lines: lines.length } });
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+  // Stock effects (NO GL posting). A failure here leaves the challan recorded and is reported.
+  const warnings = [];
+  try {
+    postChallanStockEffects(db, { id: challanId, challan_number: challanNumber, challan_date: challanDate, challan_type: challanType, godown_id: godownId }, lines);
+  } catch (stockErr) {
+    console.error('Stock effect failed:', stockErr);
+    warnings.push('Challan posted, but stock effect failed: ' + stockErr.message);
+  }
+  return { challanId, challanNumber, challanDate, lineCount: lines.length, warnings };
+}
+
+// E-way bill draft from an invoice or a delivery challan. The portal issues the number; the
+// person records it afterwards with record_eway_bill_number.
+async function createEwayBill(db, input) {
+  const { sourceType, sourceId } = input;
+  let supplierSnap = '{}', recipientSnap = '{}', goodsSnap = '[]';
+  let sourceRef = '', taxable = 0, cgst = 0, sgst = 0, igst = 0, total = 0;
+  if (sourceType === 'invoice') {
+    const r = db.exec("SELECT invoice_number, company_snapshot, customer_snapshot, subtotal, cgst, sgst, igst, total FROM invoices WHERE id = ? AND status = 'posted'", [sourceId]);
+    if (!r.length || !r[0].values.length) throw new VoucherError('Invoice not found', 'sourceId');
+    [sourceRef, supplierSnap, recipientSnap, taxable, cgst, sgst, igst, total] = r[0].values[0];
+    supplierSnap = supplierSnap || '{}'; recipientSnap = recipientSnap || '{}';
+    const linesR = db.exec('SELECT description, hsn_sac, quantity, unit, taxable, tax_rate, cgst, sgst, igst FROM invoice_lines WHERE invoice_id=? ORDER BY line_no', [sourceId]);
+    if (linesR.length) goodsSnap = JSON.stringify(linesR[0].values.map((v) => ({ desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: v[4], tax_rate: v[5], cgst: v[6], sgst: v[7], igst: v[8] })));
+  } else if (sourceType === 'challan') {
+    const r = db.exec('SELECT challan_number, company_snapshot, party_snapshot FROM delivery_challans WHERE id = ?', [sourceId]);
+    if (!r.length || !r[0].values.length) throw new VoucherError('Challan not found', 'sourceId');
+    [sourceRef, supplierSnap, recipientSnap] = r[0].values[0];
+    supplierSnap = supplierSnap || '{}'; recipientSnap = recipientSnap || '{}';
+    const linesR = db.exec('SELECT description, NULL as hsn, quantity, unit, 0, 0, 0, 0, 0 FROM delivery_challan_lines WHERE challan_id=? ORDER BY line_no', [sourceId]);
+    if (linesR.length) goodsSnap = JSON.stringify(linesR[0].values.map((v) => ({ desc: v[0], hsn: v[1], qty: v[2], unit: v[3], taxable: 0, tax_rate: 0, cgst: 0, sgst: 0, igst: 0 })));
+  } else {
+    throw new VoucherError('Source must be an invoice or a challan', 'sourceType');
+  }
+  const vehicleType = input.vehicleType || 'regular';
+  const mode = input.mode || 'road';
+  const reasonCode = input.reasonCode || '1';
+  if (!EWB_VEHICLE_TYPES.includes(vehicleType)) throw new VoucherError('Vehicle type must be regular or over-dimensional', 'vehicleType');
+  if (!EWB_MODES.includes(mode)) throw new VoucherError('Mode must be road, rail, air or ship', 'mode');
+  if (!EWB_REASONS.includes(reasonCode)) throw new VoucherError(`Reason must be one of: ${EWB_REASONS.join(', ')}`, 'reasonCode');
+  const ewbDate = todayLocal();
+  db.run(
+    'INSERT INTO eway_bills (ewb_date, source_type, source_id, source_ref, transporter_name, transporter_id, vehicle_no, vehicle_type, mode, distance_km, reason_code, supplier_snapshot, recipient_snapshot, goods_snapshot, taxable_value, cgst, sgst, igst, total, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [ewbDate, sourceType, sourceId, sourceRef,
+     masterText(input.transporterName), masterText(input.transporterId) ? masterText(input.transporterId).toUpperCase() : null,
+     masterText(input.vehicleNo) ? masterText(input.vehicleNo).toUpperCase() : null, vehicleType, mode,
+     input.distanceKm || 0, reasonCode,
+     supplierSnap, recipientSnap, goodsSnap,
+     taxable, cgst, sgst, igst, total, 'draft', nowIso()]
+  );
+  const ewbId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'ewaybill.create', ref: sourceRef, payload: { ewbId, sourceType, sourceId } });
+  return { ewbId, sourceRef, ewbDate, status: 'draft', total };
+}
+
+async function recordEwayBillNumber(db, { ewbId, ewbNumber }) {
+  const num = masterText(ewbNumber);
+  if (!num) throw new VoucherError('Enter the e-way bill number the portal issued', 'ewbNumber');
+  const r = db.exec('SELECT source_ref FROM eway_bills WHERE id = ?', [ewbId]);
+  if (!r.length || !r[0].values.length) throw new VoucherError(`E-way bill ${ewbId} not found`, 'ewbId');
+  db.run("UPDATE eway_bills SET ewb_number=?, status='generated' WHERE id=?", [num, ewbId]);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'ewaybill.generated', ref: num, payload: { ewbId, ewbNumber: num } });
+  return { ewbId, ewbNumber: num, status: 'generated' };
+}
+
+// Outbound inter-branch stock transfer: IGST on each line, recorded with the payload the
+// receiving branch imports. The JSON file for the receiver is the person's to save.
+async function createStockTransfer(db, input) {
+  const company = (STATE.manifest && STATE.manifest.company) || {};
+  const fromGstin = company.gstin || '';
+  const fromState = company.state || '';
+  const toGstin = masterText(input.toGstin) ? masterText(input.toGstin).toUpperCase() : '';
+  if (!GSTIN_PATTERN.test(toGstin)) throw new VoucherError('Receiver GSTIN format invalid', 'toGstin');
+  const toRow = input.toState ? STATE_BY_ISO.get(input.toState) : null;
+  if (!toRow) throw new VoucherError('Receiver state required', 'toState');
+  if (toGstin.slice(0, 2) !== toRow[1]) throw new VoucherError('GSTIN/state mismatch', 'toGstin');
+  if (toGstin === fromGstin) throw new VoucherError('Receiver GSTIN must be different from sender', 'toGstin');
+  let subtotal = 0, igst = 0;
+  const lines = [];
+  for (const [i, ln] of (input.lines || []).entries()) {
+    const qty = ln.quantity || 0;
+    const taxable = Math.round(qty * (ln.rate || 0));
+    const lineIgst = Math.round(taxable * (ln.taxRate || 0));
+    if (taxable <= 0) continue;
+    const iR = db.exec('SELECT name, hsn_sac, unit FROM items WHERE id = ?', [ln.itemId]);
+    if (!iR.length || !iR[0].values.length) throw new VoucherError(`Item ${ln.itemId} not found`, 'lines');
+    const [itemName, hsn, unit] = iR[0].values[0];
+    subtotal += taxable;
+    igst += lineIgst;
+    lines.push({ item_name: itemName, hsn_sac: hsn || null, unit: unit || null, quantity: qty, rate: ln.rate, taxable, tax_rate: ln.taxRate || 0, igst: lineIgst });
+  }
+  if (!lines.length) throw new VoucherError('Add at least one valid line', 'lines');
+  const total = subtotal + igst;
+  const transferNumber = input.transferNumber || nextStockTransferNumber(db);
+  const transferDate = input.transferDate || todayLocal();
+  const payload = {
+    format: 'bahi-stock-transfer/1.0',
+    transfer_number: transferNumber,
+    transfer_date: transferDate,
+    from: { gstin: fromGstin, state: fromState, name: company.name || '' },
+    to: { gstin: toGstin, state: toRow[0] },
+    lines,
+    totals: { subtotal, igst, total },
+  };
+  db.run(
+    'INSERT INTO stock_transfers (transfer_number, transfer_date, direction, from_gstin, from_state, to_gstin, to_state, total_value, payload_snapshot, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    [transferNumber, transferDate, 'out', fromGstin, fromState, toGstin, toRow[0], total, JSON.stringify(payload), 'sent', nowIso()]
+  );
+  const transferId = lastInsertId(db);
+  await appendAuditEntry(db, { actor: auditActor(), action: 'transfer.create', ref: transferNumber, payload: { transferId, toGstin, total } });
+  return { transferId, transferNumber, transferDate, total, payload };
+}
+
+//------------------------------------------------------------
 // === Shared reads — the screens and the agent face read through these ===
 //------------------------------------------------------------
 //
@@ -23197,6 +23578,11 @@ function agentValidate(spec, args) {
         if (p.min !== undefined && v < p.min) errs.push(`'${key}' must be >= ${p.min}`);
         if (p.max !== undefined && v > p.max) errs.push(`'${key}' must be <= ${p.max}`);
         out[key] = v; break;
+      case 'number':
+        if (typeof v !== 'number' || !Number.isFinite(v)) { errs.push(`'${key}' must be a finite number, got ${JSON.stringify(v)}`); break; }
+        if (p.min !== undefined && v < p.min) errs.push(`'${key}' must be >= ${p.min}`);
+        if (p.max !== undefined && v > p.max) errs.push(`'${key}' must be <= ${p.max}`);
+        out[key] = v; break;
       case 'bool':
         if (typeof v !== 'boolean') { errs.push(`'${key}' must be a boolean`); break; }
         out[key] = v; break;
@@ -23228,6 +23614,10 @@ function agentParamSchema(p) {
     s.type = 'string'; s.format = 'date'; s.pattern = '^\\d{4}-\\d{2}-\\d{2}$';
   } else if (p.type === 'int') {
     s.type = 'integer';
+    if (p.min !== undefined) s.minimum = p.min;
+    if (p.max !== undefined) s.maximum = p.max;
+  } else if (p.type === 'number') {
+    s.type = 'number';
     if (p.min !== undefined) s.minimum = p.min;
     if (p.max !== undefined) s.maximum = p.max;
   } else if (p.type === 'bool') {
@@ -23310,6 +23700,70 @@ const AGENT_QUARTER_PARAMS = {
   fyStartYear: { type: 'int', required: true, min: 2000, max: 2200, desc: '2025 for FY 2025-26.' },
   quarter: { type: 'int', required: true, min: 1, max: 4, desc: 'Q1 = Apr–Jun … Q4 = Jan–Mar.' },
 };
+
+// Master fields. On an update, a field left out keeps its value; an empty string clears it.
+const AGENT_STATE_PARAM = { type: 'string', maxLength: 2, pattern: '^([A-Z]{2})?$', desc: 'Two-letter state code, e.g. MH. An empty string clears it.' };
+const AGENT_PARTY_FIELDS = {
+  name: { type: 'string', maxLength: 200 },
+  gstin: { type: 'string', maxLength: 15, desc: 'GSTIN; its first two digits must match the state.' },
+  state: AGENT_STATE_PARAM,
+  email: { type: 'string', maxLength: 200 },
+  phone: { type: 'string', maxLength: 40 },
+  address: { type: 'string', maxLength: 500 },
+  openingBalance: { type: 'int', min: -MAX_AGENT_PAISE, max: MAX_AGENT_PAISE, desc: 'Opening balance in integer paise.' },
+};
+const AGENT_VENDOR_FIELDS = {
+  ...AGENT_PARTY_FIELDS,
+  rcmApplicable: { type: 'bool', desc: 'True when the vendor\'s supplies fall under reverse charge.' },
+  tdsSection: { type: 'string', maxLength: 20, desc: 'Default TDS section, e.g. 194C, from the TDS reference table.' },
+};
+const AGENT_ITEM_FIELDS = {
+  name: { type: 'string', maxLength: 200 },
+  isService: { type: 'bool' },
+  hsnSac: { type: 'string', maxLength: 20 },
+  unit: { type: 'string', maxLength: 20 },
+  defaultRate: { type: 'int', min: 0, max: MAX_AGENT_PAISE, desc: 'Default price per unit in integer paise.' },
+  taxRate: { type: 'number', min: 0, max: 1, desc: 'GST rate as a decimal fraction: 0.18 for 18%.' },
+  enableInventory: { type: 'bool', desc: 'Track stock for this item (goods only).' },
+  valuationMethod: { type: 'string', maxLength: 4, enum: ['wac', 'fifo'] },
+  trackBatches: { type: 'bool' },
+  reorderLevel: { type: 'int', min: 0, max: 100000000 },
+  preferredVendorId: { type: 'int', min: 0, desc: 'Vendor id; 0 clears it.' },
+  openingQty: { type: 'int', min: 0, max: 100000000, desc: 'Opening stock quantity. Only on creation, or while the item has no movements.' },
+  openingValue: { type: 'int', min: 0, max: MAX_AGENT_PAISE, desc: 'Opening stock value in integer paise.' },
+};
+const AGENT_SERIES_FIELDS = {
+  name: { type: 'string', maxLength: 60 },
+  prefix: { type: 'string', maxLength: 30 },
+  suffix: { type: 'string', maxLength: 30 },
+  startingNumber: { type: 'int', min: 1, max: 100000000 },
+  resetOnFy: { type: 'bool' },
+  defaultFor: { type: 'string', maxLength: 20, enum: SERIES_DEFAULTS, desc: 'The document kind this series numbers by default; an empty string for none.' },
+};
+const AGENT_GODOWN_FIELDS = {
+  name: { type: 'string', maxLength: 200 },
+  address: { type: 'string', maxLength: 500 },
+  state: AGENT_STATE_PARAM,
+  isDefault: { type: 'bool', desc: 'Make this the default godown; the previous default stops being one.' },
+};
+const AGENT_COMPANY_FIELDS = {
+  name: { type: 'string', maxLength: 200 },
+  tradeName: { type: 'string', maxLength: 200 },
+  companyType: { type: 'string', maxLength: 30, enum: COMPANY_TYPES },
+  gstin: { type: 'string', maxLength: 15 },
+  tan: { type: 'string', maxLength: 10 },
+  state: AGENT_STATE_PARAM,
+  address: { type: 'string', maxLength: 500 },
+  fyStart: { type: 'string', maxLength: 10, pattern: '^(\\d{4}-\\d{2}-\\d{2})?$', desc: 'Financial-year start date, YYYY-MM-DD.' },
+  compositionEnabled: { type: 'bool' },
+  compositionType: { type: 'string', maxLength: 12, enum: ['trader', 'restaurant', 'service'] },
+};
+function agentMasterParams(fields, required = [], extra = {}) {
+  const out = { ...extra };
+  for (const [k, p] of Object.entries(fields)) out[k] = required.includes(k) ? { ...p, required: true } : p;
+  out.agentName = AGENT_NAME_PARAM;
+  return out;
+}
 
 // --- the manifest — the single source of truth for the agent face ------------
 // kind: read (answers at once) · session (changes only what this tab shows) ·
@@ -23533,6 +23987,44 @@ const BAHI_AGENT_TOOLS = {
     description: 'CA annotations on entries and documents, newest first.',
     params: { status: { type: 'string', maxLength: 20, enum: ['open', 'resolved'] }, targetType: { type: 'string', maxLength: 40 }, targetId: { type: 'int', min: 1 } } },
 
+  // Layer 3 — write parity: masters. Each modal and its tools share one save function.
+  create_customer: { title: 'Add a customer', kind: 'write', scope: 'file', route: '#/customers',
+    description: 'Add a customer. A GSTIN, when given, must be well formed and agree with the state.',
+    params: agentMasterParams(AGENT_PARTY_FIELDS, ['name']) },
+  update_customer: { title: 'Edit a customer', kind: 'write', scope: 'file', route: '#/customers',
+    description: 'Change a customer\'s details. Fields left out keep their values; an empty string clears one.',
+    params: agentMasterParams(AGENT_PARTY_FIELDS, [], { customerId: { type: 'int', required: true, min: 1 } }) },
+  create_vendor: { title: 'Add a vendor', kind: 'write', scope: 'file', route: '#/vendors',
+    description: 'Add a vendor, with its reverse-charge flag and default TDS section.',
+    params: agentMasterParams(AGENT_VENDOR_FIELDS, ['name']) },
+  update_vendor: { title: 'Edit a vendor', kind: 'write', scope: 'file', route: '#/vendors',
+    description: 'Change a vendor\'s details. Fields left out keep their values; an empty string clears one.',
+    params: agentMasterParams(AGENT_VENDOR_FIELDS, [], { vendorId: { type: 'int', required: true, min: 1 } }) },
+  create_item: { title: 'Add an item or service', kind: 'write', scope: 'file', route: '#/items',
+    description: 'Add an item or service. A goods item with inventory and an opening quantity posts its opening stock into the default godown.',
+    params: agentMasterParams(AGENT_ITEM_FIELDS, ['name']) },
+  update_item: { title: 'Edit an item or service', kind: 'write', scope: 'file', route: '#/items',
+    description: 'Change an item. Opening stock changes only while the item has no stock movements, as in the item form.',
+    params: agentMasterParams(AGENT_ITEM_FIELDS, [], { itemId: { type: 'int', required: true, min: 1 } }) },
+  create_bank_account: { title: 'Add a bank account', kind: 'write', scope: 'file',
+    description: 'Add a bank account under Bank Accounts, for receipts and payments.',
+    params: agentMasterParams({ name: { type: 'string', maxLength: 200 } }, ['name']) },
+  create_invoice_series: { title: 'Add an invoice series', kind: 'write', scope: 'file', route: '#/series',
+    description: 'Add an invoice number series: prefix, suffix, starting number and FY reset.',
+    params: agentMasterParams(AGENT_SERIES_FIELDS, ['name', 'prefix']) },
+  update_invoice_series: { title: 'Edit an invoice series', kind: 'write', scope: 'file', route: '#/series',
+    description: 'Change an invoice series. Fields left out keep their values.',
+    params: agentMasterParams(AGENT_SERIES_FIELDS, [], { seriesId: { type: 'int', required: true, min: 1 } }) },
+  create_godown: { title: 'Add a godown', kind: 'write', scope: 'file', route: '#/godowns',
+    description: 'Add a godown or warehouse.',
+    params: agentMasterParams(AGENT_GODOWN_FIELDS, ['name']) },
+  update_godown: { title: 'Edit a godown', kind: 'write', scope: 'file', route: '#/godowns',
+    description: 'Change a godown. Fields left out keep their values.',
+    params: agentMasterParams(AGENT_GODOWN_FIELDS, [], { godownId: { type: 'int', required: true, min: 1 } }) },
+  update_company: { title: 'Edit company details', kind: 'write', scope: 'file', route: '#/file', selfSaving: true,
+    description: 'Change the company\'s identity, address, FY start or composition scheme. Every changed field gets its own audit entry and history row.',
+    params: agentMasterParams(AGENT_COMPANY_FIELDS) },
+
   list_proposals: { title: 'List proposals', kind: 'read', scope: 'app', untrusted: true,
     description: 'Proposals staged in this tab, newest first, with their status: pending, applied, rejected, withdrawn or failed.',
     params: { status: { type: 'string', maxLength: 20, enum: ['pending', 'applied', 'rejected', 'withdrawn', 'failed'] }, limit: { type: 'int', min: 1, max: 500, default: 50 } } },
@@ -23743,7 +24235,88 @@ function agentPeriodLockOn(date) {
   return null;
 }
 
+// Field values as the person reads them in a proposal.
+const AGENT_MONEY_FIELDS = new Set(['openingBalance', 'defaultRate', 'openingValue', 'amount', 'taxableAmount']);
+function agentShow(key, v) {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (key === 'taxRate' || key === 'rate' || key === 'tdsRate') return `${fmtRatePct(v)}%`;
+  if (AGENT_MONEY_FIELDS.has(key) && Number.isInteger(v)) return fmtINR(v);
+  return String(v);
+}
+function agentCreateDetails(a, skip = ['name', 'agentName']) {
+  return Object.entries(a).filter(([k, v]) => !skip.includes(k) && v != null && v !== '').map(([k, v]) => `${k}: ${agentShow(k, v)}`);
+}
+// An update lays the supplied fields over the current values and lists what changes.
+function agentMergeUpdate(was, a, idKey, summary) {
+  const next = { ...was };
+  const details = [];
+  for (const k of Object.keys(was)) {
+    if (a[k] === undefined) continue;
+    next[k] = a[k];
+    const before = was[k] == null ? '' : was[k];
+    if (before !== (a[k] == null ? '' : a[k])) details.push(`${k}: ${agentShow(k, was[k])} → ${agentShow(k, a[k])}`);
+  }
+  return { args: { ...next, id: a[idKey], agentName: a.agentName }, summary: details.length ? summary : `${summary} (no changes)`, details };
+}
+
 const BAHI_AGENT_PREPARE = {
+  create_customer: (a) => { checkParty(a); return { args: a, summary: `Add customer ${a.name}`, details: agentCreateDetails(a) }; },
+  update_customer: (a) => {
+    const c = agentRow('SELECT name, gstin, state, email, phone, address, opening_balance FROM customers WHERE id = ?', [a.customerId]);
+    if (!c) throw new AgentBadArgs(`customerId ${a.customerId} is not a customer — see list_customers`);
+    const m = agentMergeUpdate({ name: c.name, gstin: c.gstin, state: c.state, email: c.email, phone: c.phone, address: c.address, openingBalance: c.opening_balance },
+      a, 'customerId', `Edit customer ${c.name}`);
+    checkParty(m.args);
+    return m;
+  },
+  create_vendor: (a) => { checkVendor(a); return { args: a, summary: `Add vendor ${a.name}`, details: agentCreateDetails(a) }; },
+  update_vendor: (a) => {
+    const v = agentRow('SELECT name, gstin, state, email, phone, address, opening_balance, rcm_applicable, tds_section FROM vendors WHERE id = ?', [a.vendorId]);
+    if (!v) throw new AgentBadArgs(`vendorId ${a.vendorId} is not a vendor — see list_vendors`);
+    const m = agentMergeUpdate({ name: v.name, gstin: v.gstin, state: v.state, email: v.email, phone: v.phone, address: v.address, openingBalance: v.opening_balance,
+      rcmApplicable: !!v.rcm_applicable, tdsSection: v.tds_section }, a, 'vendorId', `Edit vendor ${v.name}`);
+    checkVendor(m.args);
+    return m;
+  },
+  create_item: (a) => { checkItem(STATE.db, a); return { args: a, summary: `Add ${a.isService ? 'service' : 'item'} ${a.name}`, details: agentCreateDetails(a) }; },
+  update_item: (a) => {
+    const i = agentRow('SELECT name, is_service, hsn_sac, unit, default_rate, default_tax_rate, enable_inventory, valuation_method, track_batches, reorder_level, preferred_vendor_id, opening_stock_qty, opening_stock_value FROM items WHERE id = ?', [a.itemId]);
+    if (!i) throw new AgentBadArgs(`itemId ${a.itemId} is not an item — see list_items`);
+    const m = agentMergeUpdate({ name: i.name, isService: !!i.is_service, hsnSac: i.hsn_sac, unit: i.unit, defaultRate: i.default_rate || 0, taxRate: i.default_tax_rate || 0,
+      enableInventory: !!i.enable_inventory, valuationMethod: i.valuation_method || 'wac', trackBatches: !!i.track_batches, reorderLevel: i.reorder_level || 0,
+      preferredVendorId: i.preferred_vendor_id || 0, openingQty: i.opening_stock_qty || 0, openingValue: i.opening_stock_value || 0 }, a, 'itemId', `Edit item ${i.name}`);
+    checkItem(STATE.db, m.args);
+    return m;
+  },
+  create_bank_account: (a) => { checkBankAccount(STATE.db, a); return { args: a, summary: `Add bank account ${a.name}`, details: [] }; },
+  create_invoice_series: (a) => { checkSeries(a); return { args: a, summary: `Add invoice series ${a.name} (${a.prefix})`, details: agentCreateDetails(a) }; },
+  update_invoice_series: (a) => {
+    const r = agentRow('SELECT name, prefix, suffix, starting_number, reset_on_fy, default_for FROM invoice_series WHERE id = ?', [a.seriesId]);
+    if (!r) throw new AgentBadArgs(`seriesId ${a.seriesId} is not an invoice series — see list_invoice_series`);
+    const m = agentMergeUpdate({ name: r.name, prefix: r.prefix, suffix: r.suffix, startingNumber: r.starting_number || 1, resetOnFy: !!r.reset_on_fy, defaultFor: r.default_for || '' },
+      a, 'seriesId', `Edit invoice series ${r.name}`);
+    checkSeries(m.args);
+    return m;
+  },
+  create_godown: (a) => { checkGodown(a); return { args: a, summary: `Add godown ${a.name}`, details: agentCreateDetails(a) }; },
+  update_godown: (a) => {
+    const g = agentRow('SELECT name, address, state, is_default FROM godowns WHERE id = ?', [a.godownId]);
+    if (!g) throw new AgentBadArgs(`godownId ${a.godownId} is not a godown — see list_godowns`);
+    const m = agentMergeUpdate({ name: g.name, address: g.address, state: g.state, isDefault: !!g.is_default }, a, 'godownId', `Edit godown ${g.name}`);
+    checkGodown(m.args);
+    return m;
+  },
+  update_company: (a) => {
+    const c = STATE.manifest.company || {};
+    const comp = c.composition || {};
+    const merged = agentMergeUpdate({ name: c.name, tradeName: c.trade_name, companyType: c.company_type || '', gstin: c.gstin, tan: c.tan, state: c.state,
+      address: c.address, fyStart: c.fy_start, compositionEnabled: !!comp.enabled, compositionType: comp.type || 'service' }, a, 'none', `Edit company details of ${c.name || 'this company'}`);
+    delete merged.args.id;
+    checkCompany(merged.args);
+    return merged;
+  },
+
   save_file: (a) => ({
     args: a,
     summary: `Save the books to ${STATE.fileHandle ? STATE.fileHandle.name : 'the open file'}`,
@@ -24091,6 +24664,25 @@ const BAHI_AGENT_HANDLERS = {
   },
   list_annotations: async (a) => ({ annotations: getAnnotations(STATE.db, { status: a.status, targetType: a.targetType, targetId: a.targetId }) }),
 
+  create_customer: async (a) => saveCustomer(STATE.db, { ...a, id: null }),
+  update_customer: async (a) => saveCustomer(STATE.db, a),
+  create_vendor: async (a) => saveVendor(STATE.db, { ...a, id: null }),
+  update_vendor: async (a) => saveVendor(STATE.db, a),
+  create_item: async (a) => saveItem(STATE.db, { ...a, id: null }),
+  update_item: async (a) => saveItem(STATE.db, a),
+  create_bank_account: async (a) => createBankAccount(STATE.db, a),
+  create_invoice_series: async (a) => saveInvoiceSeries(STATE.db, { ...a, id: null }),
+  update_invoice_series: async (a) => saveInvoiceSeries(STATE.db, a),
+  create_godown: async (a) => saveGodown(STATE.db, { ...a, id: null }),
+  update_godown: async (a) => saveGodown(STATE.db, a),
+  // Saves only when something changed, so an edit that changes nothing writes no file.
+  update_company: async (a) => {
+    const r = await updateCompany(STATE.db, STATE.manifest, a);
+    let saved = true;
+    if (r.changes.length) { setSaveStatus('unsaved'); saved = (await persistKhata()) !== false; }
+    return { changed: r.changes.map((c) => c.field), saved };
+  },
+
   list_proposals: async (a) => {
     const rows = [...BAHI_AGENT.proposals.values()].filter((p) => !a.status || p.status === a.status);
     return { proposals: rows.reverse().slice(0, a.limit).map(agentProposalView) };
@@ -24298,6 +24890,37 @@ async function agentRoute(name, args, ctx) {
     const code = agentErrorCode(e);
     return agentFail(code, String((e && e.message) || e), { tool: name, ...(e && e.field ? { problems: [`${e.field}: ${e.message}`] } : {}) });
   }
+}
+
+// The UI's door onto the same tools. A form runs a write through its tool's validation,
+// prepare step and handler at once, as the person — no proposal, the person is the approver —
+// then saves as an approved proposal does. It shares the queue agent calls and approvals use,
+// so a person's post can never interleave with an agent's. Resolves the same envelope as
+// every other door and never throws.
+function bahiUi(name, input) {
+  return agentEnqueue(async () => {
+    if (typeof name !== 'string' || !Object.prototype.hasOwnProperty.call(BAHI_AGENT_TOOLS, name)) {
+      return agentFail('E_UNKNOWN_TOOL', `Unknown tool ${JSON.stringify(name)}.`);
+    }
+    const spec = BAHI_AGENT_TOOLS[name];
+    const v = agentValidate(spec.params, input);
+    if (v.errs) return agentFail('E_BAD_ARGS', v.errs.join('; '), { tool: name, problems: v.errs });
+    if (spec.scope === 'file' && !(STATE.db && STATE.manifest)) return agentFail('E_NO_FILE', `${name} needs an open .khata file.`, { tool: name });
+    if (spec.kind === 'write' && STATE.readOnly) return agentFail('E_READONLY', AGENT_ERRORS.E_READONLY, { tool: name });
+    try {
+      const args = spec.kind === 'write' ? BAHI_AGENT_PREPARE[name](v.value).args : v.value;
+      const data = await BAHI_AGENT_HANDLERS[name](args, { door: 'ui', caller: null });
+      let saved = !!(data && data.saved);
+      if (spec.kind === 'write' && !spec.selfSaving) {
+        setSaveStatus('unsaved');
+        try { saved = (await persistKhata()) !== false; } catch (_) { saved = false; }
+      }
+      if (spec.kind !== 'read') agentEmit('change', { tool: name, actor: 'person', door: 'ui' });
+      return { ok: true, data: { ...agentPlain(data), saved } };
+    } catch (e) {
+      return agentFail(agentErrorCode(e), String((e && e.message) || e), { tool: name, ...(e && e.field ? { field: e.field } : {}) });
+    }
+  });
 }
 
 // Every door lands here. Never throws, never rejects.

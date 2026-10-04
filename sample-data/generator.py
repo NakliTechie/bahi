@@ -19,6 +19,7 @@ import io
 import json
 import os
 import random
+import re
 import sqlite3
 import sys
 import uuid
@@ -123,8 +124,33 @@ ALL_HSN = {**HSN_SEED, **SAC_SEED}
 
 # Forensic rate IDs → percentage (only the rates we actually use)
 RATE_BY_ID = {
-    "gst-0": 0, "gst-5": 5, "gst-12": 12, "gst-18": 18, "gst-28": 28,
+    "gst-0": 0, "gst-5": 5, "gst-12": 12, "gst-18": 18, "gst-28": 28, "gst-40": 40,
 }
+
+# GST 2.0 (w.e.f. 2025-09-22) moved goods between slabs. An item keeps the rate it was saved with;
+# a line takes the rate in force on its document's date, as Bahi's invoice form does. Keyed by the
+# HSN heading (4 digits) of the codes the samples use; mirror of HSN_SEED's history in index.html.
+GST2_FROM = "2025-09-22"
+GST2_RATE_BY_HEADING: Dict[str, float] = {
+    "3003": 0.05,  # medicaments 12% -> 5% (Notification 9/2025-CT(Rate) Schedule I)
+    "3004": 0.05,  # medicaments 12% -> 5% (9/2025 Schedule I; PIB PRID 2163555)
+    "3822": 0.05,  # diagnostic kits and reagents 12% -> 5% (inferred from the PIB list; not checked against 9/2025)
+    "8703": 0.40,  # larger cars 28% + cess -> 40% (9/2025 Schedule III)
+    "2202": 0.40,  # aerated drinks 28% + cess -> 40% (9/2025 Schedule III)
+}
+
+
+def tax_rate_on(item: "Item", date_iso: str) -> float:
+    if item.hsn_sac and date_iso >= GST2_FROM:
+        r = GST2_RATE_BY_HEADING.get(str(item.hsn_sac)[:4])
+        if r is not None:
+            return r
+    return item.default_tax_rate
+
+
+def rate_id_for(tax_rate: float) -> str:
+    pct = round(tax_rate * 100)
+    return f"gst-{int(pct)}" if pct in (0, 5, 12, 18, 28, 40) else "gst-18"
 
 # Standard Indian Chart of Accounts seed (mirror of COA_SEED). Two-pass.
 COA_SEED: List[Tuple[str, str, Optional[str]]] = [
@@ -1219,9 +1245,31 @@ class KhataBuilder:
 
     # ----- Master record creation -----
 
+    @staticmethod
+    def _with_holder_type(name: str, gstin: Optional[str]) -> Optional[str]:
+        """Set the PAN's fourth letter (inside the GSTIN) from the party's name: C for a company,
+        F for a firm or LLP, P for a proprietor. TDS and TCS rates turn on it, and a random letter
+        made every sample payee an unknown holder type. Deterministic, so the random stream, and
+        with it every other sample value, is unchanged."""
+        if not gstin or len(gstin) < 12:
+            return gstin
+        n = name.lower()
+        if re.search(r"\b(pvt|private|ltd|limited|corporation|corp)\b", n):
+            letter = "C"
+        elif re.search(r"\b(llp|associates|partners|& co|and co|& sons|traders|agencies)\b", n) or "&" in n:
+            letter = "F"
+        elif re.search(r"\bhuf\b", n):
+            letter = "H"
+        elif re.search(r"^(dr\.?|shri|smt|mr\.?|ms\.?)\s|\(ca\)|\badvocate\b", n):
+            letter = "P"
+        else:
+            letter = "C"
+        return gstin[:5] + letter + gstin[6:]
+
     def add_customer(self, *, name: str, gstin: Optional[str], state: str,
                      email: Optional[str] = None, phone: Optional[str] = None,
                      address: Optional[str] = None) -> Customer:
+        gstin = self._with_holder_type(name, gstin)
         pan = gstin[2:12] if gstin and len(gstin) >= 12 else None
         self.cur.execute(
             "INSERT INTO customers (name, gstin, pan, state, email, phone, address, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -1237,6 +1285,7 @@ class KhataBuilder:
                    email: Optional[str] = None, phone: Optional[str] = None,
                    address: Optional[str] = None, rcm_applicable: int = 0,
                    tds_section: Optional[str] = None) -> Vendor:
+        gstin = self._with_holder_type(name, gstin)
         pan = gstin[2:12] if gstin and len(gstin) >= 12 else None
         self.cur.execute(
             "INSERT INTO vendors (name, gstin, pan, state, email, phone, address, rcm_applicable, tds_section, opening_balance, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -1456,20 +1505,8 @@ class KhataBuilder:
             qty = spec["quantity"]
             rate = spec.get("rate", it.default_rate)
             taxable = qty * rate
-            tax_rate = it.default_tax_rate
-            # rate_id from forensic table
-            rate_pct = round(tax_rate * 100)
-            rate_id = f"gst-{int(rate_pct)}" if rate_pct > 0 else "gst-0"
-            if rate_pct == 0:
-                rate_id = "gst-0"
-            elif rate_pct == 12:
-                rate_id = "gst-12"
-            elif rate_pct == 18:
-                rate_id = "gst-18"
-            elif rate_pct == 5:
-                rate_id = "gst-5"
-            elif rate_pct == 28:
-                rate_id = "gst-28"
+            tax_rate = tax_rate_on(it, date_iso)
+            rate_id = rate_id_for(tax_rate)
             lines.append({
                 "line_no": i + 1,
                 "item_id": it.id,
@@ -1592,9 +1629,8 @@ class KhataBuilder:
             qty = spec["quantity"]
             rate = spec["rate"]
             taxable = qty * rate
-            tax_rate = it.default_tax_rate
-            rate_pct = round(tax_rate * 100)
-            rate_id = f"gst-{int(rate_pct)}" if rate_pct in (0, 5, 12, 18, 28) else "gst-18"
+            tax_rate = tax_rate_on(it, date_iso)
+            rate_id = rate_id_for(tax_rate)
             lines.append({
                 "line_no": i + 1,
                 "item_id": it.id,

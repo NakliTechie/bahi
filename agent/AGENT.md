@@ -1,7 +1,7 @@
 # Bahi — agent face
 
 Bahi is driven two ways over one core. The person gets the UI. A script, another tab or an
-agent gets the **agent face**: 83 tools declared once, published through three doors, over the
+agent gets the **agent face**: 85 tools declared once, published through three doors, over the
 same engine the forms post through.
 
 - Machine-readable contract: [`manifest.json`](manifest.json), also live from the `describe_tools` tool.
@@ -107,8 +107,9 @@ Branch on `error.code`, never on the message text.
 | `list_invoices` `list_payments` `list_advances` `list_purchases` `list_credit_notes` `list_debit_notes` `list_delivery_challans` `list_eway_bills` `list_stock_transfers` | read | Document lists, each through its screen's own query, filtered by date and party and paged. `list_invoices` adds what is still outstanding. |
 | `get_sales_register` `get_purchase_register` `get_pnl` `get_dashboard` | read | Registers with totals, the P&L over every posting, and the dashboard's figures. |
 | `list_stock_movements` `get_stock_register` `list_batches` `get_reorder_alerts` `get_stock_aging` `get_inventory_summary` `list_godowns` | read | Stock: movements, one item's register, live batches, reorder and aging, the inventory dashboard, godowns. |
-| `list_invoice_series` `get_cmp08` `get_form27eq` `get_form27d_summary` `list_challan_templates` `get_challan_template` | read | Series, the quarterly CMP-08 / 27EQ / 27D figures, and challan data sheets. |
+| `list_invoice_series` `get_cmp08` `get_form27eq` `get_form27d_summary` `list_challan_templates` `get_challan_template` | read | Series, the quarterly CMP-08 and TCS-return figures (27EQ, or 143 from FY 2026-27), the per-vendor TDS-certificate figures (16A, or 131; the tool keeps its old 27D name), and challan data sheets. |
 | `list_bank_accounts` `get_bank_reconciliation` `list_annotations` | read | Bank lines with cleared status and book balance; CA annotations. |
+| `list_tax_sections` `lookup_gst_rate` | read | TDS or TCS sections in force on a date (ids, return codes, rates by payee class, thresholds), and the GST bands on a date with an HSN/SAC code's rate. Use them to choose `tdsSection`, `section` and `taxRate`. |
 | `create_customer` `update_customer` `create_vendor` `update_vendor` `create_item` `update_item` `create_bank_account` `create_invoice_series` `update_invoice_series` `create_godown` `update_godown` `update_company` | write | Masters, through the same save function as each modal. An update changes only the fields you pass; an empty string clears one. |
 | `create_advance` `create_vendor_payment` `create_tcs_collection` `create_delivery_challan` `create_eway_bill` `record_eway_bill_number` `create_stock_transfer` | write | The remaining vouchers, through the same engine function as each form: GST split, TDS and TCS from the reference tables, stock effects. |
 | `save_bank_reconciliation` `save_snapshot` | write | Reconcile a bank account against its statement; keep a manual snapshot. |
@@ -179,6 +180,24 @@ sum — an unallocated receipt is an advance, a different voucher with different
 frozen snapshots and place of supply. Omit `amount` for a full reversal or give paise for a
 partial one, which pro-rates every line. **Known gap, inherited:** the copied lines carry no
 cess, so a cess invoice's cess is not reversed on its credit note.
+
+## TDS, TCS and GST by date
+
+Tax rates come from dated reference rows (khata-standard `tds-sections`, `tcs-sections`, `gst-rates`, schema 2), so a
+voucher is always computed with the values in force on its own date.
+
+- The **Income-tax Act, 2025** replaced the 1961 Act on 2026-04-01 and renumbered the sections. A vendor saved with
+  `194C` still works: a payment dated after 2026-03-31 resolves it to `1023` (individual or HUF payee) or `1024`
+  (other payee), chosen from the PAN's fourth letter, and the TDS row records the resolved id. The quarter is filed on
+  Form 26Q up to FY 2025-26 and on Form 140 from FY 2026-27 (`get_form26q` returns `formName`).
+- **No PAN** on the party means the no-PAN rate (20% for most TDS sections; twice the rate or 5% for TCS).
+- **TCS** moved from section 206C to section 394, at the Finance Act 2026 rates. 206C(1H) (sale of goods above
+  ₹50 lakh) ended on 2025-03-31; `create_tcs_collection` refuses it for later dates.
+- **GST 2.0** (2025-09-22) added the 40% band; 28% ended on 2026-01-31; 12% remains for bricks and tiles. Pass the
+  rate `lookup_gst_rate` gives for the HSN on the document date.
+
+A section or rate that does not apply on the date is refused at the call with `E_BAD_ARGS`, naming
+`list_tax_sections`.
 
 ## Person-only
 

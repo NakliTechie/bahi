@@ -23,7 +23,7 @@
 Open it and choose **Workspace → Create new .khata**. Give the company its name and GSTIN, and pick where the file goes; the state fills itself from the GSTIN. From the first invoice on, every post is written to that file on your disk, and nowhere else. An agent in the same tab can start with:
 
 ```js
-await window.bahi.call('describe_tools')   // the 83 tools, their inputs, and what stays with you
+await window.bahi.call('describe_tools')   // the 85 tools, their inputs, and what stays with you
 ```
 
 No config, no sign-up, no sync service. To look before you commit, open one of the synthetic books in [`sample-data/`](sample-data/): `pharma.khata` holds two financial years of invoices, purchases, receipts, credit notes, TDS and stock.
@@ -42,7 +42,7 @@ In CA mode (`Ctrl+Shift+M`) your CA reviews entries, leaves annotations and post
 
 ## Letting an agent help
 
-The same 83 tools the screens post through are open to an agent in the tab: through WebMCP when the browser offers it, through `window.bahi`, or from another tab once you open that door in **Settings → Agent access**. An agent reads freely. Anything that changes the books arrives as a proposal under the agent button in the header, and nothing posts until you approve it. Opening books, closing the year, locking periods, CA sign-off, imports, backups and raw SQL stay with you. The contract is [`agent/AGENT.md`](agent/AGENT.md).
+The same 85 tools the screens post through are open to an agent in the tab: through WebMCP when the browser offers it, through `window.bahi`, or from another tab once you open that door in **Settings → Agent access**. An agent reads freely. Anything that changes the books arrives as a proposal under the agent button in the header, and nothing posts until you approve it. Opening books, closing the year, locking periods, CA sign-off, imports, backups and raw SQL stay with you. The contract is [`agent/AGENT.md`](agent/AGENT.md).
 
 ## Commands
 

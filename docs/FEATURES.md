@@ -78,7 +78,7 @@ The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chai
 - Advance receipts with back-calculated taxable from gross, GST routing, separate `advances` + `advance_adjustments` tables
 - Apply-advance section in the invoice form with reversing journal automation
 - Status badges: PAID / PARTIAL / DUE on invoices, OPEN / PARTIAL / FULLY ADJUSTED on advances
-- TCS collection recording (Section 206C)
+- TCS collection recording: section 206C to 2026-03-31, section 394 (Income-tax Act 2025) from 2026-04-01, by collection date and the customer's PAN
 - **Manual bank reconciliation** — pick a bank account + date range, per-line cleared checkbox, statement-vs-book closing balance, snapshot persisted to `bank_reconciliations`
 - Journal voucher form for free-form double-entry adjustments
 - **Session-scoped undo stack** (Ctrl+Z) — posts a counter-entry via the same engine; original and reversal both stay in the audit log
@@ -112,9 +112,9 @@ The "alpha" tag means: the engine, posting bridges, snapshot pattern, audit chai
 - **GSTR-1** monthly portal-upload JSON — B2B / B2CL / B2CS / HSN / doc_issue / AT (advances) / TXP (adjustments), compensation cess (`csamt`) carried per line, validation errors hard-block JSON download. **B2CL threshold is date-effective** (₹2.5 L pre-2024-08-01, ₹1 L from 2024-08-01) so historical invoices are never re-bucketed
 - **GSTR-3B** monthly summary — Section 3.1(a) outward + 3.1(d) RCM + Section 4 ITC (including cess) + net liability, JSON + CSV export
 - **CMP-08** quarterly view for composition dealers
-- **Form 26Q** quarterly TDS return — section breakdown, validation errors, NSDL-compatible CSV
+- **Quarterly TDS return** — Form 26Q to FY 2025-26, Form 140 from FY 2026-27: section breakdown, validation errors, CSV with the 2025-Act section code
 - **Form 27EQ** quarterly TCS return — same shape
-- **Form 27D** TDS certificate — per-vendor PDF with deductor letterhead, deductee block, deductions table, totals, signature block
+- **TDS certificate** — Form 16A to FY 2025-26, Form 131 from FY 2026-27: per-vendor working-copy PDF with deductor letterhead, deductee block, deductions table, totals, signature block
 - **Tax payment challans** — templated JSON exports for PMT-06, DRC-03, ITNS 280/281/282/283, ECR, ESI, PTRC, LWF, plus a custom challan builder
 - **Period locks** — mark a return type as filed for a date range so postings dated within get flagged as amendments
 - **FY rollover wizard** — preview income / expense / net P/L, then post the year-end closing entries (zero out income/expense to P&L Summary, transfer P&L Summary to Capital Account)

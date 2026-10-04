@@ -609,7 +609,7 @@
       "scope": "file",
       "route": "#/form-26q",
       "untrusted": true,
-      "description": "Form 26Q quarterly TDS return data. Needs an open .khata.",
+      "description": "Quarterly TDS return data: Form 26Q up to FY 2025-26, Form 140 from FY 2026-27 (formName in the result). Needs an open .khata.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1971,7 +1971,7 @@
       "scope": "file",
       "route": "#/form-27eq",
       "untrusted": true,
-      "description": "Form 27EQ quarterly TCS return data, with the validation errors the screen shows. Needs an open .khata.",
+      "description": "Quarterly TCS return data (Form 27EQ up to FY 2025-26, Form 143 from FY 2026-27), with the validation errors the screen shows. Needs an open .khata.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2003,7 +2003,7 @@
       "scope": "file",
       "route": "#/form-27d",
       "untrusted": true,
-      "description": "TDS per vendor for a quarter — the figures each Form 27D certificate carries. The certificate PDF itself is the screen's. Needs an open .khata.",
+      "description": "TDS per vendor for a quarter: the figures each TDS certificate carries (Form 16A, Form 131 from FY 2026-27). The tool keeps its old name; Form 27D is the TCS certificate. The PDF itself is the screen's. Needs an open .khata.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2024,6 +2024,65 @@
           "fyStartYear",
           "quarter"
         ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_tax_sections",
+      "title": "List TDS and TCS sections",
+      "kind": "read",
+      "staged": false,
+      "scope": "app",
+      "route": "#/vendor-payment/new",
+      "untrusted": false,
+      "description": "TDS or TCS sections in force on a date, each with its id, return code, section reference, rates (individual, other, no PAN) and thresholds. From 2026-04-01 these are the Income-tax Act, 2025 sections; old ids such as 194C resolve to them by date.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "tds",
+              "tcs"
+            ]
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Defaults to today."
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "lookup_gst_rate",
+      "title": "Look up a GST rate",
+      "kind": "read",
+      "staged": false,
+      "scope": "app",
+      "route": "#/items",
+      "untrusted": false,
+      "description": "The GST rate bands in force on a date and, given an HSN/SAC code, the rate the reference table assigns it then. Pass the rate on as taxRate.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "hsnSac": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Defaults to today."
+          }
+        },
+        "required": [],
         "additionalProperties": false
       }
     },
@@ -2188,6 +2247,11 @@
             "maxLength": 15,
             "description": "GSTIN; its first two digits must match the state."
           },
+          "pan": {
+            "type": "string",
+            "maxLength": 10,
+            "description": "PAN, e.g. ABCPE1234F. Taken from the GSTIN when omitted; must match it when both are given. TDS and TCS rates depend on it."
+          },
           "state": {
             "type": "string",
             "maxLength": 2,
@@ -2250,6 +2314,11 @@
             "maxLength": 15,
             "description": "GSTIN; its first two digits must match the state."
           },
+          "pan": {
+            "type": "string",
+            "maxLength": 10,
+            "description": "PAN, e.g. ABCPE1234F. Taken from the GSTIN when omitted; must match it when both are given. TDS and TCS rates depend on it."
+          },
           "state": {
             "type": "string",
             "maxLength": 2,
@@ -2308,6 +2377,11 @@
             "maxLength": 15,
             "description": "GSTIN; its first two digits must match the state."
           },
+          "pan": {
+            "type": "string",
+            "maxLength": 10,
+            "description": "PAN, e.g. ABCPE1234F. Taken from the GSTIN when omitted; must match it when both are given. TDS and TCS rates depend on it."
+          },
           "state": {
             "type": "string",
             "maxLength": 2,
@@ -2339,7 +2413,7 @@
           "tdsSection": {
             "type": "string",
             "maxLength": 20,
-            "description": "Default TDS section, e.g. 194C, from the TDS reference table."
+            "description": "Default TDS section id from list_tax_sections, e.g. 1023 (contractors, Income-tax Act 2025). An old-Act id such as 194C still works: each payment resolves it to the section in force on its date."
           },
           "agentName": {
             "type": "string",
@@ -2379,6 +2453,11 @@
             "maxLength": 15,
             "description": "GSTIN; its first two digits must match the state."
           },
+          "pan": {
+            "type": "string",
+            "maxLength": 10,
+            "description": "PAN, e.g. ABCPE1234F. Taken from the GSTIN when omitted; must match it when both are given. TDS and TCS rates depend on it."
+          },
           "state": {
             "type": "string",
             "maxLength": 2,
@@ -2410,7 +2489,7 @@
           "tdsSection": {
             "type": "string",
             "maxLength": 20,
-            "description": "Default TDS section, e.g. 194C, from the TDS reference table."
+            "description": "Default TDS section id from list_tax_sections, e.g. 1023 (contractors, Income-tax Act 2025). An old-Act id such as 194C still works: each payment resolves it to the section in force on its date."
           },
           "agentName": {
             "type": "string",
@@ -3054,7 +3133,7 @@
           "tdsSection": {
             "type": "string",
             "maxLength": 20,
-            "description": "TDS section, e.g. 194C. Empty or omitted for none."
+            "description": "TDS section id from list_tax_sections, e.g. 1023. An old-Act id (194C) resolves to the section in force on the payment date. Empty or omitted for none."
           },
           "tdsRate": {
             "type": "number",
@@ -3127,7 +3206,7 @@
           "section": {
             "type": "string",
             "maxLength": 20,
-            "description": "TCS section from the reference table, e.g. 206C(1H)."
+            "description": "TCS section id from list_tax_sections, in force on the collection date."
           },
           "taxableAmount": {
             "type": "integer",

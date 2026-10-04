@@ -534,6 +534,8 @@ code{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:11px;background:v
 
 // === CONSTANTS ===
 const KHATA_FORMAT_VERSION = '1.0';
+// The released version of this build (CHANGELOG.md). The .khata format and the schema version separately.
+const BAHI_VERSION = '0.1.0';
 const SUPPORTED_FORMAT = '1.0';   // What this build of Bahi can read+write. Files with a newer major
                                   // open read-only. Files with an older major are migrated forward.
 // SCHEMA_VERSION drives the migration runner. Bumped on each schema change.
@@ -21602,7 +21604,7 @@ function renderSettings(main) {
   const ab = h('div', { class: 'panel-b' });
   ab.innerHTML = `
     <div class="kv">
-      <div class="k">Bahi version</div><div class="v">alpha</div>
+      <div class="k">Bahi version</div><div class="v">${BAHI_VERSION} (alpha)</div>
       <div class="k">.khata format</div><div class="v">v${KHATA_FORMAT_VERSION}</div>
       <div class="k">Schema version</div><div class="v">${SCHEMA_VERSION}</div>
       <div class="k">sql.js</div><div class="v">${SQLJS_VERSION}</div>

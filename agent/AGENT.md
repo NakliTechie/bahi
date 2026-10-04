@@ -1,7 +1,7 @@
 # Bahi — agent face
 
 Bahi is driven two ways over one core. The person gets the UI. A script, another tab or an
-agent gets the **agent face**: 32 tools declared once, published through three doors, over the
+agent gets the **agent face**: 61 tools declared once, published through three doors, over the
 same engine the forms post through.
 
 - Machine-readable contract: [`manifest.json`](manifest.json), also live from the `describe_tools` tool.
@@ -103,6 +103,11 @@ Branch on `error.code`, never on the message text.
 | `create_purchase` | write | A vendor purchase, with ITC and reverse-charge routing. |
 | `create_payment` | write | A customer receipt allocated against that customer's invoices. |
 | `create_credit_note` `create_debit_note` | write | Reverse a posted invoice or purchase, in full or partly by amount. |
+| `list_invoices` `list_payments` `list_advances` `list_purchases` `list_credit_notes` `list_debit_notes` `list_delivery_challans` `list_eway_bills` `list_stock_transfers` | read | Document lists, each through its screen's own query, filtered by date and party and paged. `list_invoices` adds what is still outstanding. |
+| `get_sales_register` `get_purchase_register` `get_pnl` `get_dashboard` | read | Registers with totals, the P&L over every posting, and the dashboard's figures. |
+| `list_stock_movements` `get_stock_register` `list_batches` `get_reorder_alerts` `get_stock_aging` `get_inventory_summary` `list_godowns` | read | Stock: movements, one item's register, live batches, reorder and aging, the inventory dashboard, godowns. |
+| `list_invoice_series` `get_cmp08` `get_form27eq` `get_form27d_summary` `list_challan_templates` `get_challan_template` | read | Series, the quarterly CMP-08 / 27EQ / 27D figures, and challan data sheets. |
+| `list_bank_accounts` `get_bank_reconciliation` `list_annotations` | read | Bank lines with cleared status and book balance; CA annotations. |
 | `list_proposals` `get_proposal` | read | This tab's proposals and their outcomes. |
 | `withdraw_proposal` | session | Take back a pending proposal. |
 | `list_routes` `navigate` | read / session | The UI's route index, and showing a route in this tab. |
@@ -186,11 +191,12 @@ These are declared in `manifest.personOnly` with a reason, and every door answer
 
 ## Not covered yet
 
-`manifest.gaps` lists the 37 UI routes no tool covers yet, each with a reason, and
+`manifest.gaps` lists the 10 UI routes no tool covers yet, each with a reason, and
 `run_selftest` asserts that every route in the app is covered by a tool, held by a person-only
 act, or named there. A new screen cannot quietly appear without someone deciding whether agents
-get it. The plan to close them is in layers: the read-only lists and registers next, then the
-remaining voucher forms and masters, then one command bus the UI dispatches through too.
+get it. Every list, register and report screen has a tool, and reads through the same function
+the tool calls. What is left is the remaining voucher forms and masters, then one command bus
+the UI dispatches through too.
 
 ## Security note
 
@@ -220,7 +226,7 @@ echo '[{"command":"run_selftest"}]' | node drive.mjs --book pharma --calls -
 a sample name from `sample-data/`. Samples are copied to a temp dir first; the repo's books are
 never written to.
 
-`node checks.mjs` runs the full assertion suite (43 checks, all in IST). Every check prints the numbers it
+`node checks.mjs` runs the full assertion suite (50 checks, all in IST). Every check prints the numbers it
 compared, passing or failing, so the output is evidence rather than a row of the word PASS.
 `--only C24,C29` runs just those, and skips every batch that holds none of them.
 
@@ -230,7 +236,8 @@ compared, passing or failing, so the output is evidence rather than a row of the
 | C23–C27 | **reconciliation**: two or three independent computations of one quantity must agree |
 | C28–C35 | **two doors, one core**: forms delegate to the engine; invoice and purchase post identical rows through the form and the agent face, with different audit actors; signing keys survive a save |
 | C36–C41 | **doors and approval**: writes stage until approved; rejected and withdrawn proposals never apply; person-only acts are refused on every door; applied writes record door, caller, proposal and approver; the channel starts closed; WebMCP carries exactly the declared tools |
-| C42–C43 | **quarters**: TDS and CMP-08 periods are the calendar quarters in IST, from one shared function |
+| C42–C44 | **dates**: TDS and CMP-08 periods are the calendar quarters in IST, from one shared function; an entry stamped with a time still belongs to its day |
+| C45–C50 | **read parity**: P&L equals the trial balance; a year's sales agree across the register, GSTR-3B and the invoice list; every item's movements sum to its stock on hand; CMP-08 turnover equals the quarter's register; every screen reads through its tool's function; paging reproduces the list |
 
 `node prove-red.mjs` reintroduces each defect those checks guard, one at a time, and confirms the
 matching check goes **red** — then restores the file and confirms green. A check never seen to fail

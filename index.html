@@ -6038,7 +6038,7 @@ function computeFYNetProfit(db, fyStart, fyEnd) {
     FROM entries e
     JOIN entry_lines l ON l.entry_id = e.id
     JOIN accounts a ON a.id = l.account_id
-    WHERE e.posted_at BETWEEN ? AND ? AND a.type IN ('income', 'expense')
+    WHERE substr(e.posted_at, 1, 10) BETWEEN ? AND ? AND a.type IN ('income', 'expense')
     GROUP BY a.type
   `, [fyStart, fyEnd]);
   let income = 0, expense = 0;
@@ -6062,7 +6062,7 @@ async function postFYClosingEntry(db, fyStart, fyEnd) {
     FROM entries e
     JOIN entry_lines l ON l.entry_id = e.id
     JOIN accounts a ON a.id = l.account_id
-    WHERE e.posted_at BETWEEN ? AND ? AND a.type IN ('income', 'expense')
+    WHERE substr(e.posted_at, 1, 10) BETWEEN ? AND ? AND a.type IN ('income', 'expense')
     GROUP BY a.id, a.name, a.type
     HAVING dr > 0 OR cr > 0
   `, [fyStart, fyEnd]);
@@ -6144,7 +6144,7 @@ function getTrialBalance(db, asOfDate) {
   // JOIN produced two WHERE clauses → SQL syntax error (Trial Balance + Balance Sheet both dead
   // whenever an as-of date was set, which the view always does). `OR e.id IS NULL` preserves the
   // LEFT JOIN: accounts whose lines all fall after the as-of date (or have no lines) still appear.
-  const dateCond = asOfDate ? 'AND (e.posted_at <= ? OR e.id IS NULL)' : '';
+  const dateCond = asOfDate ? 'AND (substr(e.posted_at, 1, 10) <= ? OR e.id IS NULL)' : '';
   const r = db.exec(`
     SELECT
       a.id, a.name, a.type,
@@ -6173,7 +6173,7 @@ function getDayBook(db, fromDate, toDate) {
     SELECT e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
       (SELECT COALESCE(SUM(debit), 0) FROM entry_lines WHERE entry_id = e.id) AS total
     FROM entries e
-    WHERE e.posted_at BETWEEN ? AND ?
+    WHERE substr(e.posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY e.posted_at, e.id
   `, [fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -6190,7 +6190,7 @@ function getAccountLedger(db, accountId, fromDate, toDate) {
     FROM entry_lines l
     JOIN entries e ON e.id = l.entry_id
     LEFT JOIN accounts a ON a.id = l.account_id
-    WHERE l.account_id = ? AND e.posted_at BETWEEN ? AND ?
+    WHERE l.account_id = ? AND substr(e.posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY e.posted_at, e.id, l.id
   `, [accountId, fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -6602,7 +6602,7 @@ function getMovementHistory(db, itemId, fromDate, toDate) {
   const r = db.exec(`
     SELECT id, posted_at, voucher_type, voucher_ref, movement_type, qty, rate, value, item_name_snapshot, godown_name_snapshot, batch_id
     FROM stock_movements
-    WHERE item_id = ? AND posted_at BETWEEN ? AND ?
+    WHERE item_id = ? AND substr(posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY posted_at, id
   `, [itemId, fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -8552,8 +8552,8 @@ const SAP_JE_LINE_FIELDS = [
 function buildSapJournalEntries(db, { from, to, crosswalk }) {
   const partyMap = buildSapEntryPartyMap(db);
   const params = [], where = [];
-  if (from) { where.push('e.posted_at >= ?'); params.push(from); }
-  if (to)   { where.push('e.posted_at <= ?'); params.push(to); }
+  if (from) { where.push('substr(e.posted_at, 1, 10) >= ?'); params.push(from); }
+  if (to)   { where.push('substr(e.posted_at, 1, 10) <= ?'); params.push(to); }
   const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const eR = db.exec(`SELECT e.id, e.posted_at, e.voucher_ref, e.narration
     FROM entries e ${clause} ORDER BY e.posted_at, e.id`, params);
@@ -9109,7 +9109,7 @@ function getUnreviewedEntries(db, sinceDate) {
   // sinceDate is optional — if provided, only entries posted on/after that date.
   const params = [];
   let dateClause = '';
-  if (sinceDate) { dateClause = 'AND e.posted_at >= ?'; params.push(sinceDate); }
+  if (sinceDate) { dateClause = 'AND substr(e.posted_at, 1, 10) >= ?'; params.push(sinceDate); }
   const r = db.exec(`
     SELECT e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
       (SELECT COALESCE(SUM(debit), 0) FROM entry_lines WHERE entry_id = e.id) AS amount
@@ -9241,7 +9241,7 @@ function buildReviewReportData(db, asOfDate) {
     FROM entry_lines l
     JOIN entries e ON e.id = l.entry_id
     LEFT JOIN accounts a ON a.id = l.account_id
-    WHERE a.type IN ('income', 'expense') AND e.posted_at <= ?
+    WHERE a.type IN ('income', 'expense') AND substr(e.posted_at, 1, 10) <= ?
     GROUP BY a.type, name
     ORDER BY a.type DESC, name
   `, [asOfDate || nowIso()]);
@@ -9793,7 +9793,7 @@ function getBankAccountLines(db, accountId, fromDate, toDate) {
       l.debit, l.credit
     FROM entry_lines l
     JOIN entries e ON e.id = l.entry_id
-    WHERE l.account_id = ? AND e.posted_at BETWEEN ? AND ?
+    WHERE l.account_id = ? AND substr(e.posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY e.posted_at, e.id, l.id
   `, [accountId, fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -14064,14 +14064,7 @@ function renderInvoices(main) {
   // an invoice is posted will not retroactively change the historical list.
   // Legacy v1 invoices (no snapshot) fall back to a live JOIN with a UI badge.
   // Includes per-invoice allocated/balance via subquery so the row can show paid status.
-  const r = STATE.db.exec(`
-    SELECT i.id, i.invoice_number, i.invoice_date, i.customer_snapshot, c.name, c.gstin,
-      i.subtotal, i.cgst, i.sgst, i.igst, i.total, i.status,
-      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated,
-      COALESCE((SELECT SUM(amount) FROM advance_adjustments WHERE invoice_id = i.id), 0) AS adjusted
-    FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id
-    ORDER BY i.id DESC LIMIT 200
-  `);
+  const r = queryList(STATE.db, 'invoices');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No invoices yet. Click "+ New invoice" to raise your first.']));
     return;
@@ -14747,14 +14740,7 @@ function renderPayments(main) {
   actions.appendChild(newBtn);
   main.appendChild(actions);
 
-  const r = STATE.db.exec(`
-    SELECT p.id, p.payment_number, p.payment_date, p.customer_snapshot, c.name AS live_name,
-      p.amount, p.payment_mode, p.reference, p.bank_account_snapshot, a.name AS live_acc
-    FROM payments p
-    LEFT JOIN customers c ON c.id = p.customer_id
-    LEFT JOIN accounts a ON a.id = p.bank_account_id
-    ORDER BY p.id DESC LIMIT 200
-  `);
+  const r = queryList(STATE.db, 'payments');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No payments yet. Click "+ Record payment" above.']));
     return;
@@ -15075,12 +15061,7 @@ function renderAdvances(main) {
   actions.appendChild(newBtn);
   main.appendChild(actions);
 
-  const r = STATE.db.exec(`
-    SELECT a.id, a.advance_number, a.advance_date, a.customer_snapshot, c.name AS live_name,
-      a.amount, a.taxable, a.tax_rate, a.adjusted_amount, a.remaining_balance, a.status, a.payment_mode
-    FROM advances a LEFT JOIN customers c ON c.id = a.customer_id
-    ORDER BY a.id DESC LIMIT 200
-  `);
+  const r = queryList(STATE.db, 'advances');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No advance receipts yet. Click "+ Advance receipt" above.']));
     return;
@@ -15231,45 +15212,13 @@ function renderPnL(main) {
   main.appendChild(h('h1', {}, ['P&L summary']));
   main.appendChild(h('p', { class: 'help' }, ['Computed live from the ledger. Income accounts (sales, etc.) less expense accounts. Phase 2A is unfiltered (all dates); date-range filters and the full Trial Balance / Balance Sheet land in Phase 3.']));
 
-  // Sum debits/credits per account. The label comes from entry_lines.account_name
-  // (frozen at posting time), NOT the live accounts.name. If an account has been renamed
-  // since some postings were made, the older postings show under their original name and
-  // newer postings show under the current name — they don't silently merge into the new
-  // name. (Invariant 7.) The account TYPE comes from the live master because type is a
-  // structural property, not a label, and it's never edited via the UI.
-  const r = STATE.db.exec(`
-    SELECT
-      l.account_id,
-      COALESCE(l.account_name, a.name) AS display_name,
-      a.type,
-      COALESCE(SUM(l.debit), 0) AS total_debit,
-      COALESCE(SUM(l.credit), 0) AS total_credit
-    FROM entry_lines l
-    LEFT JOIN accounts a ON a.id = l.account_id
-    WHERE a.archived = 0
-    GROUP BY l.account_id, display_name, a.type
-    HAVING total_debit > 0 OR total_credit > 0
-    ORDER BY a.type, display_name
-  `);
-
-  if (!r.length || !r[0].values.length) {
+  // Shared with get_pnl; see getProfitAndLoss for why labels are the frozen account names.
+  const pnl = getProfitAndLoss(STATE.db);
+  if (!pnl.rows.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No postings yet. Raise an invoice to see P&L numbers populate.']));
     return;
   }
-
-  let totalIncome = 0, totalExpense = 0;
-  const incomeRows = [], expenseRows = [];
-  for (const [id, name, type, debit, credit] of r[0].values) {
-    if (type === 'income') {
-      const bal = credit - debit; // income increases on credit side
-      totalIncome += bal;
-      if (bal !== 0) incomeRows.push({ name, bal });
-    } else if (type === 'expense') {
-      const bal = debit - credit; // expense increases on debit side
-      totalExpense += bal;
-      if (bal !== 0) expenseRows.push({ name, bal });
-    }
-  }
+  const { totalIncome, totalExpense, incomeRows, expenseRows } = pnl;
 
   const incomePanel = h('div', { class: 'panel' });
   incomePanel.appendChild(h('div', { class: 'panel-h' }, ['Income']));
@@ -15644,29 +15593,8 @@ function renderCmp08(main) {
     out.innerHTML = '';
     const q = parseInt($('cmp-q').value, 10);
     const y = parseInt($('cmp-y').value, 10);
-    const { start, end } = fyQuarterRange(y, q);
-
-    // Aggregate turnover from posted invoices in the period (composition mode → no GST)
-    const r = STATE.db.exec(`
-      SELECT COALESCE(SUM(total),0), COUNT(*) FROM invoices WHERE status='posted' AND invoice_date BETWEEN ? AND ?
-    `, [start, end]);
-    const turnover = r[0].values[0][0] || 0;
-    const invoiceCount = r[0].values[0][1] || 0;
-
-    const rate = comp.rate || 0.06;
-    const taxPayable = Math.round(turnover * rate);
-
-    const data = {
-      gstin: STATE.manifest.company?.gstin || '',
-      cmp_period: `Q${q}-${y}-${y + 1}`,
-      period_start: start,
-      period_end: end,
-      composition_type: comp.type || 'service',
-      composition_rate_pct: rate * 100,
-      aggregate_turnover: paiseToRs(turnover),
-      tax_payable: paiseToRs(taxPayable),
-      invoice_count: invoiceCount,
-    };
+    // Shared with get_cmp08: turnover is posted invoice totals for the quarter.
+    const { start, end, turnover, invoiceCount, rate, taxPayable, data } = buildCmp08(STATE.db, STATE.manifest.company, y, q);
 
     // KPI cards
     const kpi = h('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px' });
@@ -15917,11 +15845,7 @@ function renderPurchases(main) {
   actions.appendChild(newBtn);
   main.appendChild(actions);
 
-  const r = STATE.db.exec(`
-    SELECT p.id, p.internal_ref, p.bill_number, p.bill_date, v.name, p.subtotal, p.cgst, p.sgst, p.igst, p.total, p.reverse_charge, p.itc_eligible
-    FROM purchases p JOIN vendors v ON v.id = p.vendor_id
-    WHERE p.status='posted' ORDER BY p.bill_date DESC, p.id DESC LIMIT 500
-  `);
+  const r = queryList(STATE.db, 'purchases');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No purchases posted yet.']));
     return;
@@ -16830,12 +16754,7 @@ function renderSalesRegister(main) {
   function rebuild() {
     out.innerHTML = '';
     const from = $('sr-from').value, to = $('sr-to').value;
-    const r = STATE.db.exec(`
-      SELECT i.invoice_number, i.invoice_date, c.name, i.place_of_supply, i.subtotal, i.cgst, i.sgst, i.igst, i.total
-      FROM invoices i JOIN customers c ON c.id = i.customer_id
-      WHERE i.status='posted' AND i.invoice_date BETWEEN ? AND ?
-      ORDER BY i.invoice_date, i.id
-    `, [from, to]);
+    const r = queryList(STATE.db, 'salesRegister', { from, to });
     if (!r.length || !r[0].values.length) {
       out.appendChild(h('div', { class: 'empty' }, ['No invoices in this range.'])); return;
     }
@@ -16887,12 +16806,7 @@ function renderPurchaseRegister(main) {
   function rebuild() {
     out.innerHTML = '';
     const from = $('pr-from').value, to = $('pr-to').value;
-    const r = STATE.db.exec(`
-      SELECT p.internal_ref, p.bill_number, p.bill_date, v.name, p.subtotal, p.cgst, p.sgst, p.igst, p.total, p.reverse_charge
-      FROM purchases p JOIN vendors v ON v.id = p.vendor_id
-      WHERE p.status='posted' AND p.bill_date BETWEEN ? AND ?
-      ORDER BY p.bill_date, p.id
-    `, [from, to]);
+    const r = queryList(STATE.db, 'purchaseRegister', { from, to });
     if (!r.length || !r[0].values.length) {
       out.appendChild(h('div', { class: 'empty' }, ['No purchases in this range.'])); return;
     }
@@ -17066,11 +16980,7 @@ function renderCreditNotes(main) {
   newBtn.onclick = () => nav('#/credit-note/new');
   actions.appendChild(newBtn);
   main.appendChild(actions);
-  const r = STATE.db.exec(`
-    SELECT cn.id, cn.cn_number, cn.cn_date, cn.original_invoice_number, c.name, cn.reason, cn.subtotal, cn.cgst, cn.sgst, cn.igst, cn.total
-    FROM credit_notes cn JOIN customers c ON c.id = cn.customer_id
-    WHERE cn.status='posted' ORDER BY cn.cn_date DESC, cn.id DESC
-  `);
+  const r = queryList(STATE.db, 'creditNotes');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No credit notes posted yet.']));
     return;
@@ -17241,11 +17151,7 @@ function renderDebitNotes(main) {
   newBtn.onclick = () => nav('#/debit-note/new');
   actions.appendChild(newBtn);
   main.appendChild(actions);
-  const r = STATE.db.exec(`
-    SELECT dn.id, dn.dn_number, dn.dn_date, dn.original_bill_number, v.name, dn.reason, dn.subtotal, dn.cgst, dn.sgst, dn.igst, dn.total
-    FROM debit_notes dn JOIN vendors v ON v.id = dn.vendor_id
-    WHERE dn.status='posted' ORDER BY dn.dn_date DESC, dn.id DESC
-  `);
+  const r = queryList(STATE.db, 'debitNotes');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No debit notes posted yet.']));
     return;
@@ -17670,21 +17576,8 @@ function renderTaxChallans(main) {
   main.appendChild(h('h1', {}, ['Tax Payment Challans']));
   main.appendChild(h('p', { class: 'help' }, ['Generate ready-to-fill challan data sheets for the most common Indian tax payments. Phase 3 ships templated JSON exports — you take the data to the bank or government portal.']));
 
-  const challans = [
-    { code: 'PMT-06', title: 'GST PMT-06 (monthly tax payment)', desc: 'Section 39 monthly GST payment. Used by regular taxpayers to pay net liability before filing GSTR-3B.' },
-    { code: 'DRC-03', title: 'GST DRC-03 (voluntary payment)', desc: 'Voluntary tax + interest + penalty payment. Often used to clear notice demands or correct earlier returns.' },
-    { code: 'ITNS-280', title: 'Income Tax Challan 280 (advance / self-assessment)', desc: 'For non-TDS direct tax payments by individuals, firms, companies. Advance tax, self-assessment tax, regular assessment tax.' },
-    { code: 'ITNS-281', title: 'Income Tax Challan 281 (TDS/TCS)', desc: 'For depositing TDS deducted under various sections (192, 194C, 194J, etc.) and TCS collected under section 206C.' },
-    { code: 'ITNS-282', title: 'Income Tax Challan 282 (other direct taxes)', desc: 'Securities transaction tax, hotel receipt tax, expenditure tax, estate duty, wealth tax, gift tax.' },
-    { code: 'ITNS-283', title: 'Income Tax Challan 283 (banking cash transaction tax)', desc: 'Now largely historical — was used for BCTT and FBT.' },
-    { code: 'ECR', title: 'EPF Electronic Challan-cum-Return', desc: 'Monthly provident fund contribution upload to EPFO portal.' },
-    { code: 'ESI', title: 'ESI Monthly Contribution', desc: 'Employee State Insurance monthly contribution (employer + employee shares).' },
-    { code: 'PTRC', title: 'Professional Tax (Maharashtra PTRC/PTEC)', desc: 'State professional tax. Format varies by state — Maharashtra is the most common.' },
-    { code: 'LWF', title: 'Labour Welfare Fund', desc: 'State labour welfare fund contribution. Period and rate vary by state.' },
-    { code: 'CUSTOM', title: 'Custom challan', desc: 'Free-form challan builder for any payment Bahi doesn\'t template natively.' },
-  ];
 
-  for (const c of challans) {
+  for (const c of TAX_CHALLAN_TEMPLATES) {
     const panel = h('div', { class: 'panel', style: 'margin-bottom:12px' });
     const ph = h('div', { class: 'panel-h' });
     ph.innerHTML = `<span><b>${escapeHtml(c.code)}</b> — ${escapeHtml(c.title)}</span>`;
@@ -17694,27 +17587,7 @@ function renderTaxChallans(main) {
     const btn = h('button', {}, ['Generate JSON template']);
     btn.onclick = async () => {
       try {
-        const data = {
-          challan_code: c.code,
-          challan_title: c.title,
-          generated_at: nowIso(),
-          company: STATE.manifest.company || {},
-          fields: {
-            assessee_name: STATE.manifest.company?.legalName || STATE.manifest.company?.name || '',
-            gstin: STATE.manifest.company?.gstin || '',
-            pan: STATE.manifest.company?.pan || '',
-            address: STATE.manifest.company?.address || '',
-            state: STATE.manifest.company?.state || '',
-            period: '',
-            amount: 0,
-            interest: 0,
-            penalty: 0,
-            major_head: '',
-            minor_head: '',
-            section: '',
-          },
-          notes: 'Open in any text editor, fill in the period/amount fields, then enter the data into the bank or government portal. Bahi does NOT submit on your behalf.',
-        };
+        const data = buildChallanTemplate(c.code, STATE.manifest);
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
         const handle = await window.showSaveFilePicker({
           suggestedName: `challan-${c.code.toLowerCase()}-${slugify(STATE.manifest.company?.name || 'co')}-${nowIso().slice(0, 10)}.json`,
@@ -17744,7 +17617,7 @@ function renderInventoryDashboard(main) {
   const totalValue = summary.reduce((a, b) => a + b.value, 0);
   const reorder = getReorderAlerts(STATE.db);
   const aging = getStockAging(STATE.db);
-  const expiredCount = (STATE.db.exec("SELECT COUNT(*) FROM batches WHERE expiry_date IS NOT NULL AND expiry_date < date('now') AND qty_balance > 0")[0]?.values?.[0]?.[0]) || 0;
+  const expiredCount = countExpiredBatches(STATE.db);
 
   const kpi = h('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px' });
   function k(label, value, sub, color) {
@@ -17794,7 +17667,7 @@ function renderGodowns(main) {
   addBtn.onclick = () => openGodownModal(null);
   actions.appendChild(addBtn);
   main.appendChild(actions);
-  const r = STATE.db.exec('SELECT id, name, address, state, is_default FROM godowns WHERE archived=0 ORDER BY is_default DESC, name');
+  const r = queryList(STATE.db, 'godowns');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No godowns. The default "Main" godown is auto-seeded on file create.']));
     return;
@@ -17926,11 +17799,7 @@ function renderStockMovements(main) {
   function rebuild() {
     out.innerHTML = '';
     const from = $('sm-from').value, to = $('sm-to').value;
-    const r = STATE.db.exec(`
-      SELECT id, posted_at, voucher_type, voucher_ref, movement_type, qty, rate, value, item_name_snapshot, godown_name_snapshot
-      FROM stock_movements WHERE posted_at BETWEEN ? AND ?
-      ORDER BY posted_at DESC, id DESC LIMIT 1000
-    `, [from, to]);
+    const r = queryList(STATE.db, 'stockMovements', { from, to });
     if (!r.length || !r[0].values.length) {
       out.appendChild(h('div', { class: 'empty' }, ['No movements in range.']));
       return;
@@ -17968,14 +17837,7 @@ function renderStockMovements(main) {
 function renderBatches(main) {
   if (!requireFileOrPrompt(main, 'Batches')) return;
   main.appendChild(h('h1', {}, ['Batches']));
-  const r = STATE.db.exec(`
-    SELECT b.id, i.name, g.name, b.batch_no, b.mfg_date, b.expiry_date, b.qty_balance, b.value_balance, b.status, b.is_wac_synthetic, b.created_at
-    FROM batches b
-    JOIN items i ON i.id = b.item_id
-    JOIN godowns g ON g.id = b.godown_id
-    WHERE b.qty_balance > 0
-    ORDER BY i.name, b.created_at
-  `);
+  const r = queryList(STATE.db, 'batches');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No open batches.']));
     return;
@@ -18184,14 +18046,7 @@ function renderDeliveryChallans(main) {
   newBtn.onclick = () => nav('#/delivery-challan/new');
   actions.appendChild(newBtn);
   main.appendChild(actions);
-  const r = STATE.db.exec(`
-    SELECT dc.id, dc.challan_number, dc.challan_date, dc.challan_type, COALESCE(c.name, v.name) AS party,
-      dc.vehicle_no, dc.is_returnable, dc.expected_return_date, dc.status
-    FROM delivery_challans dc
-    LEFT JOIN customers c ON c.id = dc.customer_id
-    LEFT JOIN vendors v ON v.id = dc.vendor_id
-    ORDER BY dc.challan_date DESC, dc.id DESC
-  `);
+  const r = queryList(STATE.db, 'deliveryChallans');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No delivery challans yet.']));
     return;
@@ -18421,10 +18276,7 @@ function renderEwayBills(main) {
   newBtn.onclick = () => nav('#/eway-bill/new');
   actions.appendChild(newBtn);
   main.appendChild(actions);
-  const r = STATE.db.exec(`
-    SELECT id, ewb_number, ewb_date, source_type, source_ref, vehicle_no, total, status
-    FROM eway_bills ORDER BY ewb_date DESC, id DESC
-  `);
+  const r = queryList(STATE.db, 'ewayBills');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No e-way bills yet. Generate one from an invoice or delivery challan.']));
     return;
@@ -18941,10 +18793,7 @@ function renderStockTransfers(main) {
   actions.appendChild(outBtn);
   actions.appendChild(inBtn);
   main.appendChild(actions);
-  const r = STATE.db.exec(`
-    SELECT id, transfer_number, transfer_date, direction, from_gstin, to_gstin, total_value, status
-    FROM stock_transfers ORDER BY transfer_date DESC, id DESC
-  `);
+  const r = queryList(STATE.db, 'stockTransfers');
   if (!r.length || !r[0].values.length) {
     main.appendChild(h('div', { class: 'empty' }, ['No transfers yet.']));
     return;
@@ -21297,14 +21146,7 @@ function renderForm27D(main) {
     out.innerHTML = '';
     const q = parseInt($('f27d-q').value, 10);
     const y = parseInt($('f27d-y').value, 10);
-    const range = fyQuarterRange(y, q);
-    const r = STATE.db.exec(`
-      SELECT v.id, v.name, v.pan, COUNT(*) AS deductions, SUM(t.tds_amount) AS total_tds
-      FROM tds_deductions t JOIN vendors v ON v.id = t.vendor_id
-      WHERE t.payment_date BETWEEN ? AND ?
-      GROUP BY v.id, v.name, v.pan
-      ORDER BY v.name
-    `, [range.start, range.end]);
+    const { range, result: r } = queryForm27DSummary(STATE.db, y, q);
     if (!r.length || !r[0].values.length) {
       out.appendChild(h('div', { class: 'empty' }, [`No TDS deductions in Q${q} FY${y}-${(y + 1).toString().slice(2, 4)}.`]));
       return;
@@ -22987,6 +22829,249 @@ function renderSettings(main) {
 //------------------------------------------------------------
 
 //------------------------------------------------------------
+// === Shared reads — the screens and the agent face read through these ===
+//------------------------------------------------------------
+//
+// Each list screen and its agent tool run one query. Called with no options, queryList runs
+// exactly the screen's own query: same columns in the same positions, same order, same cap.
+// The agent face adds a date range, a party and a page. Screens read rows by position, so the
+// column aliases here change nothing they show.
+
+const BAHI_LIST_QUERIES = {
+  invoices: {
+    sql: `SELECT i.id, i.invoice_number, i.invoice_date, i.customer_snapshot, c.name AS customer_name, c.gstin AS customer_gstin,
+      i.subtotal, i.cgst, i.sgst, i.igst, i.total, i.status,
+      COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE invoice_id = i.id), 0) AS allocated,
+      COALESCE((SELECT SUM(amount) FROM advance_adjustments WHERE invoice_id = i.id), 0) AS adjusted
+    FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id`,
+    dateCol: 'i.invoice_date', partyCol: 'i.customer_id', order: 'i.id DESC', screenLimit: 200,
+  },
+  payments: {
+    sql: `SELECT p.id, p.payment_number, p.payment_date, p.customer_snapshot, c.name AS live_name,
+      p.amount, p.payment_mode, p.reference, p.bank_account_snapshot, a.name AS live_acc
+    FROM payments p
+    LEFT JOIN customers c ON c.id = p.customer_id
+    LEFT JOIN accounts a ON a.id = p.bank_account_id`,
+    dateCol: 'p.payment_date', partyCol: 'p.customer_id', order: 'p.id DESC', screenLimit: 200,
+  },
+  advances: {
+    sql: `SELECT a.id, a.advance_number, a.advance_date, a.customer_snapshot, c.name AS live_name,
+      a.amount, a.taxable, a.tax_rate, a.adjusted_amount, a.remaining_balance, a.status, a.payment_mode
+    FROM advances a LEFT JOIN customers c ON c.id = a.customer_id`,
+    dateCol: 'a.advance_date', partyCol: 'a.customer_id', order: 'a.id DESC', screenLimit: 200,
+  },
+  purchases: {
+    sql: `SELECT p.id, p.internal_ref, p.bill_number, p.bill_date, v.name AS vendor_name, p.subtotal, p.cgst, p.sgst, p.igst, p.total, p.reverse_charge, p.itc_eligible
+    FROM purchases p JOIN vendors v ON v.id = p.vendor_id`,
+    fixed: "p.status='posted'", dateCol: 'p.bill_date', partyCol: 'p.vendor_id', order: 'p.bill_date DESC, p.id DESC', screenLimit: 500,
+  },
+  creditNotes: {
+    sql: `SELECT cn.id, cn.cn_number, cn.cn_date, cn.original_invoice_number, c.name AS customer_name, cn.reason, cn.subtotal, cn.cgst, cn.sgst, cn.igst, cn.total
+    FROM credit_notes cn JOIN customers c ON c.id = cn.customer_id`,
+    fixed: "cn.status='posted'", dateCol: 'cn.cn_date', partyCol: 'cn.customer_id', order: 'cn.cn_date DESC, cn.id DESC', screenLimit: null,
+  },
+  debitNotes: {
+    sql: `SELECT dn.id, dn.dn_number, dn.dn_date, dn.original_bill_number, v.name AS vendor_name, dn.reason, dn.subtotal, dn.cgst, dn.sgst, dn.igst, dn.total
+    FROM debit_notes dn JOIN vendors v ON v.id = dn.vendor_id`,
+    fixed: "dn.status='posted'", dateCol: 'dn.dn_date', partyCol: 'dn.vendor_id', order: 'dn.dn_date DESC, dn.id DESC', screenLimit: null,
+  },
+  deliveryChallans: {
+    sql: `SELECT dc.id, dc.challan_number, dc.challan_date, dc.challan_type, COALESCE(c.name, v.name) AS party,
+      dc.vehicle_no, dc.is_returnable, dc.expected_return_date, dc.status
+    FROM delivery_challans dc
+    LEFT JOIN customers c ON c.id = dc.customer_id
+    LEFT JOIN vendors v ON v.id = dc.vendor_id`,
+    dateCol: 'dc.challan_date', order: 'dc.challan_date DESC, dc.id DESC', screenLimit: null,
+  },
+  ewayBills: {
+    sql: `SELECT id, ewb_number, ewb_date, source_type, source_ref, vehicle_no, total, status
+    FROM eway_bills`,
+    dateCol: 'ewb_date', order: 'ewb_date DESC, id DESC', screenLimit: null,
+  },
+  stockTransfers: {
+    sql: `SELECT id, transfer_number, transfer_date, direction, from_gstin, to_gstin, total_value, status
+    FROM stock_transfers`,
+    dateCol: 'transfer_date', order: 'transfer_date DESC, id DESC', screenLimit: null,
+  },
+  batches: {
+    sql: `SELECT b.id, i.name AS item_name, g.name AS godown_name, b.batch_no, b.mfg_date, b.expiry_date, b.qty_balance, b.value_balance, b.status, b.is_wac_synthetic, b.created_at
+    FROM batches b
+    JOIN items i ON i.id = b.item_id
+    JOIN godowns g ON g.id = b.godown_id`,
+    fixed: 'b.qty_balance > 0', partyCol: 'b.item_id', order: 'i.name, b.created_at', screenLimit: null,
+  },
+  godowns: {
+    sql: 'SELECT id, name, address, state, is_default FROM godowns',
+    fixed: 'archived=0', order: 'is_default DESC, name', screenLimit: null,
+  },
+  salesRegister: {
+    sql: `SELECT i.invoice_number, i.invoice_date, c.name AS customer_name, i.place_of_supply, i.subtotal, i.cgst, i.sgst, i.igst, i.total
+      FROM invoices i JOIN customers c ON c.id = i.customer_id`,
+    fixed: "i.status='posted'", dateCol: 'i.invoice_date', order: 'i.invoice_date, i.id', screenLimit: null,
+  },
+  purchaseRegister: {
+    sql: `SELECT p.internal_ref, p.bill_number, p.bill_date, v.name AS vendor_name, p.subtotal, p.cgst, p.sgst, p.igst, p.total, p.reverse_charge
+      FROM purchases p JOIN vendors v ON v.id = p.vendor_id`,
+    fixed: "p.status='posted'", dateCol: 'p.bill_date', order: 'p.bill_date, p.id', screenLimit: null,
+  },
+  stockMovements: {
+    sql: `SELECT id, posted_at, voucher_type, voucher_ref, movement_type, qty, rate, value, item_name_snapshot, godown_name_snapshot
+      FROM stock_movements`,
+    dateCol: 'substr(posted_at, 1, 10)', partyCol: 'item_id', order: 'posted_at DESC, id DESC', screenLimit: 1000,
+  },
+};
+
+// `name`, the columns and the fixed clauses are literals from this file. Caller values reach
+// SQL only as bound parameters.
+function listQueryParts(name, opts) {
+  const q = BAHI_LIST_QUERIES[name];
+  const where = q.fixed ? [q.fixed] : [];
+  const params = [];
+  if (opts.from && q.dateCol) { where.push(`${q.dateCol} >= ?`); params.push(opts.from); }
+  if (opts.to && q.dateCol) { where.push(`${q.dateCol} <= ?`); params.push(opts.to); }
+  if (opts.party && q.partyCol) { where.push(`${q.partyCol} = ?`); params.push(opts.party); }
+  return { q, where: where.length ? ` WHERE ${where.join(' AND ')}` : '', params };
+}
+
+function queryList(db, name, opts = {}) {
+  const { q, where, params } = listQueryParts(name, opts);
+  const limit = opts.limit !== undefined ? opts.limit : q.screenLimit;
+  let tail = ` ORDER BY ${q.order}`;
+  if (limit != null) { tail += ' LIMIT ? OFFSET ?'; params.push(limit, opts.offset || 0); }
+  return db.exec(`${q.sql}${where}${tail}`, params);
+}
+
+function queryListCount(db, name, opts = {}) {
+  const { q, where, params } = listQueryParts(name, opts);
+  const r = db.exec(`SELECT COUNT(*) FROM (${q.sql}${where})`, params);
+  return r.length ? r[0].values[0][0] : 0;
+}
+
+// P&L over every posting, shared by the P&L screen and get_pnl.
+// The label comes from entry_lines.account_name (frozen at posting time), NOT the live
+// accounts.name. If an account has been renamed since some postings were made, the older
+// postings show under their original name and newer postings show under the current name —
+// they don't silently merge into the new name. (Invariant 7.) The account TYPE comes from the
+// live master because type is a structural property, not a label, and it's never edited via the UI.
+function getProfitAndLoss(db) {
+  const r = db.exec(`
+    SELECT
+      l.account_id,
+      COALESCE(l.account_name, a.name) AS display_name,
+      a.type,
+      COALESCE(SUM(l.debit), 0) AS total_debit,
+      COALESCE(SUM(l.credit), 0) AS total_credit
+    FROM entry_lines l
+    LEFT JOIN accounts a ON a.id = l.account_id
+    WHERE a.archived = 0
+    GROUP BY l.account_id, display_name, a.type
+    HAVING total_debit > 0 OR total_credit > 0
+    ORDER BY a.type, display_name
+  `);
+  const rows = r.length ? r[0].values.map(([accountId, name, type, debit, credit]) => ({ accountId, name, type, debit, credit })) : [];
+  let totalIncome = 0, totalExpense = 0;
+  const incomeRows = [], expenseRows = [];
+  for (const { accountId, name, type, debit, credit } of rows) {
+    if (type === 'income') {
+      const bal = credit - debit; // income increases on credit side
+      totalIncome += bal;
+      if (bal !== 0) incomeRows.push({ accountId, name, bal });
+    } else if (type === 'expense') {
+      const bal = debit - credit; // expense increases on debit side
+      totalExpense += bal;
+      if (bal !== 0) expenseRows.push({ accountId, name, bal });
+    }
+  }
+  return { rows, incomeRows, expenseRows, totalIncome, totalExpense, netProfit: totalIncome - totalExpense };
+}
+
+// CMP-08 for one quarter, shared by the CMP-08 screen and get_cmp08. Composition dealers pay
+// a flat rate on aggregate turnover, so the figure is posted invoice totals for the quarter.
+function buildCmp08(db, company, fyStartYear, quarter) {
+  const comp = (company && company.composition) || {};
+  const { start, end } = fyQuarterRange(fyStartYear, quarter);
+  const r = db.exec(`
+      SELECT COALESCE(SUM(total),0), COUNT(*) FROM invoices WHERE status='posted' AND invoice_date BETWEEN ? AND ?
+    `, [start, end]);
+  const turnover = r[0].values[0][0] || 0;
+  const invoiceCount = r[0].values[0][1] || 0;
+  const rate = comp.rate || 0.06;
+  const taxPayable = Math.round(turnover * rate);
+  const data = {
+    gstin: (company && company.gstin) || '',
+    cmp_period: `Q${quarter}-${fyStartYear}-${fyStartYear + 1}`,
+    period_start: start,
+    period_end: end,
+    composition_type: comp.type || 'service',
+    composition_rate_pct: rate * 100,
+    aggregate_turnover: paiseToRs(turnover),
+    tax_payable: paiseToRs(taxPayable),
+    invoice_count: invoiceCount,
+  };
+  return { enabled: !!comp.enabled, start, end, turnover, invoiceCount, rate, taxPayable, compositionType: comp.type || 'service', data };
+}
+
+// Form 27D: TDS per vendor for one quarter, shared by the Form 27D screen and its tool.
+function queryForm27DSummary(db, fyStartYear, quarter) {
+  const range = fyQuarterRange(fyStartYear, quarter);
+  const result = db.exec(`
+      SELECT v.id, v.name, v.pan, COUNT(*) AS deductions, SUM(t.tds_amount) AS total_tds
+      FROM tds_deductions t JOIN vendors v ON v.id = t.vendor_id
+      WHERE t.payment_date BETWEEN ? AND ?
+      GROUP BY v.id, v.name, v.pan
+      ORDER BY v.name
+    `, [range.start, range.end]);
+  return { range, result };
+}
+
+function countExpiredBatches(db) {
+  return (db.exec("SELECT COUNT(*) FROM batches WHERE expiry_date IS NOT NULL AND expiry_date < date('now') AND qty_balance > 0")[0]?.values?.[0]?.[0]) || 0;
+}
+
+// The tax-payment challan templates, and the data sheet for one of them. Shared by the Tax
+// Challans screen, which saves the sheet as a JSON file, and get_challan_template.
+const TAX_CHALLAN_TEMPLATES = [
+  { code: 'PMT-06', title: 'GST PMT-06 (monthly tax payment)', desc: 'Section 39 monthly GST payment. Used by regular taxpayers to pay net liability before filing GSTR-3B.' },
+  { code: 'DRC-03', title: 'GST DRC-03 (voluntary payment)', desc: 'Voluntary tax + interest + penalty payment. Often used to clear notice demands or correct earlier returns.' },
+  { code: 'ITNS-280', title: 'Income Tax Challan 280 (advance / self-assessment)', desc: 'For non-TDS direct tax payments by individuals, firms, companies. Advance tax, self-assessment tax, regular assessment tax.' },
+  { code: 'ITNS-281', title: 'Income Tax Challan 281 (TDS/TCS)', desc: 'For depositing TDS deducted under various sections (192, 194C, 194J, etc.) and TCS collected under section 206C.' },
+  { code: 'ITNS-282', title: 'Income Tax Challan 282 (other direct taxes)', desc: 'Securities transaction tax, hotel receipt tax, expenditure tax, estate duty, wealth tax, gift tax.' },
+  { code: 'ITNS-283', title: 'Income Tax Challan 283 (banking cash transaction tax)', desc: 'Now largely historical — was used for BCTT and FBT.' },
+  { code: 'ECR', title: 'EPF Electronic Challan-cum-Return', desc: 'Monthly provident fund contribution upload to EPFO portal.' },
+  { code: 'ESI', title: 'ESI Monthly Contribution', desc: 'Employee State Insurance monthly contribution (employer + employee shares).' },
+  { code: 'PTRC', title: 'Professional Tax (Maharashtra PTRC/PTEC)', desc: 'State professional tax. Format varies by state — Maharashtra is the most common.' },
+  { code: 'LWF', title: 'Labour Welfare Fund', desc: 'State labour welfare fund contribution. Period and rate vary by state.' },
+  { code: 'CUSTOM', title: 'Custom challan', desc: 'Free-form challan builder for any payment Bahi doesn\'t template natively.' },
+];
+
+function buildChallanTemplate(code, manifest) {
+  const c = TAX_CHALLAN_TEMPLATES.find((t) => t.code === code);
+  if (!c) return null;
+  const company = (manifest && manifest.company) || {};
+  return {
+    challan_code: c.code,
+    challan_title: c.title,
+    generated_at: nowIso(),
+    company,
+    fields: {
+      assessee_name: company.legalName || company.name || '',
+      gstin: company.gstin || '',
+      pan: company.pan || '',
+      address: company.address || '',
+      state: company.state || '',
+      period: '',
+      amount: 0,
+      interest: 0,
+      penalty: 0,
+      major_head: '',
+      minor_head: '',
+      section: '',
+    },
+    notes: 'Open in any text editor, fill in the period/amount fields, then enter the data into the bank or government portal. Bahi does NOT submit on your behalf.',
+  };
+}
+
+//------------------------------------------------------------
 // === Agent face (Build Doctrine — one manifest, three doors) ===
 //------------------------------------------------------------
 //
@@ -23214,6 +23299,18 @@ const agentListParams = (defaultLimit) => ({
   includeArchived: { type: 'bool', default: false },
 });
 
+// Filters for a document list: an optional date range, an optional party, and a page.
+const agentDocListParams = (partyKey, partyDesc, { dates = true, defaultLimit = 100 } = {}) => ({
+  ...(dates ? { from: { type: 'date', desc: 'Earliest document date, inclusive.' }, to: { type: 'date', desc: 'Latest document date, inclusive.' } } : {}),
+  ...(partyKey ? { [partyKey]: { type: 'int', min: 1, desc: partyDesc } } : {}),
+  limit: { type: 'int', min: 1, max: 1000, default: defaultLimit },
+  offset: { type: 'int', min: 0, default: 0 },
+});
+const AGENT_QUARTER_PARAMS = {
+  fyStartYear: { type: 'int', required: true, min: 2000, max: 2200, desc: '2025 for FY 2025-26.' },
+  quarter: { type: 'int', required: true, min: 1, max: 4, desc: 'Q1 = Apr–Jun … Q4 = Jan–Mar.' },
+};
+
 // --- the manifest — the single source of truth for the agent face ------------
 // kind: read (answers at once) · session (changes only what this tab shows) ·
 //       write (stages a proposal the person approves). scope: app | file.
@@ -23351,6 +23448,91 @@ const BAHI_AGENT_TOOLS = {
       agentName:  AGENT_NAME_PARAM,
     } },
 
+  // Layer 2 — read parity. Each tool reads through the same function or query its screen uses.
+  list_invoices: { title: 'List invoices', kind: 'read', scope: 'file', route: '#/invoices', untrusted: true, range: ['from', 'to'],
+    description: 'Sales invoices of every status, newest first, with the amounts allocated, adjusted and still outstanding (paise).',
+    params: agentDocListParams('customerId', 'Only this customer\'s invoices.') },
+  list_payments: { title: 'List customer receipts', kind: 'read', scope: 'file', route: '#/payments', untrusted: true, range: ['from', 'to'],
+    description: 'Customer receipts, newest first, with mode, reference and bank account.',
+    params: agentDocListParams('customerId', 'Only this customer\'s receipts.') },
+  list_advances: { title: 'List advance receipts', kind: 'read', scope: 'file', route: '#/advances', untrusted: true, range: ['from', 'to'],
+    description: 'Customer advances, newest first, with the taxable value, the amount adjusted against invoices and the open balance.',
+    params: agentDocListParams('customerId', 'Only this customer\'s advances.') },
+  list_purchases: { title: 'List purchases', kind: 'read', scope: 'file', route: '#/purchases', untrusted: true, range: ['from', 'to'],
+    description: 'Posted purchases, latest bill date first, with reverse-charge and ITC flags.',
+    params: agentDocListParams('vendorId', 'Only this vendor\'s purchases.') },
+  list_credit_notes: { title: 'List credit notes', kind: 'read', scope: 'file', route: '#/credit-notes', untrusted: true, range: ['from', 'to'],
+    description: 'Posted credit notes, latest first, with the invoice each one reverses.',
+    params: agentDocListParams('customerId', 'Only this customer\'s credit notes.') },
+  list_debit_notes: { title: 'List debit notes', kind: 'read', scope: 'file', route: '#/debit-notes', untrusted: true, range: ['from', 'to'],
+    description: 'Posted debit notes, latest first, with the bill each one reverses.',
+    params: agentDocListParams('vendorId', 'Only this vendor\'s debit notes.') },
+  list_delivery_challans: { title: 'List delivery challans', kind: 'read', scope: 'file', route: '#/delivery-challans', untrusted: true, range: ['from', 'to'],
+    description: 'Delivery challans, latest first, with party, vehicle and return status.',
+    params: agentDocListParams(null) },
+  list_eway_bills: { title: 'List e-way bills', kind: 'read', scope: 'file', route: '#/eway-bills', untrusted: true, range: ['from', 'to'],
+    description: 'E-way bills, latest first, with the document each one covers.',
+    params: agentDocListParams(null) },
+  list_stock_transfers: { title: 'List stock transfers', kind: 'read', scope: 'file', route: '#/stock-transfers', untrusted: true, range: ['from', 'to'],
+    description: 'Inter-branch stock transfers, latest first, in both directions.',
+    params: agentDocListParams(null) },
+  get_sales_register: { title: 'Get sales register', kind: 'read', scope: 'file', route: '#/sales-register', untrusted: true, range: ['from', 'to'],
+    description: 'Posted invoices in a date range, oldest first, with tax columns and their totals.',
+    params: { from: { type: 'date', required: true }, to: { type: 'date', required: true } } },
+  get_purchase_register: { title: 'Get purchase register', kind: 'read', scope: 'file', route: '#/purchase-register', untrusted: true, range: ['from', 'to'],
+    description: 'Posted purchases in a date range, oldest first, with tax columns and their totals.',
+    params: { from: { type: 'date', required: true }, to: { type: 'date', required: true } } },
+  get_pnl: { title: 'Get P&L summary', kind: 'read', scope: 'file', route: '#/pnl', untrusted: true,
+    description: 'Income less expense over every posting, per account, with totals and net profit. Labels are the account names frozen at posting.',
+    params: {} },
+  get_dashboard: { title: 'Get dashboard', kind: 'read', scope: 'file', route: '#/dashboard', untrusted: true,
+    description: 'The dashboard\'s figures: cash flow, the current GST liability, receivables aging, top customers by outstanding, and recent activity.',
+    params: { topCustomers: { type: 'int', min: 1, max: 50, default: 5 }, recentActivity: { type: 'int', min: 1, max: 100, default: 10 } } },
+
+  list_stock_movements: { title: 'List stock movements', kind: 'read', scope: 'file', route: '#/stock-movements', untrusted: true, range: ['from', 'to'],
+    description: 'Every stock movement in a date range, newest first.',
+    params: {
+      from: { type: 'date', required: true }, to: { type: 'date', required: true },
+      itemId: { type: 'int', min: 1 },
+      limit: { type: 'int', min: 1, max: 5000, default: 1000 }, offset: { type: 'int', min: 0, default: 0 },
+    } },
+  get_stock_register: { title: 'Get stock register', kind: 'read', scope: 'file', route: '#/stock-register', untrusted: true, range: ['from', 'to'],
+    description: 'One item\'s movements over a date range, oldest first. Quantities are signed: issues are negative.',
+    params: { itemId: { type: 'int', required: true, min: 1 }, from: { type: 'date', required: true }, to: { type: 'date', required: true } } },
+  list_batches: { title: 'List batches', kind: 'read', scope: 'file', route: '#/batches', untrusted: true,
+    description: 'Batches that still hold stock, by item, with expiry and remaining quantity and value.',
+    params: agentDocListParams('itemId', 'Only this item\'s batches.', { dates: false, defaultLimit: 500 }) },
+  get_reorder_alerts: { title: 'Get reorder alerts', kind: 'read', scope: 'file', route: '#/reorder-alerts', untrusted: true, params: {},
+    description: 'Items at or below their reorder level, with how short each one is and its preferred vendor.' },
+  get_stock_aging: { title: 'Get stock aging', kind: 'read', scope: 'file', route: '#/stock-aging', untrusted: true, params: {},
+    description: 'Batches with stock, bucketed by age as of today: 0–30, 31–60, 61–90 and over 90 days.' },
+  get_inventory_summary: { title: 'Get inventory summary', kind: 'read', scope: 'file', route: '#/inventory', params: {},
+    description: 'The inventory dashboard: total stock value, items valued, items to reorder, expired batches still holding stock, and the aging buckets\' totals.' },
+  list_godowns: { title: 'List godowns', kind: 'read', scope: 'file', route: '#/godowns', untrusted: true, params: {},
+    description: 'Active godowns, the default first.' },
+  list_invoice_series: { title: 'List invoice series', kind: 'read', scope: 'file', route: '#/series', untrusted: true, params: {},
+    description: 'Invoice number series with prefix, suffix, starting number, FY reset and what each is the default for.' },
+
+  get_cmp08: { title: 'Get CMP-08 statement', kind: 'read', scope: 'file', route: '#/cmp08', params: AGENT_QUARTER_PARAMS,
+    description: 'CMP-08 for a quarter: aggregate turnover from posted invoices and tax at the composition rate. Refused when the composition scheme is off, as the screen does.' },
+  get_form27eq: { title: 'Get Form 27EQ data', kind: 'read', scope: 'file', route: '#/form-27eq', untrusted: true, params: AGENT_QUARTER_PARAMS,
+    description: 'Form 27EQ quarterly TCS return data, with the validation errors the screen shows.' },
+  get_form27d_summary: { title: 'Get Form 27D summary', kind: 'read', scope: 'file', route: '#/form-27d', untrusted: true, params: AGENT_QUARTER_PARAMS,
+    description: 'TDS per vendor for a quarter — the figures each Form 27D certificate carries. The certificate PDF itself is the screen\'s.' },
+  list_challan_templates: { title: 'List challan templates', kind: 'read', scope: 'app', route: '#/tax-challans', params: {},
+    description: 'The tax-payment challan templates Bahi prepares data sheets for.' },
+  get_challan_template: { title: 'Get a challan data sheet', kind: 'read', scope: 'file', route: '#/tax-challans', untrusted: true,
+    description: 'The data sheet for one challan, prefilled with the company\'s identity. Bahi submits nothing; the person takes it to the portal.',
+    params: { code: { type: 'string', required: true, maxLength: 20, enum: TAX_CHALLAN_TEMPLATES.map((t) => t.code) } } },
+  list_bank_accounts: { title: 'List bank accounts', kind: 'read', scope: 'file', route: '#/bank-reconcile', untrusted: true, params: {},
+    description: 'Bank and cash accounts, by id, as the reconciliation screen lists them.' },
+  get_bank_reconciliation: { title: 'Get bank reconciliation', kind: 'read', scope: 'file', route: '#/bank-reconcile', untrusted: true, range: ['from', 'to'],
+    description: 'One bank account\'s ledger lines over a period with their cleared status, the book balance for the period, and the last saved reconciliation.',
+    params: { accountId: { type: 'int', required: true, min: 1 }, from: { type: 'date', required: true }, to: { type: 'date', required: true } } },
+  list_annotations: { title: 'List annotations', kind: 'read', scope: 'file', route: '#/annotations', untrusted: true,
+    description: 'CA annotations on entries and documents, newest first.',
+    params: { status: { type: 'string', maxLength: 20, enum: ['open', 'resolved'] }, targetType: { type: 'string', maxLength: 40 }, targetId: { type: 'int', min: 1 } } },
+
   list_proposals: { title: 'List proposals', kind: 'read', scope: 'app', untrusted: true,
     description: 'Proposals staged in this tab, newest first, with their status: pending, applied, rejected, withdrawn or failed.',
     params: { status: { type: 'string', maxLength: 20, enum: ['pending', 'applied', 'rejected', 'withdrawn', 'failed'] }, limit: { type: 'int', min: 1, max: 500, default: 50 } } },
@@ -23407,34 +23589,7 @@ const BAHI_AGENT_GAPS = [
   { route: '#/stock-transfer/out/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
   { route: '#/stock-transfer/in/import', reason: 'Needs a file import.' },
   { route: '#/ca/adjustment/new', reason: 'Creation still lives in the form handler; no engine function yet. create_invoice shows the shape the extraction takes.' },
-  { route: '#/pnl', reason: 'P&L is computed inside renderPnL and has no pure engine function yet. Derive from get_trial_balance meanwhile.' },
-  { route: '#/invoices', reason: 'Read-only list not yet exposed; get_day_book covers the ledger effect.' },
-  { route: '#/purchases', reason: 'As #/invoices.' },
-  { route: '#/credit-notes', reason: 'As #/invoices.' },
-  { route: '#/debit-notes', reason: 'As #/invoices.' },
-  { route: '#/payments', reason: 'As #/invoices.' },
-  { route: '#/advances', reason: 'As #/invoices.' },
-  { route: '#/eway-bills', reason: 'As #/invoices.' },
-  { route: '#/stock-transfers', reason: 'As #/invoices.' },
-  { route: '#/delivery-challans', reason: 'As #/invoices.' },
-  { route: '#/sales-register', reason: 'Not yet exposed; derive from get_day_book.' },
-  { route: '#/purchase-register', reason: 'Not yet exposed; derive from get_day_book.' },
-  { route: '#/inventory', reason: 'Dashboard aggregate; get_stock_on_hand + get_stock_valuation cover the data.' },
-  { route: '#/stock-movements', reason: 'Not yet exposed.' },
-  { route: '#/stock-register', reason: 'Not yet exposed.' },
-  { route: '#/batches', reason: 'Not yet exposed.' },
-  { route: '#/reorder-alerts', reason: 'Not yet exposed.' },
-  { route: '#/stock-aging', reason: 'Not yet exposed.' },
-  { route: '#/godowns', reason: 'Not yet exposed.' },
-  { route: '#/series', reason: 'Not yet exposed.' },
-  { route: '#/cmp08', reason: 'Not yet exposed.' },
-  { route: '#/form-27eq', reason: 'Not yet exposed.' },
-  { route: '#/form-27d', reason: 'PDF generation, not data.' },
-  { route: '#/tax-challans', reason: 'Not yet exposed.' },
-  { route: '#/bank-reconcile', reason: 'Not yet exposed.' },
-  { route: '#/annotations', reason: 'Not yet exposed.' },
   { route: '#/ca/report', reason: 'PDF generation, not data.' },
-  { route: '#/dashboard', reason: 'Aggregate view; get_receivables_aging covers the headline number.' },
   { route: '#/settings', reason: 'Local preferences, not books data. The one agent setting, the cross-tab channel, is person-only.' },
 ];
 
@@ -23869,6 +24024,73 @@ const BAHI_AGENT_HANDLERS = {
       actor: agentActorFor(a), totals: r.totals, full: r.ratio === 1, warnings: r.warnings };
   },
 
+  list_invoices: async (a) => {
+    const out = agentList('invoices', a, 'customerId');
+    for (const r of out.rows) r.outstanding = (r.total || 0) - (r.allocated || 0) - (r.adjusted || 0);
+    return out;
+  },
+  list_payments:          async (a) => agentList('payments', a, 'customerId'),
+  list_advances:          async (a) => agentList('advances', a, 'customerId'),
+  list_purchases:         async (a) => agentList('purchases', a, 'vendorId'),
+  list_credit_notes:      async (a) => agentList('creditNotes', a, 'customerId'),
+  list_debit_notes:       async (a) => agentList('debitNotes', a, 'vendorId'),
+  list_delivery_challans: async (a) => agentList('deliveryChallans', a, null),
+  list_eway_bills:        async (a) => agentList('ewayBills', a, null),
+  list_stock_transfers:   async (a) => agentList('stockTransfers', a, null),
+  get_sales_register:     async (a) => agentRegister('salesRegister', a),
+  get_purchase_register:  async (a) => agentRegister('purchaseRegister', a),
+  get_pnl: async () => getProfitAndLoss(STATE.db),
+  get_dashboard: async (a) => ({
+    cashflow: getCashflowSnapshot(STATE.db),
+    gstLiability: getGSTLiabilityCurrentPeriod(STATE.db),
+    receivablesAging: getReceivablesAging(STATE.db, nowIso().slice(0, 10)),
+    topCustomers: getTopCustomersByOutstanding(STATE.db, a.topCustomers),
+    recentActivity: getRecentActivity(STATE.db, a.recentActivity),
+  }),
+
+  list_stock_movements: async (a) => agentList('stockMovements', a, 'itemId'),
+  get_stock_register: async (a) => ({ itemId: a.itemId, from: a.from, to: a.to, movements: getMovementHistory(STATE.db, a.itemId, a.from, a.to) }),
+  list_batches: async (a) => agentList('batches', a, 'itemId'),
+  get_reorder_alerts: async () => ({ alerts: getReorderAlerts(STATE.db) }),
+  get_stock_aging: async () => getStockAging(STATE.db),
+  get_inventory_summary: async () => {
+    const valuation = getValuationSummary(STATE.db);
+    const aging = getStockAging(STATE.db);
+    const bucket = (rows) => ({ batches: rows.length, qty: rows.reduce((t, r) => t + (r.qty || 0), 0), value: rows.reduce((t, r) => t + (r.value || 0), 0) });
+    return {
+      totalValue: valuation.reduce((t, r) => t + r.value, 0),
+      itemsValued: valuation.length,
+      reorderCount: getReorderAlerts(STATE.db).length,
+      expiredBatches: countExpiredBatches(STATE.db),
+      aging: { d030: bucket(aging.d030), d3160: bucket(aging.d3160), d6190: bucket(aging.d6190), d90plus: bucket(aging.d90plus) },
+    };
+  },
+  list_godowns: async (a) => agentList('godowns', a, null),
+  list_invoice_series: async () => ({ series: getInvoiceSeries(STATE.db) }),
+
+  get_cmp08: async (a) => {
+    const r = buildCmp08(STATE.db, STATE.manifest.company, a.fyStartYear, a.quarter);
+    if (!r.enabled) throw new AgentError('E_ENGINE', 'The composition scheme is off for this company. CMP-08 is for composition dealers; regular dealers file GSTR-1.');
+    return r;
+  },
+  get_form27eq: async (a) => buildForm27EQ(STATE.db, a.fyStartYear, a.quarter),
+  get_form27d_summary: async (a) => {
+    const { range, result } = queryForm27DSummary(STATE.db, a.fyStartYear, a.quarter);
+    return { fyStartYear: a.fyStartYear, quarter: a.quarter, range, vendors: agentRows(result) };
+  },
+  list_challan_templates: async () => ({ templates: TAX_CHALLAN_TEMPLATES }),
+  get_challan_template: async (a) => buildChallanTemplate(a.code, STATE.manifest),
+  list_bank_accounts: async () => ({ accounts: getBankAccounts(STATE.db) }),
+  get_bank_reconciliation: async (a) => {
+    const lines = getBankAccountLines(STATE.db, a.accountId, a.from, a.to);
+    return {
+      accountId: a.accountId, from: a.from, to: a.to, lines,
+      bookBalance: lines.reduce((t, ln) => t + (ln.debit - ln.credit), 0),
+      lastReconciliation: getLastBankReconciliation(STATE.db, a.accountId),
+    };
+  },
+  list_annotations: async (a) => ({ annotations: getAnnotations(STATE.db, { status: a.status, targetType: a.targetType, targetId: a.targetId }) }),
+
   list_proposals: async (a) => {
     const rows = [...BAHI_AGENT.proposals.values()].filter((p) => !a.status || p.status === a.status);
     return { proposals: rows.reverse().slice(0, a.limit).map(agentProposalView) };
@@ -23890,6 +24112,28 @@ const BAHI_AGENT_HANDLERS = {
     return { route: a.route };
   },
 };
+
+// A document list through its screen's own query, with the agent's filters and page.
+function agentRowsParsed(res) {
+  const rows = agentRows(res);
+  for (const row of rows) {
+    for (const k of Object.keys(row)) {
+      if (k.endsWith('_snapshot') && typeof row[k] === 'string') { try { row[k] = JSON.parse(row[k]); } catch (_) { /* leave the raw text */ } }
+    }
+  }
+  return rows;
+}
+
+function agentList(name, a, partyKey) {
+  const opts = { from: a.from, to: a.to, party: partyKey ? a[partyKey] : undefined, limit: a.limit, offset: a.offset };
+  return { rows: agentRowsParsed(queryList(STATE.db, name, opts)), total: queryListCount(STATE.db, name, opts), limit: a.limit === undefined ? null : a.limit, offset: a.offset || 0 };
+}
+
+function agentRegister(name, a) {
+  const rows = agentRows(queryList(STATE.db, name, { from: a.from, to: a.to }));
+  const sum = (k) => rows.reduce((t, r) => t + (r[k] || 0), 0);
+  return { from: a.from, to: a.to, rows, totals: { count: rows.length, subtotal: sum('subtotal'), cgst: sum('cgst'), sgst: sum('sgst'), igst: sum('igst'), total: sum('total') } };
+}
 
 function agentListMaster(table, cols, a) {
   // `table` and `cols` are literals from this file only — never caller input.

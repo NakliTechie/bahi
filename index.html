@@ -6038,7 +6038,7 @@ function computeFYNetProfit(db, fyStart, fyEnd) {
     FROM entries e
     JOIN entry_lines l ON l.entry_id = e.id
     JOIN accounts a ON a.id = l.account_id
-    WHERE e.posted_at BETWEEN ? AND ? AND a.type IN ('income', 'expense')
+    WHERE substr(e.posted_at, 1, 10) BETWEEN ? AND ? AND a.type IN ('income', 'expense')
     GROUP BY a.type
   `, [fyStart, fyEnd]);
   let income = 0, expense = 0;
@@ -6062,7 +6062,7 @@ async function postFYClosingEntry(db, fyStart, fyEnd) {
     FROM entries e
     JOIN entry_lines l ON l.entry_id = e.id
     JOIN accounts a ON a.id = l.account_id
-    WHERE e.posted_at BETWEEN ? AND ? AND a.type IN ('income', 'expense')
+    WHERE substr(e.posted_at, 1, 10) BETWEEN ? AND ? AND a.type IN ('income', 'expense')
     GROUP BY a.id, a.name, a.type
     HAVING dr > 0 OR cr > 0
   `, [fyStart, fyEnd]);
@@ -6144,7 +6144,7 @@ function getTrialBalance(db, asOfDate) {
   // JOIN produced two WHERE clauses → SQL syntax error (Trial Balance + Balance Sheet both dead
   // whenever an as-of date was set, which the view always does). `OR e.id IS NULL` preserves the
   // LEFT JOIN: accounts whose lines all fall after the as-of date (or have no lines) still appear.
-  const dateCond = asOfDate ? 'AND (e.posted_at <= ? OR e.id IS NULL)' : '';
+  const dateCond = asOfDate ? 'AND (substr(e.posted_at, 1, 10) <= ? OR e.id IS NULL)' : '';
   const r = db.exec(`
     SELECT
       a.id, a.name, a.type,
@@ -6173,7 +6173,7 @@ function getDayBook(db, fromDate, toDate) {
     SELECT e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
       (SELECT COALESCE(SUM(debit), 0) FROM entry_lines WHERE entry_id = e.id) AS total
     FROM entries e
-    WHERE e.posted_at BETWEEN ? AND ?
+    WHERE substr(e.posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY e.posted_at, e.id
   `, [fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -6190,7 +6190,7 @@ function getAccountLedger(db, accountId, fromDate, toDate) {
     FROM entry_lines l
     JOIN entries e ON e.id = l.entry_id
     LEFT JOIN accounts a ON a.id = l.account_id
-    WHERE l.account_id = ? AND e.posted_at BETWEEN ? AND ?
+    WHERE l.account_id = ? AND substr(e.posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY e.posted_at, e.id, l.id
   `, [accountId, fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -6602,7 +6602,7 @@ function getMovementHistory(db, itemId, fromDate, toDate) {
   const r = db.exec(`
     SELECT id, posted_at, voucher_type, voucher_ref, movement_type, qty, rate, value, item_name_snapshot, godown_name_snapshot, batch_id
     FROM stock_movements
-    WHERE item_id = ? AND posted_at BETWEEN ? AND ?
+    WHERE item_id = ? AND substr(posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY posted_at, id
   `, [itemId, fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -8552,8 +8552,8 @@ const SAP_JE_LINE_FIELDS = [
 function buildSapJournalEntries(db, { from, to, crosswalk }) {
   const partyMap = buildSapEntryPartyMap(db);
   const params = [], where = [];
-  if (from) { where.push('e.posted_at >= ?'); params.push(from); }
-  if (to)   { where.push('e.posted_at <= ?'); params.push(to); }
+  if (from) { where.push('substr(e.posted_at, 1, 10) >= ?'); params.push(from); }
+  if (to)   { where.push('substr(e.posted_at, 1, 10) <= ?'); params.push(to); }
   const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const eR = db.exec(`SELECT e.id, e.posted_at, e.voucher_ref, e.narration
     FROM entries e ${clause} ORDER BY e.posted_at, e.id`, params);
@@ -9109,7 +9109,7 @@ function getUnreviewedEntries(db, sinceDate) {
   // sinceDate is optional — if provided, only entries posted on/after that date.
   const params = [];
   let dateClause = '';
-  if (sinceDate) { dateClause = 'AND e.posted_at >= ?'; params.push(sinceDate); }
+  if (sinceDate) { dateClause = 'AND substr(e.posted_at, 1, 10) >= ?'; params.push(sinceDate); }
   const r = db.exec(`
     SELECT e.id, e.posted_at, e.voucher_type, e.voucher_ref, e.narration,
       (SELECT COALESCE(SUM(debit), 0) FROM entry_lines WHERE entry_id = e.id) AS amount
@@ -9241,7 +9241,7 @@ function buildReviewReportData(db, asOfDate) {
     FROM entry_lines l
     JOIN entries e ON e.id = l.entry_id
     LEFT JOIN accounts a ON a.id = l.account_id
-    WHERE a.type IN ('income', 'expense') AND e.posted_at <= ?
+    WHERE a.type IN ('income', 'expense') AND substr(e.posted_at, 1, 10) <= ?
     GROUP BY a.type, name
     ORDER BY a.type DESC, name
   `, [asOfDate || nowIso()]);
@@ -9793,7 +9793,7 @@ function getBankAccountLines(db, accountId, fromDate, toDate) {
       l.debit, l.credit
     FROM entry_lines l
     JOIN entries e ON e.id = l.entry_id
-    WHERE l.account_id = ? AND e.posted_at BETWEEN ? AND ?
+    WHERE l.account_id = ? AND substr(e.posted_at, 1, 10) BETWEEN ? AND ?
     ORDER BY e.posted_at, e.id, l.id
   `, [accountId, fromDate, toDate]);
   if (!r.length || !r[0].values.length) return [];
@@ -17928,7 +17928,7 @@ function renderStockMovements(main) {
     const from = $('sm-from').value, to = $('sm-to').value;
     const r = STATE.db.exec(`
       SELECT id, posted_at, voucher_type, voucher_ref, movement_type, qty, rate, value, item_name_snapshot, godown_name_snapshot
-      FROM stock_movements WHERE posted_at BETWEEN ? AND ?
+      FROM stock_movements WHERE substr(posted_at, 1, 10) BETWEEN ? AND ?
       ORDER BY posted_at DESC, id DESC LIMIT 1000
     `, [from, to]);
     if (!r.length || !r[0].values.length) {

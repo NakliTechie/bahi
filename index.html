@@ -9542,14 +9542,17 @@ async function recordTcsCollection(db, opts) {
 // === Form 26Q / 27EQ / 27D builders ===
 
 function fyQuarterRange(fyStartYear, quarter) {
-  // FY in India runs April-March. Q1 = Apr-Jun, Q2 = Jul-Sep, Q3 = Oct-Dec, Q4 = Jan-Mar
-  const startMonth = (quarter - 1) * 3 + 3; // Q1→Apr (idx 3)
-  const startDate = new Date(fyStartYear, startMonth, 1);
-  const endDate = new Date(fyStartYear, startMonth + 3, 0); // last day of the quarter end month
-  return {
-    start: startDate.toISOString().slice(0, 10),
-    end: endDate.toISOString().slice(0, 10),
-  };
+  // FY in India runs April-March. Q1 = Apr-Jun, Q2 = Jul-Sep, Q3 = Oct-Dec, Q4 = Jan-Mar.
+  // Built as calendar strings, never through toISOString(): a local-midnight Date converted
+  // to UTC lands on the previous day east of Greenwich. In IST that ran every quarter one day
+  // early (Q1 = 31 Mar – 29 Jun), so 30 June's TDS was reported in Q2 and 31 March's in the
+  // next financial year.
+  const month = ((quarter - 1) * 3 + 3) % 12 + 1;   // Q1 → 4 (April) … Q4 → 1 (January)
+  const year = quarter === 4 ? fyStartYear + 1 : fyStartYear;
+  const endMonth = month + 2;
+  const lastDay = new Date(Date.UTC(year, endMonth, 0)).getUTCDate();
+  const pad = (n) => String(n).padStart(2, '0');
+  return { start: `${year}-${pad(month)}-01`, end: `${year}-${pad(endMonth)}-${pad(lastDay)}` };
 }
 
 function buildForm26Q(db, fyStartYear, quarter) {
@@ -15641,11 +15644,7 @@ function renderCmp08(main) {
     out.innerHTML = '';
     const q = parseInt($('cmp-q').value, 10);
     const y = parseInt($('cmp-y').value, 10);
-    const startMonth = (q - 1) * 3 + 3; // Q1 → April (month index 3)
-    const startDate = new Date(y, startMonth, 1);
-    const endDate = new Date(y, startMonth + 3, 0);
-    const start = startDate.toISOString().slice(0, 10);
-    const end = endDate.toISOString().slice(0, 10);
+    const { start, end } = fyQuarterRange(y, q);
 
     // Aggregate turnover from posted invoices in the period (composition mode → no GST)
     const r = STATE.db.exec(`

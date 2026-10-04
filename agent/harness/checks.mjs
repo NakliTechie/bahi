@@ -25,10 +25,10 @@ const only = (() => { const i = process.argv.indexOf('--only'); return i > -1 ? 
 // sessions to evaluate a single check, which is what saturated the machine.
 const BATCH_CHECKS = {
   noFile:     ['C1', 'C2', 'C3', 'C4', 'C5'],
-  sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22'],
+  sample:     ['C6', 'C7', 'C8', 'C9', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18', 'C19', 'C20', 'C22', 'C42'],
   readOnly:   ['C21'],
   reconcile:  ['C23', 'C24', 'C25', 'C26', 'C27'],
-  structural: ['C28', 'C30', 'C33', 'C34', 'C35'],
+  structural: ['C28', 'C30', 'C33', 'C34', 'C35', 'C43'],
   parity:     ['C29', 'C31'],
   signing:    ['C32'],
   doors:      ['C36', 'C37', 'C38', 'C39', 'C40', 'C41'],
@@ -132,6 +132,7 @@ async function batchSample() {
     { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: '' } },             // 38
     { command: 'post_journal', args: { lines: [{ accountId: 1, debit: 100 }, { accountId: 2, credit: 100 }], agentName: 'checks-ok_1.2' } },// 39 must succeed
     { command: 'list_audit_entries', args: { limit: 5 } },                                                                                     // 40
+    ...[1, 2, 3, 4].map((quarter) => ({ command: 'get_form26q', args: { fyStartYear: 2025, quarter } })),                                   // 41..44
   ] });
   const R = run.results;
 
@@ -248,6 +249,16 @@ async function batchSample() {
   record('C22', 'agentName cannot forge a misleading audit actor',
     forged.every(Boolean) && legit && noForgedActor,
     `colon/multicolon/space/empty = ${forged.join('/')} legitActor=${legit ? data(R[39]).actor : 'FAILED'} tailActors=${tail.map((e) => e.actor).join(',')}`);
+
+  // C42 — a TDS quarter is the statutory calendar quarter, in IST. fyQuarterRange built each
+  // bound as a local-midnight Date and converted it with toISOString(), which in IST lands on
+  // the previous day: Q1 ran 31 Mar – 29 Jun, so 30 June's TDS went into Q2 and 31 March's
+  // into the next financial year. Reintroduce by restoring the toISOString() construction.
+  const WANT = [['2025-04-01', '2025-06-30'], ['2025-07-01', '2025-09-30'], ['2025-10-01', '2025-12-31'], ['2026-01-01', '2026-03-31']];
+  const got = [41, 42, 43, 44].map((i) => (ok(R[i]) && data(R[i]).range ? [data(R[i]).range.start, data(R[i]).range.end] : null));
+  record('C42', 'TDS quarters are the calendar quarters Apr–Jun … Jan–Mar, evaluated in IST',
+    got.every((g, i) => g && g[0] === WANT[i][0] && g[1] === WANT[i][1]),
+    got.map((g, i) => `Q${i + 1} ${g ? g.join('..') : 'ERR'}`).join(' '));
   return run;
 }
 
@@ -557,6 +568,13 @@ async function batchStructural() {
       formSrc.length > 0 && found.length === 0 && formSrc.includes(v.engineCall),
       formSrc.length === 0 ? `could not locate ${v.formFn}` : `formBytes=${formSrc.length} callsEngine=${formSrc.includes(v.engineCall)} banned=${found.join(',') || 'none'}`);
   }
+
+  // C43 — CMP-08 takes its quarter from fyQuarterRange, the one function C42 holds to the
+  // calendar. Its own copy of the date arithmetic had the same IST shift.
+  const cmp = formSourceOf('renderCmp08');
+  record('C43', 'CMP-08 derives its quarter from fyQuarterRange, with no date arithmetic of its own',
+    cmp.length > 0 && cmp.includes('fyQuarterRange(') && !cmp.includes('toISOString()'),
+    cmp.length === 0 ? 'could not locate renderCmp08' : `usesShared=${cmp.includes('fyQuarterRange(')} ownToISOString=${cmp.includes('toISOString()')}`);
 
   for (const v of VOUCHERS) {
     // Structural: the form delegates and carries no posting path of its own.

@@ -126,7 +126,9 @@ const INSTALL_FAKE_MODEL_CONTEXT = () => {
 export async function runCalls({ book = 'fresh', bookFile = null, calls = [], tamper = null, futureFormat = false, fakeModelContext = false } = {}) {
   const { server, port } = await serve(REPO);
   const browser = await chromium.launch({ headless: true });
-  const ctx = await browser.newContext();
+  // Bahi's users keep books in India, so every check runs in IST. A positive UTC offset is what
+  // exposed fyQuarterRange shifting each quarter a day early; a UTC machine could never see it.
+  const ctx = await browser.newContext({ timezoneId: 'Asia/Kolkata' });
   const page = await ctx.newPage();
 
   const consoleErrors = [];

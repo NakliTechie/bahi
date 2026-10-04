@@ -137,6 +137,12 @@ const DEFECTS = [
   { id: 'C41', target: 'C41', note: 'register only some tools on WebMCP — skip the write tools',
     find: "    const definition = {\n      name,\n      title: spec.title,",
     replace: "    if (spec.kind === 'write') continue;\n    const definition = {\n      name,\n      title: spec.title," },
+  { id: 'C42', target: 'C42', note: 'build quarter bounds through toISOString() on local-midnight dates (the IST shift)',
+    find: "  return { start: `${year}-${pad(month)}-01`, end: `${year}-${pad(endMonth)}-${pad(lastDay)}` };",
+    replace: "  return { start: new Date(year, month - 1, 1).toISOString().slice(0, 10), end: new Date(year, endMonth, 0).toISOString().slice(0, 10) };" },
+  { id: 'C43', target: 'C43', note: 'CMP-08 computes its own quarter dates again',
+    find: "    const { start, end } = fyQuarterRange(y, q);",
+    replace: "    const start = new Date(y, (q - 1) * 3 + 3, 1).toISOString().slice(0, 10);\n    const end = new Date(y, (q - 1) * 3 + 6, 0).toISOString().slice(0, 10);" },
 ];
 
 // A defect may need further edits, applied in order, to stay syntactically valid or to

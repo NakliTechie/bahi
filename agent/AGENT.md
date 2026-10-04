@@ -220,7 +220,7 @@ echo '[{"command":"run_selftest"}]' | node drive.mjs --book pharma --calls -
 a sample name from `sample-data/`. Samples are copied to a temp dir first; the repo's books are
 never written to.
 
-`node checks.mjs` runs the full assertion suite (41 checks). Every check prints the numbers it
+`node checks.mjs` runs the full assertion suite (43 checks, all in IST). Every check prints the numbers it
 compared, passing or failing, so the output is evidence rather than a row of the word PASS.
 `--only C24,C29` runs just those, and skips every batch that holds none of them.
 
@@ -230,6 +230,7 @@ compared, passing or failing, so the output is evidence rather than a row of the
 | C23–C27 | **reconciliation**: two or three independent computations of one quantity must agree |
 | C28–C35 | **two doors, one core**: forms delegate to the engine; invoice and purchase post identical rows through the form and the agent face, with different audit actors; signing keys survive a save |
 | C36–C41 | **doors and approval**: writes stage until approved; rejected and withdrawn proposals never apply; person-only acts are refused on every door; applied writes record door, caller, proposal and approver; the channel starts closed; WebMCP carries exactly the declared tools |
+| C42–C43 | **quarters**: TDS and CMP-08 periods are the calendar quarters in IST, from one shared function |
 
 `node prove-red.mjs` reintroduces each defect those checks guard, one at a time, and confirms the
 matching check goes **red** — then restores the file and confirms green. A check never seen to fail

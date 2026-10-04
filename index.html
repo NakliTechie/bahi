@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Chirag Patnaik">
 <title>Bahi — Browser-native accounting · alpha</title>
+<meta name="description" content="Double-entry books for an Indian business in one browser tab: invoices, GST returns, TDS and TCS, inventory and your CA's review, kept in one file on your own disk.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://bahi.naklitechie.com/">
+<meta property="og:title" content="Bahi — your books, in one file on your own disk">
+<meta property="og:description" content="Double-entry books for an Indian business in one browser tab: invoices, GST returns, TDS and TCS, inventory and your CA's review, kept in one file on your own disk.">
+<meta property="og:image" content="https://bahi.naklitechie.com/social.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://bahi.naklitechie.com/social.png">
 <link rel="icon" href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23FF9933'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='system-ui,-apple-system,sans-serif' font-size='18' font-weight='700' fill='%23ffffff'%3EB%3C/text%3E%3C/svg%3E">
 <style>
 :root{
@@ -13866,53 +13876,47 @@ function renderInvoiceForm(main) {
     postBtn.disabled = totals.total <= 0;
   }
 
-  // Gather the form's fields, hand them to the voucher engine, and report. Everything
-  // between validation and the ledger post now lives in createInvoice(), which
-  // window.bahi calls too — so the button and the agent cannot drift apart.
+  // Gather the form's fields, submit them to the create_invoice tool through bahiUi, and
+  // report. The tool is the one an agent's approved proposal runs, so the button and the
+  // agent cannot drift apart.
   async function doPostInvoice() {
-    try {
-      const customer = customers.find(c => c.id === form.customerId);
-      if (!customer) { toast('Pick a customer', 'err'); return; }
-
-      const result = await createInvoice(STATE.db, {
-        customerId: customer.id,
-        invoiceDate: $('iv-date').value || nowIso().slice(0, 10),
-        invoiceNumber: $('iv-number').value,
-        series: form.seriesName || 'Domestic',
-        placeOfSupply: form.placeOfSupply || null,
-        notes: $('iv-notes').value.trim() || null,
-        isComposition: !!form.isComposition,
-        // Text inputs are parsed HERE; the engine boundary is integer paise.
-        lines: form.lines.map(ln => ({
-          itemId: ln.itemId ? parseInt(ln.itemId, 10) : null,
-          description: ln.description || '',
-          hsnSac: ln.hsnSac || null,
-          quantity: parseFloat(ln.quantity) || 0,
-          rate: parseRupees(ln.rate),
-          discount: parseRupees(ln.discount),
-          taxRate: ln.tax_rate || 0,
-          cess: (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null,
-        })),
-        advanceAllocations: [...form.advanceAllocations.entries()].map(([advanceId, amount]) => ({ advanceId, amount })),
-      });
-
-      for (const w of result.warnings) {
-        if (w.stage === 'stock') toast('Invoice posted, but stock effect failed: ' + w.message, 'err');
-        else toast('Invoice posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
-      }
-
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      const msg = result.advancesApplied > 0
-        ? `Invoice ${result.invoiceNumber} posted (${fmtINR(result.totals.total)}, ${fmtINR(result.advancesApplied)} advance applied) and saved`
-        : `Invoice ${result.invoiceNumber} posted (${fmtINR(result.totals.total)}) and saved`;
-      toast(msg, 'ok');
-      nav('#/invoices');
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
+    if (!customers.find(c => c.id === form.customerId)) { toast('Pick a customer', 'err'); return; }
+    // Text inputs are parsed HERE; the tool takes integer paise. A row with no description or
+    // nothing taxable is dropped by the engine's own rule, as it always was.
+    const lines = form.lines.map(ln => ({
+      itemId: ln.itemId ? parseInt(ln.itemId, 10) : null,
+      description: ln.description || '',
+      hsnSac: ln.hsnSac || null,
+      quantity: parseFloat(ln.quantity) || 0,
+      rate: parseRupees(ln.rate),
+      discount: parseRupees(ln.discount),
+      taxRate: ln.tax_rate || 0,
+      cess: (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null,
+    })).filter(ln => ln.description && voucherLineTaxable(ln) > 0);
+    if (!lines.length) { toast('No valid line: each needs a description and a taxable amount above zero', 'err'); return; }
+    // Shared with create_invoice: GST routing, the ledger entry, stock and advance adjustment.
+    const r = await bahiUi('create_invoice', {
+      customerId: form.customerId,
+      invoiceDate: $('iv-date').value || undefined,
+      invoiceNumber: $('iv-number').value || undefined,
+      series: form.seriesName || 'Domestic',
+      ...(form.placeOfSupply ? { placeOfSupply: form.placeOfSupply } : {}),
+      notes: $('iv-notes').value,
+      isComposition: !!form.isComposition,
+      lines,
+      advanceAllocations: [...form.advanceAllocations.entries()].map(([advanceId, amount]) => ({ advanceId: Number(advanceId), amount })).filter(al => al.amount > 0),
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    for (const w of r.data.warnings || []) {
+      if (w.stage === 'stock') toast('Invoice posted, but stock effect failed: ' + w.message, 'err');
+      else toast('Invoice posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
     }
+    if (!r.data.saved) { render(); return; }
+    const msg = r.data.advancesApplied > 0
+      ? `Invoice ${r.data.invoiceNumber} posted (${fmtINR(r.data.totals.total)}, ${fmtINR(r.data.advancesApplied)} advance applied) and saved`
+      : `Invoice ${r.data.invoiceNumber} posted (${fmtINR(r.data.totals.total)}) and saved`;
+    toast(msg, 'ok');
+    nav('#/invoices');
   }
 
 }
@@ -14552,33 +14556,27 @@ function renderPaymentForm(main) {
     postBtn.disabled = total <= 0 || !form.bankAccountId;
   }
 
-  // Gather, delegate, report. createPayment() is what window.bahi calls too.
+  // Gather, submit through bahiUi to create_payment, report.
   async function doPostPayment() {
-    try {
-      const customer = customers.find(c => c.id === form.customerId);
-      if (!customer) { toast('Pick a customer', 'err'); return; }
-      if (!form.bankAccountId) { toast('Pick a bank/cash account', 'err'); return; }
-
-      const result = await createPayment(STATE.db, {
-        customerId: customer.id,
-        bankAccountId: form.bankAccountId,
-        paymentDate: $('pf-date').value,
-        paymentNumber: $('pf-number').value,
-        paymentMode: $('pf-mode').value,
-        reference: $('pf-ref').value.trim() || null,
-        notes: $('pf-notes').value.trim() || null,
-        allocations: [...form.allocations.entries()].map(([invoiceId, amount]) => ({ invoiceId, amount })),
-      });
-
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(`Payment ${result.paymentNumber} posted (${fmtINR(result.amount)}) and saved`, 'ok');
-      nav('#/payments');
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
-    }
+    if (!customers.find(c => c.id === form.customerId)) { toast('Pick a customer', 'err'); return; }
+    if (!form.bankAccountId) { toast('Pick a bank/cash account', 'err'); return; }
+    const allocations = [...form.allocations.entries()].map(([invoiceId, amount]) => ({ invoiceId: Number(invoiceId), amount })).filter(al => al.amount > 0);
+    if (!allocations.length) { toast('Allocate the receipt to at least one invoice', 'err'); return; }
+    // Shared with create_payment.
+    const r = await bahiUi('create_payment', {
+      customerId: form.customerId,
+      bankAccountId: Number(form.bankAccountId),
+      paymentDate: $('pf-date').value || undefined,
+      paymentNumber: $('pf-number').value || undefined,
+      paymentMode: $('pf-mode').value,
+      reference: $('pf-ref').value,
+      notes: $('pf-notes').value,
+      allocations,
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(`Payment ${r.data.paymentNumber} posted (${fmtINR(r.data.amount)}) and saved`, 'ok');
+    nav('#/payments');
   }
 }
 
@@ -16247,46 +16245,38 @@ function renderPurchaseForm(main, opts = {}) {
     postBtn.disabled = totals.total <= 0;
   }
 
-  // Gather, delegate, report. The posting path lives in createPurchase(), which
-  // window.bahi calls too.
+  // Gather, submit through bahiUi to create_purchase, report.
   async function doPostPurchase() {
-    try {
-      const vendor = vendors.find(v => v.id === form.vendorId);
-      if (!vendor) { toast('Pick a vendor', 'err'); return; }
-      if (!$('pu-bill').value.trim()) { toast('Vendor bill number is required', 'err'); return; }
-
-      const result = await createPurchase(STATE.db, {
-        vendorId: vendor.id,
-        billNumber: $('pu-bill').value.trim(),
-        billDate: $('pu-date').value,
-        internalRef: $('pu-ref').value,
-        placeOfSupply: form.placeOfSupply || null,
-        notes: $('pu-notes').value.trim() || null,
-        reverseCharge: $('pu-rcm').value === '1',
-        itcEligible: $('pu-itc').value === '1',
-        aiAssisted: !!opts.aiAssisted,
-        lines: form.lines.map(ln => ({
-          itemId: ln.itemId ? parseInt(ln.itemId, 10) : null,
-          description: ln.description || '',
-          hsnSac: ln.hsnSac || null,
-          quantity: parseFloat(ln.quantity) || 0,
-          rate: parseRupees(ln.rate),
-          taxRate: ln.tax_rate || 0,
-          cess: (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null,
-        })),
-      });
-
-      for (const w of result.warnings) toast('Purchase posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
-
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(`Purchase ${result.billNumber} posted (${fmtINR(result.totals.total)}) and saved`, 'ok');
-      nav('#/purchases');
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
-    }
+    if (!vendors.find(v => v.id === form.vendorId)) { toast('Pick a vendor', 'err'); return; }
+    if (!$('pu-bill').value.trim()) { toast('Vendor bill number is required', 'err'); return; }
+    const lines = form.lines.map(ln => ({
+      itemId: ln.itemId ? parseInt(ln.itemId, 10) : null,
+      description: ln.description || '',
+      hsnSac: ln.hsnSac || null,
+      quantity: parseFloat(ln.quantity) || 0,
+      rate: parseRupees(ln.rate),
+      taxRate: ln.tax_rate || 0,
+      cess: (ln.cess != null && String(ln.cess).trim() !== '') ? parseRupees(ln.cess) : null,
+    })).filter(ln => ln.description && voucherLineTaxable(ln) > 0);
+    if (!lines.length) { toast('No valid line: each needs a description and a taxable amount above zero', 'err'); return; }
+    // Shared with create_purchase: ITC and reverse-charge routing, the ledger entry and stock.
+    const r = await bahiUi('create_purchase', {
+      vendorId: form.vendorId,
+      billNumber: $('pu-bill').value.trim(),
+      billDate: $('pu-date').value || undefined,
+      internalRef: $('pu-ref').value || undefined,
+      ...(form.placeOfSupply ? { placeOfSupply: form.placeOfSupply } : {}),
+      notes: $('pu-notes').value,
+      reverseCharge: $('pu-rcm').value === '1',
+      itcEligible: $('pu-itc').value === '1',
+      aiAssisted: !!opts.aiAssisted,
+      lines,
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    for (const w of r.data.warnings || []) toast('Purchase posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
+    if (!r.data.saved) { render(); return; }
+    toast(`Purchase ${r.data.billNumber} posted (${fmtINR(r.data.totals.total)}) and saved`, 'ok');
+    nav('#/purchases');
   }
 }
 
@@ -16867,37 +16857,29 @@ function renderCreditNoteForm(main) {
     recomputeSummary();
   }, 0);
 
-  // Gather, delegate, report. createCreditNote() is what window.bahi calls too.
+  // Gather, submit through bahiUi to create_credit_note, report.
   async function doPostCN() {
-    try {
-      const inv = invoices.find(i => i.id === form.invoiceId);
-      if (!inv) { toast('Pick an invoice', 'err'); return; }
-      const isPartial = $('cn-mode').value === 'partial';
-      const partialAmount = isPartial ? parseRupees($('cn-partial').value) : null;
-      if (isPartial && (partialAmount <= 0 || partialAmount > inv.total)) {
-        toast(`Partial amount must be between ₹0.01 and ${fmtINR(inv.total)}`, 'err'); return;
-      }
-
-      const result = await createCreditNote(STATE.db, {
-        invoiceId: inv.id,
-        cnDate: $('cn-date').value,
-        cnNumber: $('cn-num').value,
-        reason: $('cn-reason').value,
-        notes: $('cn-notes').value.trim() || null,
-        amount: partialAmount,
-      });
-
-      for (const w of result.warnings) toast('Credit note posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
-
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(`Credit note ${result.cnNumber} posted (${fmtINR(result.totals.total)})`, 'ok');
-      nav('#/credit-notes');
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
+    const inv = invoices.find(i => i.id === form.invoiceId);
+    if (!inv) { toast('Pick an invoice', 'err'); return; }
+    const isPartial = $('cn-mode').value === 'partial';
+    const partialAmount = isPartial ? parseRupees($('cn-partial').value) : null;
+    if (isPartial && (partialAmount <= 0 || partialAmount > inv.total)) {
+      toast(`Partial amount must be between ₹0.01 and ${fmtINR(inv.total)}`, 'err'); return;
     }
+    // Shared with create_credit_note.
+    const r = await bahiUi('create_credit_note', {
+      invoiceId: inv.id,
+      cnDate: $('cn-date').value || undefined,
+      cnNumber: $('cn-num').value || undefined,
+      reason: $('cn-reason').value,
+      notes: $('cn-notes').value,
+      ...(isPartial ? { amount: partialAmount } : {}),
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    for (const w of r.data.warnings || []) toast('Credit note posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
+    if (!r.data.saved) { render(); return; }
+    toast(`Credit note ${r.data.cnNumber} posted (${fmtINR(r.data.totals.total)})`, 'ok');
+    nav('#/credit-notes');
   }
 }
 
@@ -17029,37 +17011,29 @@ function renderDebitNoteForm(main) {
     recomputeSummary();
   }, 0);
 
-  // Gather, delegate, report. createDebitNote() is what window.bahi calls too.
+  // Gather, submit through bahiUi to create_debit_note, report.
   async function doPostDN() {
-    try {
-      const pur = purchases.find(p => p.id === form.purchaseId);
-      if (!pur) { toast('Pick a purchase', 'err'); return; }
-      const isPartial = $('dn-mode').value === 'partial';
-      const partialAmount = isPartial ? parseRupees($('dn-partial').value) : null;
-      if (isPartial && (partialAmount <= 0 || partialAmount > pur.total)) {
-        toast(`Amount must be between ₹0.01 and ${fmtINR(pur.total)}`, 'err'); return;
-      }
-
-      const result = await createDebitNote(STATE.db, {
-        purchaseId: pur.id,
-        dnDate: $('dn-date').value,
-        dnNumber: $('dn-num').value,
-        reason: $('dn-reason').value,
-        notes: $('dn-notes').value.trim() || null,
-        amount: partialAmount,
-      });
-
-      for (const w of result.warnings) toast('Debit note posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
-
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(`Debit note ${result.dnNumber} posted (${fmtINR(result.totals.total)})`, 'ok');
-      nav('#/debit-notes');
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
+    const pur = purchases.find(p => p.id === form.purchaseId);
+    if (!pur) { toast('Pick a purchase', 'err'); return; }
+    const isPartial = $('dn-mode').value === 'partial';
+    const partialAmount = isPartial ? parseRupees($('dn-partial').value) : null;
+    if (isPartial && (partialAmount <= 0 || partialAmount > pur.total)) {
+      toast(`Amount must be between ₹0.01 and ${fmtINR(pur.total)}`, 'err'); return;
     }
+    // Shared with create_debit_note.
+    const r = await bahiUi('create_debit_note', {
+      purchaseId: pur.id,
+      dnDate: $('dn-date').value || undefined,
+      dnNumber: $('dn-num').value || undefined,
+      reason: $('dn-reason').value,
+      notes: $('dn-notes').value,
+      ...(isPartial ? { amount: partialAmount } : {}),
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    for (const w of r.data.warnings || []) toast('Debit note posted, but ' + w.stage + ' step failed: ' + w.message, 'err');
+    if (!r.data.saved) { render(); return; }
+    toast(`Debit note ${r.data.dnNumber} posted (${fmtINR(r.data.totals.total)})`, 'ok');
+    nav('#/debit-notes');
   }
 }
 
@@ -17161,30 +17135,23 @@ function renderJournalVoucherForm(main) {
     postBtn.disabled = !balanced || totalDr <= 0;
   }
   async function doPost() {
-    try {
-      const ref = $('jv-ref').value.trim();
-      if (!ref) { toast('Voucher reference is required', 'err'); return; }
-      const lines = form.lines
-        .map(ln => ({ accountId: ln.accountId, debit: parseRupees(ln.debit), credit: parseRupees(ln.credit) }))
-        .filter(ln => ln.debit > 0 || ln.credit > 0);
-      if (lines.length < 2) { toast('At least 2 lines required', 'err'); return; }
-      const result = await postEntry(STATE.db, {
-        voucherType: 'journal',
-        voucherRef: ref,
-        narration: $('jv-narr').value.trim() || `Journal voucher ${ref}`,
-        postedAt: $('jv-date').value,
-        actor: auditActor(),
-        lines,
-      });
-      setSaveStatus('unsaved');
-      const ok = await persistKhata();
-      if (!ok) { render(); return; }
-      toast(`Journal voucher posted (entry #${result.entryId})`, 'ok');
-      nav('#/day-book');
-    } catch (e) {
-      console.error(e);
-      toast('Post failed: ' + e.message, 'err');
-    }
+    const ref = $('jv-ref').value.trim();
+    if (!ref) { toast('Voucher reference is required', 'err'); return; }
+    const lines = form.lines
+      .map(ln => ({ accountId: parseInt(ln.accountId, 10) || 0, debit: parseRupees(ln.debit), credit: parseRupees(ln.credit) }))
+      .filter(ln => ln.debit > 0 || ln.credit > 0);
+    if (lines.length < 2) { toast('At least 2 lines required', 'err'); return; }
+    // Shared with post_journal: the account and balance checks, the period-lock flag, the posting.
+    const r = await bahiUi('post_journal', {
+      lines,
+      voucherRef: ref,
+      narration: $('jv-narr').value.trim() || `Journal voucher ${ref}`,
+      postedAt: $('jv-date').value || undefined,
+    });
+    if (!r.ok) { toast('Post failed: ' + r.error.message, 'err'); return; }
+    if (!r.data.saved) { render(); return; }
+    toast(`Journal voucher posted (entry #${r.data.entryId})`, 'ok');
+    nav('#/day-book');
   }
 }
 
@@ -23599,6 +23566,9 @@ const BAHI_AGENT_TOOLS = {
       placeOfSupply: { type: 'string', maxLength: 8, pattern: '^[A-Z]{2}$', desc: 'Two-letter state code; defaults to the customer\'s state.' },
       notes:         { type: 'string', maxLength: 2000 },
       isComposition: { type: 'bool', default: false },
+      advanceAllocations: { type: 'array', maxItems: 100, items: { type: 'object', properties: {
+        advanceId: { type: 'integer', minimum: 1 }, amount: { type: 'integer', minimum: 1, description: 'Integer paise of the advance to adjust against this invoice.' } }, required: ['advanceId', 'amount'] },
+        desc: 'Open advances of this customer to adjust against the invoice; see list_advances.' },
       agentName:     AGENT_NAME_PARAM,
     } },
   create_purchase: { title: 'Record a purchase', kind: 'write', scope: 'file', route: '#/purchase/new',
@@ -23613,6 +23583,7 @@ const BAHI_AGENT_TOOLS = {
       notes:         { type: 'string', maxLength: 2000 },
       reverseCharge: { type: 'bool', default: false },
       itcEligible:   { type: 'bool', default: true },
+      aiAssisted:    { type: 'bool', default: false, desc: 'Set by the person\'s own Smart Capture when it drafted this purchase.' },
       agentName:     AGENT_NAME_PARAM,
     } },
   create_payment: { title: 'Record a customer receipt', kind: 'write', scope: 'file', route: '#/payment/new',
@@ -23623,7 +23594,7 @@ const BAHI_AGENT_TOOLS = {
       allocations:   { type: 'array', required: true, minItems: 1, maxItems: 500, items: AGENT_ALLOCATION },
       paymentDate:   { type: 'date', desc: 'Defaults to today.' },
       paymentNumber: { type: 'string', maxLength: 60 },
-      paymentMode:   { type: 'string', maxLength: 20, enum: ['NEFT', 'RTGS', 'IMPS', 'UPI', 'Cheque', 'Cash', 'Card', 'Other'] },
+      paymentMode:   { type: 'string', maxLength: 20, enum: ADVANCE_MODES },
       reference:     { type: 'string', maxLength: 120 },
       notes:         { type: 'string', maxLength: 2000 },
       agentName:     AGENT_NAME_PARAM,
@@ -23645,7 +23616,7 @@ const BAHI_AGENT_TOOLS = {
       purchaseId: { type: 'int', required: true, min: 1 },
       dnDate:     { type: 'date', desc: 'Defaults to today.' },
       dnNumber:   { type: 'string', maxLength: 60 },
-      reason:     { type: 'string', maxLength: 60, enum: ['purchase-return', 'rate-difference', 'quality-issue', 'other'] },
+      reason:     { type: 'string', maxLength: 60, enum: ['purchase-return', 'rate-difference', 'quality', 'other'] },
       notes:      { type: 'string', maxLength: 2000 },
       amount:     { type: 'int', min: 1, desc: 'Integer paise for a partial note. Omit for a full reversal.' },
       agentName:  AGENT_NAME_PARAM,
@@ -23897,43 +23868,43 @@ for (const spec of Object.values(BAHI_AGENT_TOOLS)) spec.inputSchema = agentInpu
 // Acts the agent face declares but no door can call. The person's own authorship,
 // judgement or authorisation is the point of each, and the reason says why.
 const BAHI_AGENT_PERSON_ONLY = [
-  { name: 'open_books', title: 'Open, create or restore books', route: '#/workspace',
+  { name: 'open_books', ui: ['handleCreateNew', 'createNewKhataFile', 'switchToCompany', 'refreshCompanySwitcher'], title: 'Open, create or restore books', route: '#/workspace',
     description: 'Choose a .khata to open, create a new company, or restore one from a backup.',
     reason: 'The browser\'s file picker answers only to a person, and which books this tab holds is your choice.' },
-  { name: 'close_financial_year', title: 'Close the financial year', route: '#/fy-rollover',
+  { name: 'close_financial_year', ui: ['renderFYRollover', 'postFYClosingEntry'], title: 'Close the financial year', route: '#/fy-rollover',
     description: 'The year-end rollover wizard.', reason: 'An irreversible year-end close stays a deliberate human act.' },
-  { name: 'lock_period', title: 'Lock a filed period', route: '#/period-locks',
+  { name: 'lock_period', ui: ['renderPeriodLocks'], title: 'Lock a filed period', route: '#/period-locks',
     description: 'Mark a GST period as filed.', reason: 'Locking a filed period is a compliance declaration.' },
-  { name: 'ca_sign_off', title: 'CA review and sign-off', route: '#/ca/review',
+  { name: 'ca_sign_off', ui: ['renderCaReview', 'markEntryReviewed', 'bulkMarkReviewed'], title: 'CA review and sign-off', route: '#/ca/review',
     description: 'Review entries and sign off as the CA.', reason: 'A CA\'s sign-off is their professional judgement.' },
-  { name: 'reconcile_branches', title: 'Merge divergent books', route: '#/reconcile',
+  { name: 'reconcile_branches', ui: ['renderReconcile', 'doMerge'], title: 'Merge divergent books', route: '#/reconcile',
     description: 'Merge two divergent copies of the books.', reason: 'Merging needs a judgement on each conflict.' },
-  { name: 'run_sql', title: 'Run raw SQL', route: '#/debug',
-    description: 'The Debug Console.', reason: 'Raw SQL bypasses validation, double entry and attribution. It serves a person at the keyboard.' },
-  { name: 'update_reference_data', title: 'Update reference data', route: '#/ref-data-update',
+  { name: 'run_sql', ui: ['renderDebug', 'buildPostEntryPanel', 'buildIntegrityChecksPanel', 'runAllIntegrityChecks', 'buildRoundTripPanel', 'runRoundTrip'], title: 'Use the Debug Console', route: '#/debug',
+    description: 'Raw SQL, test postings, integrity checks and the SAP round-trip test.', reason: 'Raw SQL bypasses validation, double entry and attribution. The Debug Console serves a person at the keyboard.' },
+  { name: 'update_reference_data', ui: ['renderRefDataUpdate', 'applyDatasetUpdate'], title: 'Update reference data', route: '#/ref-data-update',
     description: 'Fetch new GST, HSN and state reference data.', reason: 'Bahi reaches the network only when you ask it to.' },
-  { name: 'undo_last_post', title: 'Undo my last post',
+  { name: 'undo_last_post', ui: ['undoLast'], title: 'Undo my last post',
     description: 'Reverse the person\'s own last post in this session with a counter-entry (Ctrl+Z).',
     reason: 'Undo walks the person\'s own stack of this session\'s posts. An agent reverses an entry by proposing a counter-entry with post_journal.' },
-  { name: 'post_ca_adjustment', title: 'Post a CA adjustment', route: '#/ca/adjustment/new',
+  { name: 'post_ca_adjustment', ui: ['renderCaAdjustmentForm'], title: 'Post a CA adjustment', route: '#/ca/adjustment/new',
     description: 'A journal the CA posts in CA mode, carrying their name and membership number.',
     reason: 'A CA adjustment is the CA\'s own professional entry, signed with their membership number.' },
-  { name: 'annotate_as_ca', title: 'Annotate, review or resolve as the CA',
+  { name: 'annotate_as_ca', ui: ['openInlineAnnotationModal', 'renderAnnotations', 'addAnnotation', 'resolveAnnotation'], title: 'Annotate, review or resolve as the CA',
     description: 'CA notes on entries and documents, review marks, and resolving them.',
     reason: 'Annotations and review marks are the CA\'s professional record. Agents read them with list_annotations.' },
   { name: 'export_ca_report', title: 'Issue the CA report', route: '#/ca/report',
     description: 'The CA\'s report on the books as a PDF.',
     reason: 'The report is the CA\'s to issue. The figures behind it are in the read tools.' },
-  { name: 'import_books_data', title: 'Import from Tally or SAP',
+  { name: 'import_books_data', ui: ['renderImportSap', 'runSapImport', 'renderImportStep5', 'doCommitTallyImport', 'runTallyImport'], title: 'Import from Tally or SAP',
     description: 'Import masters and vouchers from a Tally XML or SAP B1 export, and export to SAP.',
     reason: 'An import reads a file the person chooses, and an export writes one through the save picker.' },
-  { name: 'import_stock_transfer', title: 'Import an inbound stock transfer', route: '#/stock-transfer/in/import',
+  { name: 'import_stock_transfer', ui: ['renderStockTransferIn'], title: 'Import an inbound stock transfer', route: '#/stock-transfer/in/import',
     description: 'Receive a transfer from another branch from the JSON file it sent.',
     reason: 'It reads the file the person received from the sending branch.' },
-  { name: 'backup_books', title: 'Back up the books',
+  { name: 'backup_books', ui: ['backupNow'], title: 'Back up the books',
     description: 'Write a dated backup archive of the .khata and its audit log.',
     reason: 'A backup is written through the browser\'s save picker, which answers only to a person.' },
-  { name: 'restore_snapshot', title: 'Restore a snapshot to a new file',
+  { name: 'restore_snapshot', ui: ['restoreSnapshotToNewFile'], title: 'Restore a snapshot to a new file',
     description: 'Write an earlier saved state of the books to a new .khata.',
     reason: 'Restoring writes a new file through the save picker; which state to restore is the person\'s choice.' },
   { name: 'switch_mode', title: 'Switch between Owner and CA mode',
@@ -23942,11 +23913,11 @@ const BAHI_AGENT_PERSON_ONLY = [
   { name: 'configure_ai', title: 'Set up Smart Capture and AI providers',
     description: 'Turn on Smart Capture, download its on-device model, and hold provider API keys.',
     reason: 'It downloads a model on the person\'s consent and holds their API keys.' },
-  { name: 'approve_proposal', title: 'Approve a proposal',
+  { name: 'approve_proposal', ui: ['approveAgentProposals', 'approveAgentProposal', 'approveAllAgentProposals', 'agentApproveFromUi'], title: 'Approve a proposal',
     description: 'Apply an agent proposal to the books.', reason: 'Approval is the point of staging. An agent cannot approve its own change.' },
-  { name: 'reject_proposal', title: 'Reject a proposal',
+  { name: 'reject_proposal', ui: ['rejectAgentProposal', 'rejectAllAgentProposals'], title: 'Reject a proposal',
     description: 'Discard an agent proposal.', reason: 'The decision on a proposal is yours. Agents withdraw their own with withdraw_proposal.' },
-  { name: 'set_agent_channel', title: 'Open the cross-tab channel',
+  { name: 'set_agent_channel', ui: ['setAgentChannel'], title: 'Open the cross-tab channel',
     description: 'Let other Bahi tabs and same-origin scripts call these tools.', reason: 'It opens a door to callers you did not invite into this tab.' },
 ];
 
@@ -24299,7 +24270,7 @@ const BAHI_AGENT_PREPARE = {
   }),
 
   post_journal: (a) => {
-    const postedAt = a.postedAt || nowIso().slice(0, 10);
+    const postedAt = a.postedAt || todayLocal();
     // Per-line shape check BEFORE the engine sees it, so a caller gets a typed
     // E_BAD_ARGS with the offending line index instead of a bare engine throw.
     const lines = [];
@@ -24346,9 +24317,15 @@ const BAHI_AGENT_PREPARE = {
     const lines = agentValidateVoucherLines(a.lines, { allowDiscount: true });
     const c = agentRow('SELECT name FROM customers WHERE id = ?', [a.customerId]);
     if (!c) throw new AgentBadArgs(`customerId ${a.customerId} is not a customer — see list_customers`);
-    const invoiceDate = a.invoiceDate || nowIso().slice(0, 10);
+    const invoiceDate = a.invoiceDate || todayLocal();
+    const advanceAllocations = [];
+    for (const [i, al] of (a.advanceAllocations || []).entries()) {
+      if (!al || typeof al !== 'object' || !Number.isSafeInteger(al.advanceId) || al.advanceId < 1) throw new AgentBadArgs(`advanceAllocations[${i}].advanceId must be a positive integer`);
+      if (!Number.isInteger(al.amount) || al.amount < 1 || al.amount > MAX_AGENT_PAISE) throw new AgentBadArgs(`advanceAllocations[${i}].amount must be positive integer paise`);
+      advanceAllocations.push({ advanceId: al.advanceId, amount: al.amount });
+    }
     return {
-      args: { ...a, invoiceDate, lines },
+      args: { ...a, invoiceDate, lines, advanceAllocations },
       summary: `Invoice to ${c.name} on ${invoiceDate}: ${lines.length} line${lines.length === 1 ? '' : 's'}, ${fmtINR(agentTaxable(lines))} before GST`,
       details: agentLineDetails(lines),
     };
@@ -24358,7 +24335,7 @@ const BAHI_AGENT_PREPARE = {
     const lines = agentValidateVoucherLines(a.lines, { allowDiscount: false });
     const v = agentRow('SELECT name FROM vendors WHERE id = ?', [a.vendorId]);
     if (!v) throw new AgentBadArgs(`vendorId ${a.vendorId} is not a vendor — see list_vendors`);
-    const billDate = a.billDate || nowIso().slice(0, 10);
+    const billDate = a.billDate || todayLocal();
     const flags = [a.reverseCharge ? 'reverse charge' : '', a.itcEligible === false ? 'no ITC' : ''].filter(Boolean);
     return {
       args: { ...a, billDate, lines },
@@ -24386,7 +24363,7 @@ const BAHI_AGENT_PREPARE = {
     if (!c) throw new AgentBadArgs(`customerId ${a.customerId} is not a customer — see list_customers`);
     const bank = agentRow('SELECT name FROM accounts WHERE id = ?', [a.bankAccountId]);
     if (!bank) throw new AgentBadArgs(`bankAccountId ${a.bankAccountId} is not an account — see list_accounts`);
-    const paymentDate = a.paymentDate || nowIso().slice(0, 10);
+    const paymentDate = a.paymentDate || todayLocal();
     const total = allocations.reduce((t, al) => t + al.amount, 0);
     return {
       args: { ...a, paymentDate, allocations },
@@ -24398,7 +24375,7 @@ const BAHI_AGENT_PREPARE = {
   create_credit_note: (a) => {
     const inv = agentRow('SELECT i.invoice_number, i.total, c.name AS customer FROM invoices i LEFT JOIN customers c ON c.id = i.customer_id WHERE i.id = ?', [a.invoiceId]);
     if (!inv) throw new AgentBadArgs(`invoiceId ${a.invoiceId} is not an invoice`);
-    const cnDate = a.cnDate || nowIso().slice(0, 10);
+    const cnDate = a.cnDate || todayLocal();
     return {
       args: { ...a, cnDate },
       summary: `Credit note against ${inv.invoice_number} (${inv.customer || 'unknown customer'}) on ${cnDate}: ${a.amount ? `${fmtINR(a.amount)}, partial` : `full reversal of ${fmtINR(inv.total)}`}`,
@@ -24409,7 +24386,7 @@ const BAHI_AGENT_PREPARE = {
   create_debit_note: (a) => {
     const pur = agentRow('SELECT p.bill_number, p.total, v.name AS vendor FROM purchases p LEFT JOIN vendors v ON v.id = p.vendor_id WHERE p.id = ?', [a.purchaseId]);
     if (!pur) throw new AgentBadArgs(`purchaseId ${a.purchaseId} is not a purchase`);
-    const dnDate = a.dnDate || nowIso().slice(0, 10);
+    const dnDate = a.dnDate || todayLocal();
     return {
       args: { ...a, dnDate },
       summary: `Debit note against bill ${pur.bill_number} (${pur.vendor || 'unknown vendor'}) on ${dnDate}: ${a.amount ? `${fmtINR(a.amount)}, partial` : `full reversal of ${fmtINR(pur.total)}`}`,
@@ -24500,7 +24477,7 @@ const BAHI_AGENT_HANDLERS = {
     // matches that exactly — a second door that is stricter than the first is still
     // a divergence — but it REPORTS the lock so a caller is never surprised.
     const periodLock = agentPeriodLockOn(a.postedAt);
-    const actor = agentActorFor(a);
+    const actor = auditActor();
     const res = await postEntry(STATE.db, {
       voucherType: 'journal',
       voucherRef: a.voucherRef || null,
@@ -24517,11 +24494,12 @@ const BAHI_AGENT_HANDLERS = {
       customerId: a.customerId, invoiceDate: a.invoiceDate, invoiceNumber: a.invoiceNumber || undefined,
       series: a.series || 'Domestic', placeOfSupply: a.placeOfSupply || null,
       notes: a.notes || null, isComposition: !!a.isComposition, lines: a.lines,
+      advanceAllocations: a.advanceAllocations || [],
     });
     return {
       invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, entryId: r.entryId,
-      invoiceDate: a.invoiceDate, actor: agentActorFor(a), totals: r.totals,
-      lineCount: a.lines.length, warnings: r.warnings,
+      invoiceDate: a.invoiceDate, actor: auditActor(), totals: r.totals,
+      lineCount: a.lines.length, warnings: r.warnings, advancesApplied: r.advancesApplied || 0,
     };
   },
 
@@ -24531,10 +24509,11 @@ const BAHI_AGENT_HANDLERS = {
       internalRef: a.internalRef || undefined, placeOfSupply: a.placeOfSupply || null,
       notes: a.notes || null, reverseCharge: !!a.reverseCharge,
       itcEligible: a.itcEligible === undefined ? true : !!a.itcEligible, lines: a.lines,
+      aiAssisted: !!a.aiAssisted,
     });
     return {
       purchaseId: r.purchaseId, internalRef: r.internalRef, billNumber: r.billNumber,
-      entryId: r.entryId, billDate: a.billDate, actor: agentActorFor(a), totals: r.totals,
+      entryId: r.entryId, billDate: a.billDate, actor: auditActor(), totals: r.totals,
       lineCount: a.lines.length, warnings: r.warnings,
     };
   },
@@ -24542,12 +24521,12 @@ const BAHI_AGENT_HANDLERS = {
   create_payment: async (a) => {
     const r = await createPayment(STATE.db, {
       customerId: a.customerId, bankAccountId: a.bankAccountId, paymentDate: a.paymentDate,
-      paymentNumber: a.paymentNumber || undefined, paymentMode: a.paymentMode || 'NEFT',
+      paymentNumber: a.paymentNumber || undefined, paymentMode: a.paymentMode || 'neft',
       reference: a.reference || null, notes: a.notes || null, allocations: a.allocations,
     });
     return {
       paymentId: r.paymentId, paymentNumber: r.paymentNumber, entryId: r.entryId,
-      paymentDate: a.paymentDate, actor: agentActorFor(a), amount: r.amount,
+      paymentDate: a.paymentDate, actor: auditActor(), amount: r.amount,
       allocationCount: r.allocations.length, warnings: r.warnings,
     };
   },
@@ -24559,7 +24538,7 @@ const BAHI_AGENT_HANDLERS = {
       amount: a.amount === undefined ? null : a.amount,
     });
     return { cnId: r.cnId, cnNumber: r.cnNumber, entryId: r.entryId, cnDate: a.cnDate,
-      actor: agentActorFor(a), totals: r.totals, full: r.ratio === 1, warnings: r.warnings };
+      actor: auditActor(), totals: r.totals, full: r.ratio === 1, warnings: r.warnings };
   },
 
   create_debit_note: async (a) => {
@@ -24569,7 +24548,7 @@ const BAHI_AGENT_HANDLERS = {
       amount: a.amount === undefined ? null : a.amount,
     });
     return { dnId: r.dnId, dnNumber: r.dnNumber, entryId: r.entryId, dnDate: a.dnDate,
-      actor: agentActorFor(a), totals: r.totals, full: r.ratio === 1, warnings: r.warnings };
+      actor: auditActor(), totals: r.totals, full: r.ratio === 1, warnings: r.warnings };
   },
 
   list_invoices: async (a) => {

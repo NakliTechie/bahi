@@ -203,13 +203,31 @@ These are declared in `manifest.personOnly` with a reason, and every door answer
 `run_selftest` asserts it. A new screen cannot quietly appear without someone deciding whether
 agents get it.
 
-## The person's door
+## The person's door: one command bus
 
-The forms are a client of the same tools. A master modal or a voucher form submits through
-`bahiUi(name, input)`, which runs the tool's validation, prepare step and handler at once, as the
-person, then saves — through the same queue agent calls and approvals use, so a person's post
-and an agent's can never interleave. The person's entries carry `owner` or `ca` as actor and no
-`agentCall`.
+The UI is a client of the same tools. Every form that changes the books — invoices, purchases,
+receipts, credit and debit notes, journals, advances, vendor payments, TCS, challans, e-way bills,
+transfers, reconciliations, snapshots, and every master — submits through `bahiUi(name, input)`.
+That runs the tool's validation, prepare step and handler at once, as the person, then saves,
+through the same queue agent calls and approvals use, so a person's post and an agent's can
+never interleave. The person's entries carry `owner` or `ca` as actor and no `agentCall`.
+
+The acts that stay with the person are carried out by functions each person-only entry names
+(`ui` in the source). Nothing else writes, and a lint proves it:
+
+```bash
+cd agent/harness
+node lint-agent-face.mjs            # 0 problems, or the write that broke the rule
+node lint-agent-face.mjs --report   # every writing function and who owns it
+node test-lint-agent-face.mjs       # plants six faults; the lint must catch each
+```
+
+[`lint-agent-face.mjs`](harness/lint-agent-face.mjs) parses the app with acorn and holds two
+rules. **A:** every function that writes — SQL that changes the books, an audit entry, a posting,
+a save — is reachable from a tool's handler, a person-only act's functions, or declared
+infrastructure (the schema, the save path, the audit log, the posting engine, the two doors).
+**B:** no screen writes on its own or reaches a write except through `bahiUi` or a person-only
+act. A form that grows its own posting path again fails rule B; a write nobody declared fails A.
 
 ## Security note
 
@@ -239,7 +257,7 @@ echo '[{"command":"run_selftest"}]' | node drive.mjs --book pharma --calls -
 a sample name from `sample-data/`. Samples are copied to a temp dir first; the repo's books are
 never written to.
 
-`node checks.mjs` runs the full assertion suite (54 checks, all in IST). Every check prints the numbers it
+`node checks.mjs` runs the full assertion suite (55 checks, all in IST). Every check prints the numbers it
 compared, passing or failing, so the output is evidence rather than a row of the word PASS.
 `--only C24,C29` runs just those, and skips every batch that holds none of them.
 
@@ -247,9 +265,10 @@ compared, passing or failing, so the output is evidence rather than a row of the
 |---|---|
 | C1–C22 | the contract: parity, validation, attribution, purity, injection, error codes, the read-only path |
 | C23–C27 | **reconciliation**: two or three independent computations of one quantity must agree |
-| C28–C35 | **two doors, one core**: forms delegate to the engine; invoice and purchase post identical rows through the form and the agent face, with different audit actors; signing keys survive a save |
+| C28–C35 | **two doors, one core**: forms post through `bahiUi` to their tools; invoice and purchase post identical rows through the form and the agent face, with different audit actors; signing keys survive a save |
 | C36–C41 | **doors and approval**: writes stage until approved; rejected and withdrawn proposals never apply; person-only acts are refused on every door; applied writes record door, caller, proposal and approver; the channel starts closed; WebMCP carries exactly the declared tools |
 | C42–C44 | **dates**: TDS and CMP-08 periods are the calendar quarters in IST, from one shared function; an entry stamped with a time still belongs to its day |
+| C55 | **one command bus**: the lint passes with no problems, and its self-test catches all six planted faults |
 | C51–C54 | **write parity**: a master's bad input is refused at the call; vouchers post their TDS, TCS, GST and stock effects correctly once approved; the forms post as the person through `bahiUi`; every moved form keeps no write of its own |
 | C45–C50 | **read parity**: P&L equals the trial balance; a year's sales agree across the register, GSTR-3B and the invoice list; every item's movements sum to its stock on hand; CMP-08 turnover equals the quarter's register; every screen reads through its tool's function; paging reproduces the list |
 

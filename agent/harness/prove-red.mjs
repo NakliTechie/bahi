@@ -70,9 +70,9 @@ const DEFECTS = [
   { id: 'C18', target: 'C18', note: 'let a handler log to the console instead of failing cleanly',
     find: "  get_file_info: async () => {\n    const m = STATE.manifest;",
     replace: "  get_file_info: async () => {\n    console.error('agent face: noisy handler');\n    const m = STATE.manifest;" },
-  { id: 'C28', target: 'C28', note: 'form stops delegating — the engine call is replaced by its own path',
-    find: "      const result = await createInvoice(STATE.db, {",
-    replace: "      const result = await createInvoiceLegacyInlinePath(STATE.db, {" },
+  { id: 'C28', target: 'C28', note: 'form stops posting through bahiUi — the call is replaced by its own path',
+    find: "    const r = await bahiUi('create_invoice', {",
+    replace: "    const r = await createInvoiceLegacyInlinePath('create_invoice', {" },
   { id: 'C29', target: 'C29', note: 'the two doors drift — the agent defaults a different invoice series',
     find: "      series: a.series || 'Domestic', placeOfSupply: a.placeOfSupply || null,",
     replace: "      series: a.series || 'Export', placeOfSupply: a.placeOfSupply || null," },
@@ -80,23 +80,24 @@ const DEFECTS = [
     find: "      addTrustedKey(STATE.manifest.integrity, STATE.manifest.integrity.signedBy);\n      STATE.manifest.integrity.signedBy = STATE.publicJwk;",
     replace: "      STATE.manifest.integrity.signedBy = STATE.publicJwk;" },
   { id: 'C33', target: 'C33', note: 'payment form stops delegating',
-    find: "      const result = await createPayment(STATE.db, {",
-    replace: "      const result = await createPaymentLegacyInlinePath(STATE.db, {" },
+    find: "    const r = await bahiUi('create_payment', {",
+    replace: "    const r = await createPaymentLegacyInlinePath('create_payment', {" },
   { id: 'C34', target: 'C34', note: 'credit note form stops delegating',
-    find: "      const result = await createCreditNote(STATE.db, {",
-    replace: "      const result = await createCreditNoteLegacyInlinePath(STATE.db, {" },
+    find: "    const r = await bahiUi('create_credit_note', {",
+    replace: "    const r = await createCreditNoteLegacyInlinePath('create_credit_note', {" },
   { id: 'C35', target: 'C35', note: 'debit note form stops delegating',
-    find: "      const result = await createDebitNote(STATE.db, {",
-    replace: "      const result = await createDebitNoteLegacyInlinePath(STATE.db, {" },
-  { id: 'C30', target: 'C30', note: 'purchase form stops delegating — the engine call is replaced by its own path',
-    find: "      const result = await createPurchase(STATE.db, {",
-    replace: "      const result = await createPurchaseLegacyInlinePath(STATE.db, {" },
-  // First attempt used the itcEligible default, which is DEAD CODE: the validator fills a
-  // declared default, so `a.itcEligible === undefined` is never true. Reverse charge is
-  // reachable and changes both the header flag and the ledger legs.
-  { id: 'C31', target: 'C31', note: 'the two doors drift — the agent flips reverse-charge treatment',
-    find: "      notes: a.notes || null, reverseCharge: !!a.reverseCharge,",
-    replace: "      notes: a.notes || null, reverseCharge: !a.reverseCharge," },
+    find: "    const r = await bahiUi('create_debit_note', {",
+    replace: "    const r = await createDebitNoteLegacyInlinePath('create_debit_note', {" },
+  { id: 'C30', target: 'C30', note: 'purchase form stops posting through bahiUi — the call is replaced by its own path',
+    find: "    const r = await bahiUi('create_purchase', {",
+    replace: "    const r = await createPurchaseLegacyInlinePath('create_purchase', {" },
+  // Since layer 4 both doors run the same handler, so a defect inside it moves both and the
+  // rows still match — the first C31 defect (flipping reverse charge in the handler) stopped
+  // proving anything. The doors can now drift only where each builds its input: here the
+  // form reads its reverse-charge select backwards.
+  { id: 'C31', target: 'C31', note: 'the two doors drift — the purchase form reads its reverse-charge select backwards',
+    find: "      reverseCharge: $('pu-rcm').value === '1',",
+    replace: "      reverseCharge: $('pu-rcm').value !== '1'," },
   { id: 'C23', target: 'C23', note: 'make the day-book range exclusive at the start, dropping each period\'s first day',
     find: "    FROM entries e\n    WHERE substr(e.posted_at, 1, 10) BETWEEN ? AND ?\n    ORDER BY e.posted_at, e.id",
     replace: "    FROM entries e\n    WHERE substr(e.posted_at, 1, 10) > ? AND substr(e.posted_at, 1, 10) <= ?\n    ORDER BY e.posted_at, e.id" },
@@ -173,6 +174,9 @@ const DEFECTS = [
   { id: 'C54', target: 'C54', note: 'the series modal saves on its own again instead of through bahiUi',
     find: "    const r = await bahiUi(isEdit ? 'update_invoice_series' : 'create_invoice_series', isEdit ? { seriesId, ...input } : input);",
     replace: "    const r = { ok: true, data: { ...(await saveInvoiceSeries(STATE.db, { ...input, id: isEdit ? seriesId : null })), saved: (await persistKhata()) !== false } };" },
+  { id: 'C55', target: 'C55', note: 'a screen runs SQL itself again, outside the bus',
+    find: "  const r = queryList(STATE.db, 'godowns');",
+    replace: "  STATE.db.run('UPDATE godowns SET name = name');\n  const r = queryList(STATE.db, 'godowns');" },
 ];
 
 // A defect may need further edits, applied in order, to stay syntactically valid or to

@@ -814,6 +814,29 @@
             "type": "boolean",
             "default": false
           },
+          "advanceAllocations": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "properties": {
+                "advanceId": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "amount": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Integer paise of the advance to adjust against this invoice."
+                }
+              },
+              "required": [
+                "advanceId",
+                "amount"
+              ]
+            },
+            "description": "Open advances of this customer to adjust against the invoice; see list_advances."
+          },
           "agentName": {
             "type": "string",
             "maxLength": 60,
@@ -938,6 +961,11 @@
             "type": "boolean",
             "default": true
           },
+          "aiAssisted": {
+            "type": "boolean",
+            "default": false,
+            "description": "Set by the person's own Smart Capture when it drafted this purchase."
+          },
           "agentName": {
             "type": "string",
             "maxLength": 60,
@@ -1013,14 +1041,14 @@
             "type": "string",
             "maxLength": 20,
             "enum": [
-              "NEFT",
-              "RTGS",
-              "IMPS",
-              "UPI",
-              "Cheque",
-              "Cash",
-              "Card",
-              "Other"
+              "cash",
+              "cheque",
+              "neft",
+              "rtgs",
+              "imps",
+              "upi",
+              "card",
+              "other"
             ]
           },
           "reference": {
@@ -1137,7 +1165,7 @@
             "enum": [
               "purchase-return",
               "rate-difference",
-              "quality-issue",
+              "quality",
               "other"
             ]
           },
@@ -3723,10 +3751,10 @@
     },
     {
       "name": "run_sql",
-      "title": "Run raw SQL",
+      "title": "Use the Debug Console",
       "route": "#/debug",
-      "description": "The Debug Console.",
-      "reason": "Raw SQL bypasses validation, double entry and attribution. It serves a person at the keyboard."
+      "description": "Raw SQL, test postings, integrity checks and the SAP round-trip test.",
+      "reason": "Raw SQL bypasses validation, double entry and attribution. The Debug Console serves a person at the keyboard."
     },
     {
       "name": "update_reference_data",

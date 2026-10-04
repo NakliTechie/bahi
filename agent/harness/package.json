@@ -8,6 +8,8 @@
     "check": "node checks.mjs"
   },
   "devDependencies": {
+    "acorn": "^8.18.0",
+    "acorn-walk": "^8.3.5",
     "playwright": "^1.63.0"
   }
 }

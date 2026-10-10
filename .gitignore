@@ -13,8 +13,6 @@
 !demo/**
 !sample-data
 !sample-data/**
-!marketing/
-!marketing/**
 !social.png
 docs/.DS_Store
 demo/.DS_Store
@@ -70,3 +68,6 @@ corpus/**/.DS_Store
 !agent/harness/test-lint-agent-face.mjs
 agent/harness/node_modules/
 agent/harness/package-lock.json
+# Promo output (regenerable; /windup-nt sweeps it)
+/marketing
+/brag-output*
